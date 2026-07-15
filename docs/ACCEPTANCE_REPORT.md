@@ -7,7 +7,7 @@
 - npm：v10.9.2
 - Dify：未配置
 - 飞书测试 Base：未配置
-- Commit：待 Phase 1 提交
+- Commit：b20a553
 
 ## 工程命令
 
