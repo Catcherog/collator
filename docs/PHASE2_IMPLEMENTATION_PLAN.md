@@ -1,6 +1,6 @@
 # Phase 2 实施计划：CandidateRecord 映射、清洗与验证接入
 
-> **状态**：DESIGN_APPROVED_WITH_REQUIRED_CHANGES  
+> **状态**：PLANNING_CORRECTION_APPLIED  
 > **规划日期**：2026-07-15  
 > **目标**：生成 Phase 2 全部实施计划文档，本轮不修改生产/测试代码  
 > **使用 skill**：writing-plans
@@ -94,7 +94,7 @@ collator/
 
 | 模块 | 主要导出 | 职责 | Phase 2 处理策略 |
 |---|---|---|---|
-| `core/data-cleaner.js` | `DataCleaner`, `CleaningPipeline`, `FormatCleaner`, `EnumMappingCleaner`, `DefaultValueCleaner`, `NullToEmptyCleaner`, `createCleaner` | 组合清洗管道 | WRAP / EXTRACT_PURE_FUNCTION |
+| `core/data-cleaner.js` | `DataCleaner`, `CleaningPipeline`, `FormatCleaner`, `EnumMappingCleaner`, `DefaultValueCleaner`, `NullToEmptyCleaner`, `createCleaner` | 组合清洗管道 | EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY（导入闭包触发 `schemas/index.js` 与 `config/index.js` 的 import-time 文件读取，不得简单 WRAP） |
 | `core/data-scanner.js` | `DataScanner`, `createDataScanner` | 存量数据扫描 | DEPRECATE_WITH_REASON（Phase 2 不扫描存量） |
 | `core/quality-scorer.js` | `QualityScorer`, `createQualityScorer` | 质量评分 | WRAP / EXTRACT_PURE_FUNCTION |
 | `core/operation-logger.js` | `OperationLogger`, `createLogger` | 文件日志写入 | WRAP（文件写入需在 V1 中禁用或改为 pino） |
@@ -156,8 +156,14 @@ collator/
 
 **完成条件**
 
-- [ ] `PHASE2_ADAPTER_MAP.md` 表格完成，且每一行的“处理方式”均属于 {REUSE, WRAP, EXTRACT_PURE_FUNCTION, MIGRATE_INCREMENTALLY, DEPRECATE_WITH_REASON}。
-- [ ] `legacy-audit.ts` 中每个旧模块都有 `LegacyModuleProfile` 记录。
+- [ ] `PHASE2_ADAPTER_MAP.md` 表格完成，且每一行的"处理方式"均属于 {REUSE, WRAP, EXTRACT_PURE_FUNCTION, MIGRATE_INCREMENTALLY, DEPRECATE_WITH_REASON}。
+- [ ] `legacy-audit.ts` 中每个旧模块都有 `LegacyModuleProfile` 记录，且每条记录至少包含以下 6 个字段：
+  - `importSafe`：模块导入是否安全（是否触发 import-time 文件 I/O、目录创建、全局缓存等副作用）。
+  - `importStrategy`：导入策略（直接 import / 惰性加载 / 不导入）。
+  - `transitiveSideEffects`：传递性副作用清单（被依赖模块的 import-time 副作用）。
+  - `runtimeInterop`：运行时互操作风险（CJS/ESM、默认导出形状、类型缺失）。
+  - `allowedExports`：允许通过 Adapter 暴露的导出名单。
+  - `sideEffectTest`：验证副作用隔离的测试断言描述。
 - [ ] 测试通过且覆盖率计入 `src/server/cleaning/**`。
 
 **失败回滚方式**
@@ -345,8 +351,11 @@ feat(cleaning): implement validation engine and issue codes
 
 - 在 `receiveCandidate` 中串接 `CustomerSchemaAdapter → CleaningPipeline → ValidationEngine → QualityReport`。
 - 任务状态原子更新：`received` → `candidate_received` → `validating` → `pending_review`。
-- 任意环节失败进入 `validation_failed`，记录 `error_code` 与 `error_message`。
-- Callback 重放保护：已存在 `candidate` 时直接返回现有 review record；校验失败时幂等返回失败状态。
+- **状态语义冻结**（与《Collator 跨窗口实施手册 v1.0》第 6.1 节状态机一致）：
+  - **业务校验 error（缺必填、非法枚举、格式错误等数据层问题）**：任务仍进入 `pending_review`，`QualityReport` 携带 error issues 供人工修改。审核人可在 approve 时通过 `corrections` 修正。
+  - **`validation_failed` 仅用于执行层失败**：Schema 加载失败、配置缺失、Adapter 运行时合同违反、Pipeline 执行抛出异常、Validator 执行异常等非数据层问题。此时不生成 `QualityReport`，任务记录 `error_code` 与 `error_message`，不进入人工审核。
+  - 禁止把业务校验 error 升级为 `validation_failed`，也禁止把执行层失败降级为 `pending_review`。
+- Callback 重放保护：已存在 `candidate` 时直接返回现有 review record；执行层失败重放时幂等返回同一失败状态；业务校验 error 重放时幂等返回同一 `pending_review` 结果。
 - `QualityReport` 固定 `review_required=true`、`write_allowed=false`，包含 schema/mapping/ruleset 版本与 `validation_runs`。
 - 不调用任何飞书写入接口。
 
@@ -368,10 +377,14 @@ feat(cleaning): implement validation engine and issue codes
 
 - `tests/unit/ingestion-service.test.ts` 新增：
   - 合法 Candidate 进入 `pending_review`。
-  - 非法枚举 Candidate 进入 `validation_failed`。
-  - 缺必填字段 Candidate 进入 `validation_failed`。
+  - 非法枚举 Candidate 进入 `pending_review`（业务校验 error 供人工修改，不进入 `validation_failed`）。
+  - 缺必填字段 Candidate 进入 `pending_review`（业务校验 error 供人工修改，不进入 `validation_failed`）。
+  - 格式错误 Candidate 进入 `pending_review`（业务校验 error 供人工修改）。
+  - Schema 加载失败或 Adapter 运行时合同违反进入 `validation_failed`（执行层失败，不生成 `QualityReport`）。
+  - Pipeline 执行抛出异常进入 `validation_failed`（执行层失败）。
   - 重复 callback 幂等返回同一 review_record_id。
-  - 失败 callback 重放返回同一失败状态。
+  - 业务校验 error 的 callback 重放幂等返回同一 `pending_review` 结果。
+  - 执行层失败的 callback 重放幂等返回同一 `validation_failed` 状态。
 - `tests/integration/ingestions.test.ts` 新增：
   - Candidate 回调签名通过后返回 `review_record_id`。
   - 返回体包含 `review_required: true`、`write_allowed: false`。
@@ -379,6 +392,8 @@ feat(cleaning): implement validation engine and issue codes
 **完成条件**
 
 - [ ] `receiveCandidate` 不再直接设置 `pending_review`，而是先完成完整清洗验证流程。
+- [ ] 业务校验 error（缺必填、非法枚举、格式错误）的任务进入 `pending_review`，`QualityReport` 携带 error issues；不进入 `validation_failed`。
+- [ ] 执行层失败（Schema/配置/Adapter/Pipeline/Validator 执行异常）的任务进入 `validation_failed`，记录 `error_code` 与 `error_message`，不生成 `QualityReport`。
 - [ ] `QualityReport` 中 `review_required=true`、`write_allowed=false` 写死并通过测试断言。
 - [ ] 状态更新使用 repository `save` 单条原子写入。
 - [ ] 服务端不调用飞书 API、不写文件、不改全局状态。

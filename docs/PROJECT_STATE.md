@@ -2,9 +2,10 @@
 
 - 当前阶段：Phase 2
 - 状态：IN_PROGRESS
-- 最近更新：2026-07-15 22:45
+- Planning Review：APPROVED_WITH_REQUIRED_CHANGES（已在本轮提交中完成全部必需修正）
+- 最近更新：2026-07-16
 - 当前分支：main
-- 当前 Commit：c1e199b
+- 当前 Commit：见 `git log -1`（Phase 2 Planning Correction 提交；基线为 edb68a4）
 - 当前版本：v1.0
 
 ## 已完成
@@ -102,16 +103,26 @@
 
 ## 风险
 
-- 旧 `src/data-cleaning/agent/index.js` 存在 `&&amp;&amp;` HTML 实体语法错误，任何引用该文件的入口无法运行；V1 采用新建 `src/server/` 替代旧 Agent 入口，不修复旧入口。
+- 旧 `src/data-cleaning/agent/index.js` 存在 `&&amp;` HTML 实体语法错误，任何引用该文件的入口无法运行；V1 采用新建 `src/server/` 替代旧 Agent 入口，不修复旧入口。
 - 现有 Schema 使用中文 fieldName，Dify Candidate 输出英文 raw 字段，Phase 2 需要增加映射层。
 - 硬编码飞书资源 ID 较多，Phase 3 需逐步迁出源码。
+- `core/data-cleaner.js` 导入闭包触发 `schemas/index.js` 与 `config/index.js` 的 import-time 文件读取，Phase 2A 审计需标记为 `EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY`，不得简单 WRAP。
+
+## Phase 2 Planning Correction（本轮完成）
+
+- **Planning Review 结果**：APPROVED_WITH_REQUIRED_CHANGES
+- **本轮修正内容**（未修改任何生产/测试代码）：
+  1. `PHASE2_EVALUATION_SPEC.md`：Enum Mapping Precision 门槛 85% → 95%（与手册 Gate C 一致）；Validation Detection Recall 保留为补充门槛 ≥85%，不得降低主门槛；同步示例报告。
+  2. `PHASE2_IMPLEMENTATION_PLAN.md` Phase 2E：冻结状态语义——业务校验 error 进入 `pending_review`；`validation_failed` 仅用于 Schema/配置/Adapter/Pipeline/Validator 执行异常；同步测试与完成条件。Phase 2A 完成条件新增 `LegacyModuleProfile` 6 字段要求；`data-cleaner.js` 处理方式改为 `EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY`。
+  3. `PHASE2_DATA_CONTRACTS.md`：新增 `ValidatorExecutionError` 与 `execution_error` 字段；新增 2.8 节 Validator 执行异常表示与状态转换；新增 2.9 节日期边界策略与测试要求（无效 timezone/received_at、DST 边界、非法日期、年份推断）。
+  4. `PHASE2_ADAPTER_MAP.md`：`data-cleaner.js` 处理方式 WRAP → `EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY`；新增第四章 `LegacyModuleProfile` 结构要求（importSafe/importStrategy/transitiveSideEffects/runtimeInterop/allowedExports/sideEffectTest）。
+- **未开始**：Phase 2A 生产代码、Phase 2 全部实现、Gate C 验收。
 
 ## 下一步唯一动作
 
-1. 提交 Phase 1 收尾审计变更。
-2. 进入 Phase 2：清洗与验证接入，完成 CandidateRecord → 四步清洗 → 五重校验 → NormalizedRecord / QualityReport。
+1. Phase 2A：合同与副作用审计（`src/server/cleaning/legacy-audit.ts` + `PHASE2_ADAPTER_MAP.md` 冻结 + `LegacyModuleProfile` 记录）。
 
 ## 最近一次执行
 
-- 命令：`npm ci; npm run typecheck; npm run lint; npm run test; npm run test:integration; npm run test:coverage; npm run build`
-- 结果：全部通过；单元测试 16 项，集成测试 10 项，共 26 项通过；核心服务覆盖率 Stmts 90.3% / Branch 82.56% / Funcs 88.57% / Lines 90.3%。
+- 命令：`npm ci; npm run typecheck; npm run lint; npm run test; npm run test:integration; npm run build`
+- 结果：见下方"执行命令与结果"（本轮为 Planning Correction，未修改生产代码，工程命令用于回归验证基线不变）。

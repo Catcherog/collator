@@ -1,6 +1,6 @@
 # Phase 2 数据合同
 
-> **状态**：DESIGN_APPROVED_WITH_REQUIRED_CHANGES  
+> **状态**：PLANNING_CORRECTION_APPLIED  
 > **用途**：冻结 CandidateRecord → NormalizedRecord → QualityReport 全链路数据结构与语义  
 > **生效范围**：`src/server/cleaning/`、`src/server/services/ingestion-service.ts`、评测 runner
 
@@ -123,7 +123,7 @@ export interface ValidationIssue {
 
 ### 1.5 ValidationRun
 
-单次 Validator 执行结果，必须返回 `applicable` 状态。
+单次 Validator 执行结果，必须返回 `applicable` 状态。执行异常通过 `execution_error` 显式表示，不得伪装为 `applicable=false` 或普通 warning。
 
 ```typescript
 export interface ValidationRun {
@@ -131,6 +131,13 @@ export interface ValidationRun {
   applicable: boolean;           // 当前上下文是否适用
   issues: ValidationIssue[];     // applicable=true 时发现的问题
   duration_ms?: number;          // 执行耗时（可选）
+  execution_error?: ValidatorExecutionError; // 执行异常，存在时该 run 视为失败
+}
+
+export interface ValidatorExecutionError {
+  code: string;                  // 系统错误码，如 'VALIDATOR_RUNTIME_ERROR'
+  message: string;               // 异常消息
+  stack?: string;                // 调用栈（仅开发环境，生产脱敏）
 }
 ```
 
@@ -140,6 +147,7 @@ export interface ValidationRun {
 | `applicable` | `boolean` | 是 | Validator | 否 | 不适用时不应伪装为通过 | 无需脱敏 |
 | `issues` | `ValidationIssue[]` | 是 | Validator | 空数组 `[]` | applicable=false 时必须为空 | 无需脱敏 |
 | `duration_ms` | `number` | 否 | Validator | 可缺失 | 性能审计 | 无需脱敏 |
+| `execution_error` | `ValidatorExecutionError` | 否 | Validator | 可缺失 | 执行异常时必填 | stack 仅开发环境 |
 
 ### 1.6 DuplicateCandidate
 
@@ -293,6 +301,7 @@ function normalizeDate(
 **warning 场景**：
 
 - 相对日期上下文缺失（`DATE_CONTEXT_MISSING`）
+- 月-日格式触发年份推断（`DATE_YEAR_INFERRED`）
 - 字段长度超过建议值（`LENGTH_WARNING`）
 - 低置信度枚举映射（`ENUM_LOW_CONFIDENCE`）
 - 状态机校验不适用但发现旧状态（`STATE_NOT_INITIAL`，applicable=false 时不产生）
@@ -338,6 +347,77 @@ function normalizeDate(
 - 不允许将 `applicable: false` 转换为 `issues: [{ severity: 'warning', ... }]` 来伪装通过。
 - 旧 `rules/index.js` 中的 `STATE_NOT_INITIAL` 在 V1 新建记录场景下视为不适用；只有在显式处理状态迁移的场景（Phase 3+）才 applicable。
 
+### 2.8 Validator 执行异常的表示与状态转换
+
+Validator 在执行过程中可能因 Schema 加载失败、配置缺失、运行时类型异常等原因抛出错误。执行异常是**执行层失败**，与"业务校验 error"和"不适用"三者必须严格区分。
+
+**禁止的伪装方式**：
+
+| 错误做法 | 为什么禁止 |
+|---|---|
+| 把执行异常设为 `applicable: false` | `applicable=false` 表示"该校验在当前上下文不适用"，是正常语义；执行异常是异常，不得混同 |
+| 把执行异常转为 `issues: [{ severity: 'warning', code: 'VALIDATOR_ERROR', ... }]` | warning 是业务层可审核问题；执行异常不是业务问题，不得进入 `pending_review` |
+| 把执行异常转为 `issues: [{ severity: 'error', ... }]` | error 是业务校验失败，任务应进入 `pending_review`；执行异常应进入 `validation_failed` |
+
+**正确的表示方式**：
+
+```typescript
+{
+  validator: 'EnumValidator',
+  applicable: true,
+  issues: [],
+  execution_error: {
+    code: 'VALIDATOR_RUNTIME_ERROR',
+    message: 'Failed to load enum values: customer.json not found',
+    stack: '...' // 仅开发环境
+  }
+}
+```
+
+**状态转换规则**：
+
+| 场景 | ValidationRun 表示 | 任务状态 | QualityReport |
+|---|---|---|---|
+| 业务校验发现 error（缺必填、非法枚举等） | `applicable: true, issues: [{severity:'error',...}]` | `pending_review` | 生成，携带 error issues |
+| Validator 不适用 | `applicable: false, issues: []` | `pending_review`（若无其他 error） | 生成 |
+| Validator 执行异常 | `applicable: true, issues: [], execution_error: {...}` | `validation_failed` | 不生成 |
+| Pipeline 执行异常 | 不产生 ValidationRun | `validation_failed` | 不生成 |
+| Schema/配置/Adapter 加载失败 | 不产生 ValidationRun | `validation_failed` | 不生成 |
+
+**规则**：
+
+- 任意 ValidationRun 存在 `execution_error` 时，整个任务进入 `validation_failed`，不生成 `QualityReport`。
+- `execution_error.code` 必须使用 `SYSTEM_` 前缀（见 2.6 错误码命名规则），如 `VALIDATOR_RUNTIME_ERROR`、`SCHEMA_LOAD_ERROR`、`CONFIG_MISSING_ERROR`。
+- 执行异常必须记录 `error_code` 与 `error_message` 到 IngestionTask，供后续诊断与重试。
+- 不得通过 try/catch 吞掉执行异常后返回空 issues 来伪装"校验通过"。
+
+### 2.9 日期边界策略与测试要求
+
+日期解析在 2.2 节基础语义之上，必须覆盖以下边界场景。每个场景都有明确的处理方式和对应的测试要求。
+
+**边界策略表**：
+
+| 边界场景 | 输入示例 | 处理方式 | 产出 issue / warning | 测试要求 |
+|---|---|---|---|---|
+| 无效 timezone | `timezone='Foo/Bar'` | 视为上下文缺失，相对日期保留原值 | `DATE_CONTEXT_MISSING` warning | 必须有测试断言：无效 timezone 不抛异常，相对日期不被解析为绝对日期 |
+| 无效 received_at | `received_at='not-a-date'` | 视为上下文缺失，相对日期保留原值 | `DATE_CONTEXT_MISSING` warning | 必须有测试断言：非法 received_at 不抛异常，降级为保留原值 |
+| received_at 缺失 | `received_at` 为空或 undefined | 相对日期保留原值 | `DATE_CONTEXT_MISSING` warning | 必须有测试断言：不调用 `new Date()` 猜测当前时间 |
+| DST 边界（春季前进） | `received_at='2025-03-09T02:30:00-08:00'`（北美 DST 前进，2:30 不存在） | 基于 `received_at` 的日历日期计算，不依赖小时级偏移；相对日期按日粒度计算 | 无（正常解析） | 必须有测试断言：DST 前进日按日历日期正确计算"明天" |
+| DST 边界（秋季回退） | `received_at='2025-11-02T01:30:00-07:00'`（北美 DST 回退，1:30 重复） | 同上，按日历日期日粒度计算 | 无（正常解析） | 必须有测试断言：DST 回退日按日历日期正确计算"昨天" |
+| 非法日期 | `'2025-02-30'`、`'13月45日'` | 清洗阶段保留原值并产生 `NormalizationWarning`；校验阶段 FormatValidator 产生 `INVALID_DATE` error | 清洗：`NormalizationWarning`；校验：`INVALID_DATE` error | 必须有测试断言：非法日期不产生虚假绝对日期，且 FormatValidator 产生 error |
+| 年份推断（月-日早于 received_at） | `received_at='2025-06-26'`，`'12月25日'` | 使用 received_at 年份 | 无 | 必须有测试断言：`'12月25日'` → `'2025-12-25'` |
+| 年份推断（月-日已过 received_at） | `received_at='2025-06-26'`，`'1月15日'` | 年份 +1 | `DATE_YEAR_INFERRED` warning | 必须有测试断言：`'1月15日'` → `'2026-01-15'`，且产生 warning |
+| 跨年边界 | `received_at='2025-12-30'`，`'下周三'` | 基于 received_at 所在周计算，跨年时自然落到下一年 | 无 | 必须有测试断言：跨年相对日期计算正确 |
+
+**规则**：
+
+1. **timezone 校验**：`normalizeDate` 必须验证 `timezone` 是否为合法 IANA 时区标识符（通过 `Intl.DateTimeFormat` 构造测试）；非法时区不抛异常，降级为上下文缺失。
+2. **received_at 校验**：`received_at` 必须能被 `Date` 构造函数解析为有效时间戳；非法值不抛异常，降级为上下文缺失。
+3. **DST 安全**：所有相对日期计算（今天/明天/昨天/后天/本周/下周/周末）必须基于 `received_at` 的**日历日期**（年-月-日），不依赖小时/分钟级 UTC 偏移，避免 DST 切换导致的日期漂移。
+4. **年份推断**：月-日格式输入按"最近未来日期"规则推断年份——若该月-日尚未过去（≥ received_at 的月-日），使用当年；若已过去，使用次年，并产生 `DATE_YEAR_INFERRED` warning。
+5. **禁止 `new Date()`**：`normalizeDate` 及其调用链不得使用无参 `new Date()` 获取当前时间；所有时间基准必须来自 `ctx.received_at`。
+6. **降级一致性**：任何上下文缺失或非法输入均降级为"保留原值 + warning"，不得抛出未捕获异常导致 Pipeline 进入 `validation_failed`（日期解析失败是业务层数据问题，不是执行层失败）。
+
 ---
 
 ## 三、Zod Runtime Schema 合同
@@ -380,6 +460,11 @@ export const validationRunSchema = z.object({
   applicable: z.boolean(),
   issues: z.array(validationIssueSchema),
   duration_ms: z.number().nonnegative().optional(),
+  execution_error: z.object({
+    code: z.string().min(1),
+    message: z.string().min(1),
+    stack: z.string().optional(),
+  }).optional(),
 });
 
 export const qualityReportSchema = z.object({

@@ -1,6 +1,6 @@
 # Phase 2 Legacy Adapter 映射表
 
-> **状态**：DESIGN_APPROVED_WITH_REQUIRED_CHANGES  
+> **状态**：PLANNING_CORRECTION_APPLIED  
 > **用途**：基于实际代码阅读，决定 `src/data-cleaning/**/*.js` 各模块在 `src/server/cleaning/` 中的处理方式  
 > **约束**：处理方式只能是 {REUSE, WRAP, EXTRACT_PURE_FUNCTION, MIGRATE_INCREMENTALLY, DEPRECATE_WITH_REASON}
 
@@ -10,7 +10,7 @@
 
 | 旧模块 | 真实导出函数/类 | 副作用 | 可变输入 | 依赖 | 处理方式 | 新 Adapter | 契约测试 |
 |---|---|---|---|---|---|---|---|
-| `core/data-cleaner.js` | `DataCleaner`, `CleaningPipeline`, `FormatCleaner`, `EnumMappingCleaner`, `DefaultValueCleaner`, `NullToEmptyCleaner`, `createCleaner` | 构造时默认实例化 `OperationLogger`（触发 `mkdirSync`）；`preprocessMultimodal` 调用 OCR/ASR/CLIP | `clean(result, meta)` 修改 `cleanedData` 副本，不修改入参；`DefaultValueCleaner` 修改副本 | `../rules`, `../schemas`, `../config`, `../utils`, `./operation-logger`, `../multimodal/*` | WRAP | `src/server/cleaning/adapters/cleaner-adapter.ts` | `tests/unit/cleaning/adapters/cleaner-adapter.test.ts` |
+| `core/data-cleaner.js` | `DataCleaner`, `CleaningPipeline`, `FormatCleaner`, `EnumMappingCleaner`, `DefaultValueCleaner`, `NullToEmptyCleaner`, `createCleaner` | 构造时默认实例化 `OperationLogger`（触发 `mkdirSync`）；`preprocessMultimodal` 调用 OCR/ASR/CLIP；**导入闭包触发 `schemas/index.js` 与 `config/index.js` 的 import-time 文件读取** | `clean(result, meta)` 修改 `cleanedData` 副本，不修改入参；`DefaultValueCleaner` 修改副本 | `../rules`, `../schemas`, `../config`, `../utils`, `./operation-logger`, `../multimodal/*` | EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY | `src/server/cleaning/adapters/cleaner-adapter.ts` | `tests/unit/cleaning/adapters/cleaner-adapter.test.ts` |
 | `core/data-scanner.js` | `DataScanner`, `createDataScanner` | 构造时读 `scan-state.json`；运行时可能写 `scan-state.json` | 不修改输入记录 | `fs`, `../schemas`, `../config`, `../utils` | DEPRECATE_WITH_REASON | — | 无需新测试，旧 `test-scanner.js` 保留 |
 | `core/quality-scorer.js` | `QualityScorer`, `createQualityScorer` | 无文件/网络副作用；仅依赖内存计算 | `score()` 不修改输入 | `../rules`, `../schemas` | WRAP | `src/server/cleaning/adapters/quality-adapter.ts` | `tests/unit/cleaning/adapters/quality-adapter.test.ts` |
 | `core/operation-logger.js` | `OperationLogger`, `createLogger` | **构造时 `mkdirSync` 创建日志目录**；运行时 `appendFileSync` 写日志 | 不修改业务数据 | `fs`, `path` | WRAP（禁用文件 I/O） | `src/server/cleaning/adapters/noop-logger-adapter.ts` | `tests/unit/cleaning/adapters/noop-logger-adapter.test.ts` |
@@ -38,10 +38,11 @@
 - **副作用**：
   - `DataCleaner` 构造函数默认 `new OperationLogger(options.loggerOptions)`，触发 `mkdirSync`。
   - `DataCleaner.preprocessMultimodal()` 调用 `ocr`, `asr`, `clip` 子模块（Phase 2 不使用）。
+  - **导入闭包副作用（关键）**：`data-cleaner.js` 顶部 `require('../schemas')` 和 `require('../config')` 会在模块加载时触发 `schemas/index.js` 读取 7 个 JSON schema 文件、`config/index.js` 读取 `synonyms.json` 与 `cleaning-rules.json`。简单 WRAP（即 `import` 旧模块再包装）无法避免这些 import-time 文件 I/O。
 - **可变输入**：每个 Cleaner 的 `clean(result, meta)` 先对 `result.data` 浅拷贝 `{ ...result.data }`，再修改副本；原始 `result` 对象中的数组（`errors`、`warnings`、`corrections`）通过 `push` 追加，但旧 pipeline 已先浅拷贝，因此输入对象不会被污染。不过 `DefaultValueCleaner` 对 `undefined/null/''` 统一填充默认值，语义上与 Phase 2 要求冲突。
-- **处理方式**：**WRAP**。新 Adapter 只复用 `FormatCleaner/EnumMappingCleaner` 的核心逻辑，并改造为不可变；`DefaultValueCleaner` 与 `NullToEmptyCleaner` 不直接复用，改为配置化 pipeline 步骤。
-- **新 Adapter**：`cleaner-adapter.ts` 导出 `adaptFormatClean`, `adaptEnumMapClean` 两个纯函数。
-- **契约测试**：断言 Adapter 输出为新对象；断言导入 Adapter 不创建 `src/data-cleaning/logs/`。
+- **处理方式**：**EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY**。由于导入闭包会触发 schema/config 的 import-time 文件读取，不得简单 WRAP（WRAP 仍需 `import` 旧模块，副作用无法隔离）。改为：从 `FormatCleaner.clean` 与 `EnumMappingCleaner.matchEnumValue` 中提取纯函数逻辑，重新实现为 TypeScript 纯函数，不 import 旧 `data-cleaner.js`；`DefaultValueCleaner` 与 `NullToEmptyCleaner` 不复用，改为配置化 pipeline 步骤。迁移期间旧模块保留但不被新服务端代码引用。
+- **新 Adapter**：`cleaner-adapter.ts` 导出 `adaptFormatClean`, `adaptEnumMapClean` 两个纯函数，内部不 `import` 旧 `data-cleaner.js`，而是直接调用 `utils-adapter.ts` 与 `config-adapter.ts` 提供的惰性加载接口。
+- **契约测试**：断言 Adapter 输出为新对象；断言导入 Adapter 不创建 `src/data-cleaning/logs/`；断言导入 Adapter 不触发 `schemas/index.js` 的 import-time 文件读取（通过 `fs.readFileSync` spy 验证）。
 
 ### 2.2 `core/operation-logger.js`
 
@@ -160,3 +161,50 @@
 3. **类型安全**：Adapter 内部可用 `any` 与旧 CJS 交互，但对外导出的函数必须带 TypeScript 类型。
 4. **不暴露旧类**：Adapter 不直接导出 `DataCleaner`、`QualityScorer` 等旧类实例，只导出纯函数。
 5. **DEPRECATE 模块不创建 Adapter**：对废弃模块，Phase 2 代码不 import；旧测试与脚本保持原样，但不得被新服务端代码引用。
+
+---
+
+## 四、LegacyModuleProfile 结构要求
+
+`src/server/cleaning/legacy-audit.ts` 中每个旧模块的 `LegacyModuleProfile` 记录必须包含以下 6 个字段。缺少任一字段视为审计不完整，Phase 2A 验收不通过。
+
+```typescript
+export interface LegacyModuleProfile {
+  /** 模块路径，如 'core/data-cleaner.js' */
+  module: string;
+  /** 模块导入是否安全（是否触发 import-time 文件 I/O、目录创建、全局缓存等副作用） */
+  importSafe: boolean;
+  /** 导入策略：'direct'（直接 import）/ 'lazy'（惰性加载）/ 'none'（不导入） */
+  importStrategy: 'direct' | 'lazy' | 'none';
+  /** 传递性副作用清单：被依赖模块的 import-time 副作用描述 */
+  transitiveSideEffects: string[];
+  /** 运行时互操作风险：CJS/ESM、默认导出形状、类型缺失等 */
+  runtimeInterop: string[];
+  /** 允许通过 Adapter 暴露的导出名单 */
+  allowedExports: string[];
+  /** 验证副作用隔离的测试断言描述 */
+  sideEffectTest: string;
+  /** 处理方式：REUSE / WRAP / EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY / DEPRECATE_WITH_REASON */
+  handling: 'REUSE' | 'WRAP' | 'EXTRACT_PURE_FUNCTION' | 'MIGRATE_INCREMENTALLY' | 'DEPRECATE_WITH_REASON';
+  /** 废弃原因（仅 DEPRECATE_WITH_REASON 时必填） */
+  deprecateReason?: string;
+}
+```
+
+**字段说明**：
+
+| 字段 | 必填 | 用途 | 示例 |
+|---|---|---|---|
+| `importSafe` | 是 | 判断该模块能否被直接 import 而不触发副作用 | `false`（`data-cleaner.js` 导入闭包触发 schema/config 文件读取） |
+| `importStrategy` | 是 | 指导 Adapter 如何导入旧模块 | `'none'`（`data-cleaner.js` 不导入，改为提取纯函数）；`'lazy'`（`schemas/index.js` 惰性加载） |
+| `transitiveSideEffects` | 是 | 记录传递性副作用，确保 Adapter 隔离时覆盖所有依赖链 | `['schemas/index.js import-time readFileSync x7', 'config/index.js import-time readFileSync x2']` |
+| `runtimeInterop` | 是 | 记录 CJS/ESM 互操作风险 | `['CJS module.exports，TS ESM 需 import * as', '无类型声明']` |
+| `allowedExports` | 是 | 限定 Adapter 只暴露白名单内的导出 | `['adaptFormatClean', 'adaptEnumMapClean']` |
+| `sideEffectTest` | 是 | 描述验证副作用隔离的测试方法 | `'fs.readFileSync spy 断言导入时不读文件；fs.existsSync 断言不创建 logs 目录'` |
+
+**规则**：
+
+- `importSafe=false` 的模块不得使用 `importStrategy='direct'`，必须改为 `'lazy'` 或 `'none'`。
+- `handling='WRAP'` 仅适用于 `importSafe=true` 或通过惰性加载可隔离副作用的模块；`importSafe=false` 且无法惰性加载的模块必须使用 `EXTRACT_PURE_FUNCTION` 或 `MIGRATE_INCREMENTALLY`。
+- `transitiveSideEffects` 必须覆盖直接依赖链中的所有 import-time 副作用，不得遗漏。
+- `sideEffectTest` 必须对应一个实际存在的测试用例，测试文件路径在 Phase 2A 审计时记录。

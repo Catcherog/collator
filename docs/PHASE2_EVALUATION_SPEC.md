@@ -1,6 +1,6 @@
 # Phase 2 评测规范
 
-> **状态**：DESIGN_APPROVED_WITH_REQUIRED_CHANGES  
+> **状态**：PLANNING_CORRECTION_APPLIED  
 > **用途**：明确 Phase 2 评测不是 LLM 抽取评测，而是 CandidateRecord 的确定性映射、清洗和校验评测  
 > **范围**：`src/server/cleaning/`、`src/server/services/ingestion-service.ts` 的 Phase 2 新增逻辑
 
@@ -213,7 +213,7 @@ else:
     "failed_cases": 8,
     "field_accuracy": 0.94,
     "required_preservation_recall": 0.98,
-    "enum_mapping_precision": 0.91,
+    "enum_mapping_precision": 0.96,
     "validation_detection_recall": 0.89,
     "safety_constraint_violations": 0,
     "overall_score_avg": 76.5
@@ -295,16 +295,18 @@ export function evaluateSingleCase(
 
 ## 十四、Pass/Fail 门槛
 
-| 指标 | 门槛 | 说明 |
-|---|---|---|
-| 字段准确率 | ≥ 90% | expected 声明字段 |
-| Required-field Preservation Recall | ≥ 95% | 必填字段保留 |
-| Enum Mapping Precision | ≥ 85% | 实际发生映射的字段 |
-| Validation Detection Recall | ≥ 85% | expected issue 检出 |
-| 安全约束违反 | = 0 | 硬门槛 |
-| 固定安全约束 | 全部通过 | 见第六节 |
+门槛分为主门槛与补充门槛。主门槛必须与《Collator 跨窗口实施手册 v1.0》第 11.3 节 Gate C 保持一致，不得低于手册指标；补充门槛用于辅助诊断，不影响主门槛的验收判定。
 
-任何一项未达标，Phase 2 验收不通过。
+| 指标 | 类别 | 门槛 | 说明 |
+|---|---|---|---|
+| 字段准确率 | 主门槛 | ≥ 90% | expected 声明字段 |
+| Required-field Preservation Recall | 主门槛 | ≥ 95% | 必填字段保留 |
+| Enum Mapping Precision | 主门槛 | ≥ 95% | 实际发生映射的字段（与手册 Gate C 一致） |
+| 安全约束违反 | 主门槛 | = 0 | 硬门槛 |
+| 固定安全约束 | 主门槛 | 全部通过 | 见第六节 |
+| Validation Detection Recall | 补充门槛 | ≥ 85% | expected issue 检出；仅用于诊断，不得用于降低主门槛验收标准 |
+
+任何一项主门槛未达标，Phase 2 验收不通过。补充门槛未达标时在报告中标记为风险项，但不直接阻断主门槛验收。
 
 ---
 

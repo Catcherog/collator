@@ -7,7 +7,7 @@
 - npm：v10.9.2
 - Dify：未配置
 - 飞书测试 Base：未配置
-- Commit：c1e199b
+- Commit：8d06da9
 
 ## 工程命令
 
@@ -102,3 +102,22 @@
 - **外部联动验收：BLOCKED_EXTERNAL_ENV**（未配置真实 Dify / 飞书环境，按手册要求不声称联动验收通过）
 
 > 整体状态：READY_FOR_PHASE_2
+
+## Phase 2 Planning Review
+
+- 本轮 Commit：见 `git log -1`（基线 edb68a4）
+- 本轮范围：仅 Planning 修正与跨窗口状态同步，未修改任何生产/测试代码
+
+| 检查项 | 状态 | 证据 |
+|---|---|---|
+| Planning Review 结果 | APPROVED_WITH_REQUIRED_CHANGES | 本轮提交完成全部必需修正 |
+| Enum Mapping Precision 门槛对齐手册 Gate C | PASSED | `PHASE2_EVALUATION_SPEC.md` 第十四节：≥95%（主门槛） |
+| Validation Detection Recall 定位为补充门槛 | PASSED | `PHASE2_EVALUATION_SPEC.md` 第十四节：≥85%（补充门槛，不降低主门槛） |
+| 状态语义冻结（业务 error→pending_review；validation_failed→执行层失败） | PASSED | `PHASE2_IMPLEMENTATION_PLAN.md` Phase 2E + `PHASE2_DATA_CONTRACTS.md` 2.8 节 |
+| Validator 执行异常显式表示 | PASSED | `PHASE2_DATA_CONTRACTS.md` 1.5 节 `execution_error` 字段 + 2.8 节状态转换表 |
+| 日期边界策略与测试要求 | PASSED | `PHASE2_DATA_CONTRACTS.md` 2.9 节（无效 timezone/received_at、DST、非法日期、年份推断） |
+| LegacyModuleProfile 6 字段要求 | PASSED | `PHASE2_ADAPTER_MAP.md` 第四章 + `PHASE2_IMPLEMENTATION_PLAN.md` Phase 2A 完成条件 |
+| `data-cleaner.js` 处理方式修正 | PASSED | `PHASE2_ADAPTER_MAP.md` 2.1 节：WRAP → EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY |
+| Phase 2A 生产代码 | NOT_STARTED | 本轮仅 Planning Correction，未修改生产/测试代码 |
+| Phase 2 全部实现（2A-2G） | NOT_STARTED | 待 Phase 2A 启动 |
+| Gate C 数据质量验收 | NOT_STARTED | 待 Phase 2F 评测集与 2G 验收证据 |
