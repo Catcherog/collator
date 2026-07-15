@@ -1,10 +1,10 @@
 # PROJECT STATE
 
-- 当前阶段：Phase 1
-- 状态：DONE
-- 最近更新：2026-07-15 18:55
+- 当前阶段：Phase 2
+- 状态：IN_PROGRESS
+- 最近更新：2026-07-15 22:45
 - 当前分支：main
-- 当前 Commit：b20a553
+- 当前 Commit：c1e199b
 - 当前版本：v1.0
 
 ## 已完成
@@ -33,14 +33,63 @@
 - 创建 `eslint.config.js` 与 `tsconfig.json`，完善 `package.json` 脚本。
 - 编写单元测试（signature、ingestion-service）与集成测试（ingestions HTTP API）。
 - 创建 `docs/API_CONTRACT.md` 接口合同。
+- **Phase 1 收尾审计**：
+  - 工作区干净（仅未跟踪的执行提示词文档）。
+  - `npm ci` + `typecheck` / `lint` / `test` / `test:integration` / `build` / `test:coverage` 全部通过。
+  - 15 项核心能力矩阵完整，HMAC 与脱敏均有测试。
+  - 核心服务可执行代码覆盖率基线：Stmts 90.3% / Branch 82.56% / Funcs 88.57% / Lines 90.3%。
+
+## Phase 1 能力矩阵
+
+| 能力 | 实现文件 | 测试文件 | 测试数量 | 状态 |
+|---|---|---|---:|---|
+| Fastify 应用入口 | src/server/app.ts | tests/integration/ingestions.test.ts | 10 | DONE |
+| 配置模块 | src/server/config.ts | tests/integration/ingestions.test.ts | 10 | DONE |
+| .env.example | .env.example | - | - | DONE |
+| GET /healthz | src/server/routes/health.ts | tests/integration/ingestions.test.ts | 10 | DONE |
+| GET /readyz | src/server/routes/health.ts | tests/integration/ingestions.test.ts | 10 | DONE |
+| POST /v1/ingestions | src/server/routes/ingestions.ts | tests/integration/ingestions.test.ts + tests/unit/ingestion-service.test.ts | 14 | DONE |
+| GET /v1/ingestions/:id | src/server/routes/ingestions.ts | tests/integration/ingestions.test.ts + tests/unit/ingestion-service.test.ts | 14 | DONE |
+| Candidate callback | src/server/routes/ingestions.ts + src/server/services/ingestion-service.ts | tests/integration/ingestions.test.ts + tests/unit/ingestion-service.test.ts | 14 | DONE |
+| approve | src/server/routes/ingestions.ts + src/server/services/ingestion-service.ts | tests/integration/ingestions.test.ts + tests/unit/ingestion-service.test.ts | 14 | DONE |
+| reject | src/server/routes/ingestions.ts + src/server/services/ingestion-service.ts | tests/integration/ingestions.test.ts + tests/unit/ingestion-service.test.ts | 14 | DONE |
+| InMemoryTaskRepository | src/server/repositories/in-memory-task-repository.ts | tests/unit/ingestion-service.test.ts | 10 | DONE |
+| Ingestion 状态机 | src/server/domain/ingestion.ts + src/server/services/ingestion-service.ts | tests/unit/ingestion-service.test.ts | 10 | DONE |
+| HMAC 时间戳验签 | src/server/security/signature.ts | tests/unit/signature.test.ts | 6 | DONE |
+| 日志脱敏 | src/server/security/redaction.ts | tests/integration/ingestions.test.ts | 10 | DONE |
+| 统一错误模型 | src/server/domain/errors.ts + src/server/app.ts | tests/integration/ingestions.test.ts + tests/unit/ingestion-service.test.ts | 16 | DONE |
+
+## 接口审计
+
+| 检查项 | 状态 | 证据 |
+|---|---|---|
+| 创建任务返回 HTTP 202 | PASSED | tests/integration/ingestions.test.ts |
+| 查询不存在任务返回 HTTP 404 | PASSED | tests/integration/ingestions.test.ts |
+| 非法输入返回 HTTP 400 | PASSED | tests/integration/ingestions.test.ts |
+| 非法状态跳转返回 HTTP 409 | PASSED | tests/unit/ingestion-service.test.ts |
+| 错误签名返回 HTTP 401 或 403 | PASSED | tests/integration/ingestions.test.ts + tests/unit/signature.test.ts |
+| 过期时间戳被拒绝 | PASSED | tests/unit/signature.test.ts |
+| 相同创建请求重复提交不创建第二条任务 | PASSED | tests/unit/ingestion-service.test.ts |
+| 相同 Candidate callback 重放不创建第二条审核结果 | PASSED | tests/unit/ingestion-service.test.ts |
+| reject 后不能 approve | PASSED | tests/unit/ingestion-service.test.ts |
+| completed 后重复 approve 不产生二次操作 | PASSED | tests/unit/ingestion-service.test.ts |
+
+## 覆盖率基线
+
+| 范围 | Statements | Branches | Functions | Lines |
+|---|---:|---:|---:|---:|
+| Core Service (`src/server` 可执行代码，排除纯类型文件) | 90.3% | 82.56% | 88.57% | 90.3% |
+| 全仓库（含旧 `src/data-cleaning`） | 3.05% | 47.12% | 26.49% | 3.05% |
+
+> 旧 `src/data-cleaning/**/*.js` 模块不在 V1 Core Service 范围内，未纳入核心覆盖率口径；将在 Phase 3 后逐步清理或替换。
 
 ## 验收状态
 
 | Gate | 状态 | 证据 |
 |---|---|---|
-| A 代码基线 | PASSED | `npm ci` / `typecheck` / `lint` / `test` / `test:integration` / `build` 全部通过 |
+| A 代码基线 | PASSED | `npm ci` / `typecheck` / `lint` / `test` / `test:integration` / `build` / `test:coverage` 全部通过 |
 | B API 合同 | PASSED | `docs/API_CONTRACT.md` + 10 项集成测试覆盖全部 V1 接口 |
-| C 数据质量 | NOT_STARTED | 无 50 条固定评测集与评测脚本（Phase 2 引入 Dify 后构建） |
+| C 数据质量 | IN_PROGRESS | Phase 2 正在构建 50 条固定评测集与评测脚本 |
 | D 飞书集成 | BLOCKED_EXTERNAL_ENV | 未配置测试 Base 凭据 |
 | E 安全隐私 | PASSED | 无 .env/Secret 入库；签名验签、脱敏、幂等均已测试 |
 | F 部署运行 | NOT_STARTED | 无 Dockerfile（Phase 5/6） |
@@ -59,10 +108,10 @@
 
 ## 下一步唯一动作
 
-1. 提交 Phase 1 代码到 Git。
-2. 进入 Phase 2：Dify Workflow 接入与结构化提取映射。
+1. 提交 Phase 1 收尾审计变更。
+2. 进入 Phase 2：清洗与验证接入，完成 CandidateRecord → 四步清洗 → 五重校验 → NormalizedRecord / QualityReport。
 
 ## 最近一次执行
 
-- 命令：`npm ci; npm run typecheck; npm run lint; npm run test; npm run test:integration; npm run build`
-- 结果：全部通过；单元测试 16 项，集成测试 10 项，共 26 项通过。
+- 命令：`npm ci; npm run typecheck; npm run lint; npm run test; npm run test:integration; npm run test:coverage; npm run build`
+- 结果：全部通过；单元测试 16 项，集成测试 10 项，共 26 项通过；核心服务覆盖率 Stmts 90.3% / Branch 82.56% / Funcs 88.57% / Lines 90.3%。
