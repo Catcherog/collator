@@ -1,0 +1,92 @@
+{
+  "tableId": "tblAHFeqwlQCKXcy",
+  "tableName": "爆款调研库表",
+  "primaryKey": {
+    "fieldId": "auto_number",
+    "fieldName": "爆款 ID",
+    "format": "自动递增"
+  },
+  "fields": [
+    {
+      "fieldName": "爆款 ID",
+      "fieldId": "auto_number",
+      "type": "auto_number",
+      "required": true,
+      "enumValues": [],
+      "description": "唯一主键，自动递增"
+    },
+    {
+      "fieldName": "平台来源",
+      "fieldId": "fld_platform",
+      "type": "select",
+      "required": true,
+      "enumValues": ["小红书", "抖音", "视频号", "其他"],
+      "description": "必填，识别关键词：平台、来自哪个平台、在哪看到的"
+    },
+    {
+      "fieldName": "爆款链接",
+      "fieldId": "fld_url",
+      "type": "text(url)",
+      "required": true,
+      "enumValues": [],
+      "description": "必填，完整的URL，识别关键词：链接、URL、地址、原文链接"
+    },
+    {
+      "fieldName": "爆款标题",
+      "fieldId": "fld_title",
+      "type": "text",
+      "required": true,
+      "enumValues": [],
+      "description": "必填，原始标题文本，识别关键词：标题、题目、叫什么、笔记标题"
+    },
+    {
+      "fieldName": "核心卖点",
+      "fieldId": "fld_selling_points",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "推荐填写，要点列举，识别关键词：卖点、为什么火、亮点、好在哪里"
+    },
+    {
+      "fieldName": "数据表现",
+      "fieldId": "fld_data",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "推荐填写，具体数字，识别关键词：数据、点赞数、播放量、收藏数、转化"
+    },
+    {
+      "fieldName": "拆解分析",
+      "fieldId": "fld_analysis",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，深度分析文本，识别关键词：分析、拆解、为什么成功、关键因素"
+    },
+    {
+      "fieldName": "适用拍摄类型",
+      "fieldId": "fld_shoot_type",
+      "type": "select",
+      "required": false,
+      "enumValues": ["亲子", "商业拍摄", "创作片"],
+      "description": "可选，与客户表拍摄类型枚举值相同，识别关键词：适用于什么拍摄、可用于哪些业务"
+    },
+    {
+      "fieldName": "关联成品",
+      "fieldId": "fld_related_products",
+      "type": "relation",
+      "required": false,
+      "enumValues": [],
+      "description": "系统维护，双向关联成品发布表"
+    }
+  ],
+  "relations": [
+    {
+      "relationField": "关联成品",
+      "targetTable": "tbljPr2PuZLFhSaI",
+      "targetField": "爆款参考来源",
+      "relationType": "one-to-many",
+      "description": "一个爆款案例可以被多个成品参考"
+    }
+  ]
+}

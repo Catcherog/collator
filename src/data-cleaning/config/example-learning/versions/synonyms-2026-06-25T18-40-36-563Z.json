@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "description": "示例同义词库",
+  "lastUpdated": "2026-06-25",
+  "styleSynonyms": {
+    "日系清新": [
+      "小清新",
+      "清新",
+      "日系"
+    ],
+    "法式浪漫": [
+      "浪漫",
+      "法式"
+    ]
+  },
+  "shootTypeMapping": {},
+  "sourceChannelMapping": {},
+  "budgetRangeMapping": {},
+  "timeExpressionMapping": {}
+}

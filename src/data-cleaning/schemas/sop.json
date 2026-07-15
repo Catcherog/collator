@@ -1,0 +1,84 @@
+{
+  "tableId": "tblBApBSUuftxltf",
+  "tableName": "SOP迭代优化管理表",
+  "primaryKey": {
+    "fieldId": "fld2Kyi4mt",
+    "fieldName": "优化 ID",
+    "format": "YH + 3位递增"
+  },
+  "fields": [
+    {
+      "fieldName": "优化 ID",
+      "fieldId": "fld2Kyi4mt",
+      "type": "auto_number",
+      "required": true,
+      "enumValues": [],
+      "description": "唯一主键，格式：YH + 3位递增"
+    },
+    {
+      "fieldName": "SOP 名称",
+      "fieldId": "fld_sop_name",
+      "type": "text",
+      "required": true,
+      "enumValues": [],
+      "description": "必填，如客户咨询接待SOP，识别关键词：名称、SOP名称、叫什么、流程名称"
+    },
+    {
+      "fieldName": "适用场景",
+      "fieldId": "fld_scenario",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "推荐填写，描述适用条件，识别关键词：场景、用于什么、适用范围、什么时候用"
+    },
+    {
+      "fieldName": "当前版本",
+      "fieldId": "fld_version",
+      "type": "text",
+      "required": true,
+      "enumValues": [],
+      "description": "必填，如V1.0、V2.1，识别关键词：版本、版本号、第几版、V几"
+    },
+    {
+      "fieldName": "SOP 状态",
+      "fieldId": "fld_status",
+      "type": "select",
+      "required": true,
+      "enumValues": ["草案", "试用中", "已发布", "已废弃"],
+      "description": "必填，识别关键词：状态、当前状态、是否可用"
+    },
+    {
+      "fieldName": "负责人",
+      "fieldId": "fld_owner",
+      "type": "user",
+      "required": true,
+      "enumValues": [],
+      "description": "必填，飞书用户，识别关键词：负责人、谁负责、维护者"
+    },
+    {
+      "fieldName": "最近更新内容",
+      "fieldId": "fld_update_content",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "推荐填写，本次更新的要点，识别关键词：更新内容、改了什么、新增了什么"
+    },
+    {
+      "fieldName": "更新时间",
+      "fieldId": "fld_update_time",
+      "type": "datetime",
+      "required": false,
+      "enumValues": [],
+      "description": "推荐填写，YYYY-MM-DD，识别关键词：更新时间、何时更新、最近修改"
+    },
+    {
+      "fieldName": "备注",
+      "fieldId": "fldD1H5x4q",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，自由文本，识别关键词：备注、说明、补充信息"
+    }
+  ],
+  "relations": []
+}

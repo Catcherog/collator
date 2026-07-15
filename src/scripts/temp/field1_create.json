@@ -1,0 +1,1 @@
+﻿{"type":"select","name":"MatrixAccount","multiple":false,"options":[{"name":"XHS_Main"},{"name":"XHS_Matrix_A"},{"name":"XHS_Matrix_B"},{"name":"DY_Main"},{"name":"DY_Matrix"},{"name":"WX_1"},{"name":"WX_2"},{"name":"WX_3"}],"description":"Matrix account for publishing"}

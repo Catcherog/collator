@@ -1,0 +1,124 @@
+[
+  {
+    "id": "resource-001",
+    "schemaKey": "resource",
+    "description": "标准资源（模特/场地）数据",
+    "input": {
+      "资源名称": "  阳光草地公园  ",
+      "联系方式": "13800138000",
+      "合作状态": "待沟通"
+    },
+    "expected": {
+      "cleanedData": {
+        "资源名称": "阳光草地公园",
+        "联系方式": "13800138000",
+        "合作状态": "待沟通"
+      },
+      "expectedStatus": "passed",
+      "minScore": 90
+    }
+  },
+  {
+    "id": "resource-002",
+    "schemaKey": "resource",
+    "description": "缺少必填联系方式",
+    "input": {
+      "资源名称": "复古咖啡馆",
+      "合作状态": "待沟通"
+    },
+    "expected": {
+      "cleanedData": {
+        "资源名称": "复古咖啡馆",
+        "合作状态": "待沟通"
+      },
+      "expectedStatus": "failed",
+      "expectedErrorCodes": ["REQUIRED_MISSING"],
+      "minScore": 55
+    }
+  },
+  {
+    "id": "resource-003",
+    "schemaKey": "resource",
+    "description": "微信号联系方式",
+    "input": {
+      "资源名称": "模特小美",
+      "联系方式": "model_xiaomei",
+      "合作状态": "意向合作",
+      "合作评分": "5"
+    },
+    "expected": {
+      "cleanedData": {
+        "资源名称": "模特小美",
+        "联系方式": "model_xiaomei",
+        "合作状态": "意向合作",
+        "合作评分": "5"
+      },
+      "expectedStatus": "passed",
+      "minScore": 85
+    }
+  },
+  {
+    "id": "resource-004",
+    "schemaKey": "resource",
+    "description": "合作评分超范围",
+    "input": {
+      "资源名称": "摄影师阿杰",
+      "联系方式": "13700137000",
+      "合作状态": "已合作",
+      "合作评分": "6"
+    },
+    "expected": {
+      "cleanedData": {
+        "资源名称": "摄影师阿杰",
+        "联系方式": "13700137000",
+        "合作状态": "已合作",
+        "合作评分": "6"
+      },
+      "expectedStatus": "failed",
+      "expectedErrorCodes": ["RANGE_ERROR"],
+      "minScore": 65
+    }
+  },
+  {
+    "id": "resource-005",
+    "schemaKey": "resource",
+    "description": "报价文本解析",
+    "input": {
+      "资源名称": "化妆师Lisa",
+      "联系方式": "13600136000",
+      "合作状态": "优质合作",
+      "合作报价": "800-1200元/天"
+    },
+    "expected": {
+      "cleanedData": {
+        "资源名称": "化妆师Lisa",
+        "联系方式": "13600136000",
+        "合作状态": "优质合作",
+        "合作报价": "800-1200元/天"
+      },
+      "expectedStatus": "passed",
+      "minScore": 85
+    }
+  },
+  {
+    "id": "resource-006",
+    "schemaKey": "resource",
+    "description": "作品链接URL",
+    "input": {
+      "资源名称": "日系民宿",
+      "联系方式": "13500135000",
+      "合作状态": "已合作",
+      "作品/实景超链接": "https://example.com/portfolio"
+    },
+    "expected": {
+      "cleanedData": {
+        "资源名称": "日系民宿",
+        "联系方式": "13500135000",
+        "合作状态": "已合作",
+        "作品/实景超链接": "https://example.com/portfolio"
+      },
+      "expectedStatus": "passed",
+      "minScore": 85
+    }
+  }
+]

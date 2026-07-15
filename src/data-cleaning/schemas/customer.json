@@ -1,0 +1,108 @@
+{
+  "tableId": "tblmRVrUnfodlzlo",
+  "tableName": "客户全生命周期管理表",
+  "primaryKey": {
+    "fieldId": "fldQYjP8fS",
+    "fieldName": "客户 ID",
+    "format": "KH + 递增数字"
+  },
+  "fields": [
+    {
+      "fieldName": "客户 ID",
+      "fieldId": "fldQYjP8fS",
+      "type": "auto_number",
+      "required": true,
+      "enumValues": [],
+      "description": "唯一主键，格式：KH + 递增数字"
+    },
+    {
+      "fieldName": "客户姓名",
+      "fieldId": "fldLJ0pI3r",
+      "type": "text",
+      "required": true,
+      "enumValues": [],
+      "description": "2-20个字符，纯文本，识别关键词：姓名、名字、客户名、称呼（王小姐/李先生）、宝妈、准新娘等"
+    },
+    {
+      "fieldName": "联系方式",
+      "fieldId": "fldWe5HzsK",
+      "type": "text(phone)",
+      "required": true,
+      "enumValues": [],
+      "description": "11位手机号或微信ID，识别关键词：手机、电话、手机号、联系方式、微信、加微、号码"
+    },
+    {
+      "fieldName": "来源渠道",
+      "fieldId": "fldctwRADH",
+      "type": "select",
+      "required": false,
+      "enumValues": ["小红书", "抖音", "视频号", "朋友圈", "老客转介绍", "线下", "其他"],
+      "description": "推荐填写，识别关键词：渠道、来源、从哪知道的、通过什么找到的、哪里看到的"
+    },
+    {
+      "fieldName": "咨询时间",
+      "fieldId": "fldbn404ws",
+      "type": "datetime",
+      "required": false,
+      "enumValues": [],
+      "description": "推荐填写，YYYY-MM-DD或自然语言日期，识别关键词：咨询日期、首次联系时间、什么时候咨询的、今天/昨天/上周"
+    },
+    {
+      "fieldName": "拍摄类型",
+      "fieldId": "fldgkqYdXU",
+      "type": "select",
+      "required": false,
+      "enumValues": ["亲子", "商业拍摄", "创作片"],
+      "description": "推荐填写，识别关键词：拍什么、拍什么类型的、亲子照、商业片、创作、写真"
+    },
+    {
+      "fieldName": "预算区间",
+      "fieldId": "fldcgPfn7R",
+      "type": "select",
+      "required": false,
+      "enumValues": ["1000元以下", "1000-2000元", "2000-3000元", "3000-5000元", "5000元以上"],
+      "description": "可选，识别关键词：预算、大概多少钱、价位、价格范围、能接受的价格"
+    },
+    {
+      "fieldName": "意向风格",
+      "fieldId": "fldIzkddYr",
+      "type": "multi-select",
+      "required": false,
+      "enumValues": ["日系清新", "韩系唯美", "复古胶片", "暗调情绪", "法式浪漫", "国潮古风"],
+      "description": "可选，支持多选，识别关键词：风格、喜欢什么风格、想要的感觉、风格偏好"
+    },
+    {
+      "fieldName": "跟进记录",
+      "fieldId": "fldz0Y0HnA",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，长文本支持换行，识别关键词：备注、跟进情况、沟通内容、特殊需求、注意事项"
+    },
+    {
+      "fieldName": "好评记录",
+      "fieldId": "fldITOyHQw",
+      "type": "text(url)",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，URL格式或文字描述，识别关键词：好评、返图、评价截图、好评链接、客户反馈"
+    },
+    {
+      "fieldName": "合同文件",
+      "fieldId": "fldosGlrHr",
+      "type": "attachment",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，附件上传，识别关键词：合同、签约合同、合同PDF、签字版合同"
+    }
+  ],
+  "relations": [
+    {
+      "relationField": "客户 ID",
+      "targetTable": "tblGDULWtzvXLvPm",
+      "targetField": "关联客户 ID",
+      "relationType": "one-to-many",
+      "description": "一个客户可以有多个拍摄项目"
+    }
+  ]
+}

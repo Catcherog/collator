@@ -1,0 +1,97 @@
+[
+  {
+    "id": "batch-001",
+    "schemaKey": "customer",
+    "description": "批量导入标准记录",
+    "input": {
+      "客户姓名": "批量客户A",
+      "联系方式": "13800138000",
+      "来源渠道": "小红书",
+      "预算区间": "3000-5000元"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "批量客户A",
+        "联系方式": "13800138000",
+        "来源渠道": "小红书",
+        "预算区间": "3000-5000元"
+      },
+      "expectedStatus": "passed",
+      "minScore": 90
+    }
+  },
+  {
+    "id": "batch-002",
+    "schemaKey": "customer",
+    "description": "批量导入含格式错误",
+    "input": {
+      "客户姓名": "批量客户B",
+      "联系方式": "138-0013-8000",
+      "来源渠道": "抖音",
+      "预算区间": "2000-3000元"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "批量客户B",
+        "联系方式": "13800138000",
+        "来源渠道": "抖音",
+        "预算区间": "2000-3000元"
+      },
+      "expectedStatus": "passed",
+      "minScore": 90
+    }
+  },
+  {
+    "id": "batch-003",
+    "schemaKey": "customer",
+    "description": "批量导入缺少必填字段",
+    "input": {
+      "客户姓名": "批量客户C",
+      "来源渠道": "朋友圈"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "批量客户C",
+        "来源渠道": "朋友圈"
+      },
+      "expectedStatus": "failed",
+      "expectedErrorCodes": ["REQUIRED_MISSING"],
+      "minScore": 50
+    }
+  },
+  {
+    "id": "batch-004",
+    "schemaKey": "customer",
+    "description": "批量导入同义词映射",
+    "input": {
+      "客户姓名": "批量客户D",
+      "联系方式": "13700137000",
+      "来源渠道": "小红书",
+      "意向风格": ["小清新", "韩系"],
+      "预算区间": "5000以上"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "批量客户D",
+        "联系方式": "13700137000",
+        "来源渠道": "小红书",
+        "意向风格": ["日系清新", "韩系唯美"],
+        "预算区间": "5000元以上"
+      },
+      "expectedStatus": "passed",
+      "minScore": 85
+    }
+  },
+  {
+    "id": "batch-005",
+    "schemaKey": "customer",
+    "description": "批量导入空记录",
+    "input": {},
+    "expected": {
+      "cleanedData": {},
+      "expectedStatus": "failed",
+      "expectedErrorCodes": ["REQUIRED_MISSING"],
+      "minScore": 0
+    }
+  }
+]

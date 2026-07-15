@@ -1,0 +1,80 @@
+{
+  "version": "2.0.0",
+  "bitable": {
+    "appToken": "MwGMbF0Q0alPc6s3jOccovvOnob",
+    "tables": {
+      "customer": {
+        "tableId": "tblmRVrUnfodlzlo",
+        "tableName": "客户全生命周期管理表",
+        "schemaKey": "customer"
+      },
+      "project": {
+        "tableId": "tblGDULWtzvXLvPm",
+        "tableName": "拍摄项目全流程管理表",
+        "schemaKey": "project"
+      },
+      "product": {
+        "tableId": "tbljPr2PuZLFhSaI",
+        "tableName": "成品发布与运营数据表",
+        "schemaKey": "product"
+      },
+      "resource": {
+        "tableId": "tblw4NagUnXw9yEw",
+        "tableName": "资源总库主表",
+        "schemaKey": "resource"
+      },
+      "material": {
+        "tableId": "tblho2dCpIDAonuc",
+        "tableName": "素材库目录管理表",
+        "schemaKey": "material"
+      },
+      "research": {
+        "tableId": "tblAHFeqwlQCKXcy",
+        "tableName": "爆款调研库表",
+        "schemaKey": "research"
+      },
+      "sop": {
+        "tableId": "tblBApBSUuftxltf",
+        "tableName": "SOP迭代优化管理表",
+        "schemaKey": "sop"
+      }
+    }
+  },
+  "wiki": {
+    "spaceId": "7633338901909785795",
+    "enabled": true,
+    "syncOnCreate": {
+      "resource": true,
+      "sop": true,
+      "project": true,
+      "research": true
+    }
+  },
+  "processing": {
+    "batchSize": 50,
+    "batchDelayMs": 200,
+    "maxRetries": 3,
+    "retryDelayMs": 1000,
+    "confidenceThreshold": {
+      "autoExecute": 0.9,
+      "suggestConfirm": 0.7,
+      "mustConfirm": 0.5
+    }
+  },
+  "ocr": {
+    "defaultEngine": "feishu",
+    "fallback": true,
+    "confidenceThreshold": 0.7
+  },
+  "logging": {
+    "logToFile": true,
+    "logDir": "src/data-cleaning/logs",
+    "logLevel": "info",
+    "asciiOnlyInLogs": true
+  },
+  "rollback": {
+    "enabled": true,
+    "snapshotBeforeBatch": true,
+    "maxSnapshots": 10
+  }
+}

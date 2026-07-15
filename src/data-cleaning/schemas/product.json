@@ -1,0 +1,147 @@
+{
+  "tableId": "tbljPr2PuZLFhSaI",
+  "tableName": "成品发布与运营数据表",
+  "primaryKey": {
+    "fieldId": "fldhCxTtoc",
+    "fieldName": "成品 ID",
+    "format": "CP + 日期 + 3位递增"
+  },
+  "fields": [
+    {
+      "fieldName": "成品 ID",
+      "fieldId": "fldhCxTtoc",
+      "type": "auto_number",
+      "required": true,
+      "enumValues": [],
+      "description": "唯一主键，格式：CP + 日期 + 3位递增"
+    },
+    {
+      "fieldName": "发布标题",
+      "fieldId": "fldJTZvyfK",
+      "type": "text",
+      "required": true,
+      "enumValues": [],
+      "description": "自由文本，建议包含关键词，识别关键词：标题、标题名称、笔记标题、文案标题、发布主题"
+    },
+    {
+      "fieldName": "所属平台",
+      "fieldId": "fldaR5yft2",
+      "type": "select",
+      "required": true,
+      "enumValues": ["小红书", "抖音", "视频号", "朋友圈"],
+      "description": "必填，识别关键词：平台、发到哪里、在哪个平台发布、小红书/抖音"
+    },
+    {
+      "fieldName": "发布状态",
+      "fieldId": "fld676fR9O",
+      "type": "select",
+      "required": true,
+      "enumValues": ["待制作", "待审核", "待发布", "已发布", "已下架"],
+      "description": "必填，有序状态机，默认值：待制作，识别关键词：状态、当前状态、进度、是否已发布"
+    },
+    {
+      "fieldName": "计划发布时间",
+      "fieldId": "fldKeDuqJR",
+      "type": "datetime",
+      "required": false,
+      "enumValues": [],
+      "description": "推荐填写，YYYY-MM-DD，识别关键词：计划时间、预计发布、打算什么时候发、排期"
+    },
+    {
+      "fieldName": "发布文案",
+      "fieldId": "fldj0Lb7X2",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "推荐填写，长文本支持emoji和话题标签，识别关键词：文案、正文、内容、写什么、描述"
+    },
+    {
+      "fieldName": "标签/话题组合",
+      "fieldId": "fldsXjqP3y",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，以空格或逗号分隔的话题列表，识别关键词：标签、话题、hashtag、tag、井号"
+    },
+    {
+      "fieldName": "成品文件",
+      "fieldId": "fldNphxLbE",
+      "type": "attachment",
+      "required": true,
+      "enumValues": [],
+      "description": "必填，图片或视频附件，识别关键词：成品、图片、视频、封面、成片文件"
+    },
+    {
+      "fieldName": "核心数据",
+      "fieldId": "fldYVKIa4D",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，文本形式的数据汇总，识别关键词：数据、播放量、点赞、评论、收藏、转化、效果"
+    },
+    {
+      "fieldName": "实际发布时间",
+      "fieldId": "fldfT4Gw22",
+      "type": "datetime",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，YYYY-MM-DD HH:mm:ss，识别关键词：发布时间、实际发出时间、何时发布的"
+    },
+    {
+      "fieldName": "数据抓取时间",
+      "fieldId": "flduC5yaZH",
+      "type": "datetime",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，YYYY-MM-DD，识别关键词：抓取时间、数据更新时间、何时查看的数据"
+    },
+    {
+      "fieldName": "Trae数据分析",
+      "fieldId": "fldCU4SmSP",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，自动生成不建议手动填写，识别关键词：分析、AI分析、数据解读、优化建议"
+    },
+    {
+      "fieldName": "备注",
+      "fieldId": "fld2MKsy4C",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，自由文本，识别关键词：备注、说明、其他信息"
+    },
+    {
+      "fieldName": "所属项目",
+      "fieldId": "fld3o0xkiN",
+      "type": "relation",
+      "required": false,
+      "enumValues": [],
+      "description": "系统维护，双向关联拍摄项目表"
+    },
+    {
+      "fieldName": "爆款参考来源",
+      "fieldId": "fldT968zGy",
+      "type": "relation",
+      "required": false,
+      "enumValues": [],
+      "description": "系统维护，双向关联爆款调研库"
+    }
+  ],
+  "relations": [
+    {
+      "relationField": "所属项目",
+      "targetTable": "tblGDULWtzvXLvPm",
+      "targetField": "关联成品 ID",
+      "relationType": "many-to-one",
+      "description": "多个成品属于一个项目"
+    },
+    {
+      "relationField": "爆款参考来源",
+      "targetTable": "tblAHFeqwlQCKXcy",
+      "targetField": "关联成品",
+      "relationType": "many-to-many",
+      "description": "成品可以参考多个爆款案例"
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{"type":"select","name":"TargetPlatform","multiple":true,"options":[{"name":"XHS"},{"name":"DY"},{"name":"Moments"},{"name":"Channels"}],"description":"Target platforms for publishing"}

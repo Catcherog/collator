@@ -1,0 +1,52 @@
+[
+  {
+    "image": "fixtures/business-cards/card-001.png",
+    "scene": "business-card",
+    "expectedText": "张三 13800138000 微信 zhangsan001 北京朝阳区",
+    "expectedFields": {
+      "资源名称": "张三",
+      "联系方式": "13800138000",
+      "备注": "微信 zhangsan001"
+    }
+  },
+  {
+    "image": "fixtures/business-cards/card-002.png",
+    "scene": "business-card",
+    "expectedText": "李四 模特 13900139000 微信 lisi_model",
+    "expectedFields": {
+      "资源名称": "李四",
+      "联系方式": "13900139000",
+      "备注": "微信 lisi_model"
+    }
+  },
+  {
+    "image": "fixtures/chat-screenshots/chat-001.png",
+    "scene": "chat-screenshot",
+    "expectedText": "你好，我想拍一组日系清新亲子照，预算3000到5000，手机号13800138000",
+    "expectedFields": {
+      "拍摄类型": "亲子",
+      "意向风格": ["日系清新"],
+      "预算区间": "3000-5000元",
+      "联系方式": "13800138000"
+    }
+  },
+  {
+    "image": "fixtures/chat-screenshots/chat-002.png",
+    "scene": "chat-screenshot",
+    "expectedText": "想咨询一下复古胶片风格的创作片，大概5000左右",
+    "expectedFields": {
+      "拍摄类型": "创作片",
+      "意向风格": ["复古胶片"],
+      "预算区间": "3000-5000元"
+    }
+  },
+  {
+    "image": "fixtures/contract-screenshots/contract-001.png",
+    "scene": "contract-screenshot",
+    "expectedText": "合同金额 8000元 签订日期 2025-06-20 项目名称 商业拍摄",
+    "expectedFields": {
+      "成交金额": 8000,
+      "成交日期": "2025-06-20"
+    }
+  }
+]

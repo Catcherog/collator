@@ -1,0 +1,169 @@
+{
+  "tableId": "tblGDULWtzvXLvPm",
+  "tableName": "拍摄项目全流程管理表",
+  "primaryKey": {
+    "fieldId": "fldPM5EuXE",
+    "fieldName": "ID",
+    "format": "NO. + 3位递增"
+  },
+  "fields": [
+    {
+      "fieldName": "ID",
+      "fieldId": "fldPM5EuXE",
+      "type": "auto_number",
+      "required": true,
+      "enumValues": [],
+      "description": "唯一主键，格式：NO. + 3位递增"
+    },
+    {
+      "fieldName": "项目名称",
+      "fieldId": "fldTLeO0nL",
+      "type": "text",
+      "required": true,
+      "enumValues": [],
+      "description": "自由文本，建议格式：[客户名]-[拍摄类型]-[日期]，识别关键词：项目名称、项目名、这次拍摄叫什么、主题"
+    },
+    {
+      "fieldName": "客户姓名",
+      "fieldId": "fldJeSf4KT",
+      "type": "text",
+      "required": true,
+      "enumValues": [],
+      "description": "必须与客户表中已有记录匹配，识别关键词：客户、客户名、谁要拍、为谁拍摄"
+    },
+    {
+      "fieldName": "项目类型",
+      "fieldId": "fldgf1OLpt",
+      "type": "select",
+      "required": true,
+      "enumValues": ["客片", "商业创作", "内部创作片"],
+      "description": "必填，识别关键词：类型、项目类型、客片/商业/创作"
+    },
+    {
+      "fieldName": "项目状态",
+      "fieldId": "fldCMpqIqb",
+      "type": "select",
+      "required": true,
+      "enumValues": ["待立项", "待策划", "待拍摄", "拍摄完成", "初筛完成", "修图中", "已交付", "已归档"],
+      "description": "必填，有序状态机，默认值：待立项，识别关键词：状态、进度、目前什么阶段、进展"
+    },
+    {
+      "fieldName": "拍摄日期",
+      "fieldId": "fldxw8qUF0",
+      "type": "datetime",
+      "required": true,
+      "enumValues": [],
+      "description": "必填，YYYY-MM-DD或自然语言日期，识别关键词：拍摄时间、拍摄日期、什么时候拍、档期"
+    },
+    {
+      "fieldName": "拍摄地点",
+      "fieldId": "fldOTNcvAo",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "推荐填写，具体地址或场地名称，识别关键词：地点、在哪里拍、拍摄场地、外景/内景"
+    },
+    {
+      "fieldName": "拍摄风格",
+      "fieldId": "fldi6ZtF5E",
+      "type": "select",
+      "required": false,
+      "enumValues": ["日系清新", "韩系唯美", "复古胶片", "暗调情绪", "法式浪漫", "国潮古风"],
+      "description": "推荐填写，与客户表意向风格枚举值相同，识别关键词：风格、拍摄风格、想要的效果"
+    },
+    {
+      "fieldName": "项目负责人",
+      "fieldId": "fldxw8qUF0",
+      "type": "user",
+      "required": true,
+      "enumValues": [],
+      "description": "必填，飞书用户（人员字段），识别关键词：摄影、摄影师、谁负责、主拍"
+    },
+    {
+      "fieldName": "参与人员",
+      "fieldId": "fld7MXN8If",
+      "type": "user(multi)",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，多选飞书用户，识别关键词：助理、化妆师、修图师、团队成员、配合人员"
+    },
+    {
+      "fieldName": "策划案文件",
+      "fieldId": "fldG1rQOO7",
+      "type": "attachment",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，附件上传，识别关键词：策划案、策划文档、方案、策划PDF"
+    },
+    {
+      "fieldName": "备注",
+      "fieldId": "fldTLeO0nL",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，长文本，识别关键词：备注、说明、特殊情况、注意事项"
+    },
+    {
+      "fieldName": "关联客户 ID",
+      "fieldId": "fldJeSf4KT",
+      "type": "relation",
+      "required": false,
+      "enumValues": [],
+      "description": "系统维护，双向关联客户表"
+    },
+    {
+      "fieldName": "关联成品 ID",
+      "fieldId": "fldmAdyvJ6",
+      "type": "relation",
+      "required": false,
+      "enumValues": [],
+      "description": "系统维护，双向关联成品发布表"
+    },
+    {
+      "fieldName": "关联资源 ID",
+      "fieldId": "fldlZu8rKr",
+      "type": "relation",
+      "required": false,
+      "enumValues": [],
+      "description": "系统维护，双向关联资源总库"
+    },
+    {
+      "fieldName": "关联素材记录",
+      "fieldId": "fldDe6e6kF",
+      "type": "relation",
+      "required": false,
+      "enumValues": [],
+      "description": "系统维护，双向关联素材库"
+    }
+  ],
+  "relations": [
+    {
+      "relationField": "关联客户 ID",
+      "targetTable": "tblmRVrUnfodlzlo",
+      "targetField": "客户 ID",
+      "relationType": "many-to-one",
+      "description": "多个项目属于一个客户"
+    },
+    {
+      "relationField": "关联成品 ID",
+      "targetTable": "tbljPr2PuZLFhSaI",
+      "targetField": "所属项目",
+      "relationType": "one-to-many",
+      "description": "一个项目可以有多个成品"
+    },
+    {
+      "relationField": "关联资源 ID",
+      "targetTable": "tblw4NagUnXw9yEw",
+      "targetField": "关联项目记录",
+      "relationType": "many-to-many",
+      "description": "项目与资源多对多关联"
+    },
+    {
+      "relationField": "关联素材记录",
+      "targetTable": "tblho2dCpIDAonuc",
+      "targetField": "关联项目 ID",
+      "relationType": "one-to-many",
+      "description": "一个项目可以有多条素材记录"
+    }
+  ]
+}

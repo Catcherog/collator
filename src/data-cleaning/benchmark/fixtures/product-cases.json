@@ -1,0 +1,109 @@
+[
+  {
+    "id": "product-001",
+    "schemaKey": "product",
+    "description": "标准成品发布数据",
+    "input": {
+      "发布标题": "  日系清新亲子照  ",
+      "所属平台": "小红书",
+      "发布状态": "待制作",
+      "成品文件": ["image1.jpg"]
+    },
+    "expected": {
+      "cleanedData": {
+        "发布标题": "日系清新亲子照",
+        "所属平台": "小红书",
+        "发布状态": "待制作",
+        "成品文件": ["image1.jpg"]
+      },
+      "expectedStatus": "passed",
+      "minScore": 90
+    }
+  },
+  {
+    "id": "product-002",
+    "schemaKey": "product",
+    "description": "缺少必填成品文件",
+    "input": {
+      "发布标题": "暗调情绪写真",
+      "所属平台": "抖音",
+      "发布状态": "待制作"
+    },
+    "expected": {
+      "cleanedData": {
+        "发布标题": "暗调情绪写真",
+        "所属平台": "抖音",
+        "发布状态": "待制作"
+      },
+      "expectedStatus": "failed",
+      "expectedErrorCodes": ["REQUIRED_MISSING"],
+      "minScore": 55
+    }
+  },
+  {
+    "id": "product-003",
+    "schemaKey": "product",
+    "description": "非法平台枚举值",
+    "input": {
+      "发布标题": "韩系唯美写真",
+      "所属平台": "B站",
+      "发布状态": "待发布",
+      "成品文件": ["image2.jpg"]
+    },
+    "expected": {
+      "cleanedData": {
+        "发布标题": "韩系唯美写真",
+        "所属平台": "B站",
+        "发布状态": "待发布",
+        "成品文件": ["image2.jpg"]
+      },
+      "expectedStatus": "failed",
+      "expectedErrorCodes": ["ENUM_MISMATCH"],
+      "minScore": 70
+    }
+  },
+  {
+    "id": "product-004",
+    "schemaKey": "product",
+    "description": "状态机非法跳转",
+    "input": {
+      "发布标题": "法式浪漫婚纱",
+      "所属平台": "朋友圈",
+      "发布状态": "已下架",
+      "成品文件": ["image3.jpg"]
+    },
+    "expected": {
+      "cleanedData": {
+        "发布标题": "法式浪漫婚纱",
+        "所属平台": "朋友圈",
+        "发布状态": "已下架",
+        "成品文件": ["image3.jpg"]
+      },
+      "expectedStatus": "passed",
+      "minScore": 80
+    }
+  },
+  {
+    "id": "product-005",
+    "schemaKey": "product",
+    "description": "发布文案含话题标签",
+    "input": {
+      "发布标题": "复古胶片创作",
+      "所属平台": "小红书",
+      "发布状态": "待审核",
+      "发布文案": "  #复古胶片 #创作片 #摄影\n一组暗调情绪的创作  ",
+      "成品文件": ["image4.jpg"]
+    },
+    "expected": {
+      "cleanedData": {
+        "发布标题": "复古胶片创作",
+        "所属平台": "小红书",
+        "发布状态": "待审核",
+        "发布文案": "#复古胶片 #创作片 #摄影 一组暗调情绪的创作",
+        "成品文件": ["image4.jpg"]
+      },
+      "expectedStatus": "passed",
+      "minScore": 85
+    }
+  }
+]

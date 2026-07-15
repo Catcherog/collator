@@ -1,0 +1,224 @@
+{
+  "version": "1.0.0",
+  "description": "数据清洗规则配置",
+  "lastUpdated": "2026-06-26",
+  "fieldFormatRules": {
+    "phone": {
+      "pattern": "^1[3-9]\\d{9}$",
+      "description": "11位中国手机号",
+      "sanitize": true,
+      "sanitizeRules": [
+        { "action": "remove", "pattern": "[\\s\\-()（）]" },
+        { "action": "trim" }
+      ],
+      "errorMessage": "手机号格式不正确，应为11位数字"
+    },
+    "wechat": {
+      "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{5,19}$|^1[3-9]\\d{9}$",
+      "description": "微信号（6-20位，字母开头）或手机号",
+      "sanitize": true,
+      "sanitizeRules": [
+        { "action": "trim" }
+      ],
+      "errorMessage": "微信号格式不正确"
+    },
+    "date": {
+      "formats": ["YYYY-MM-DD", "YYYY/MM/DD", "YYYY年MM月DD日"],
+      "naturalLanguage": true,
+      "sanitize": true,
+      "sanitizeRules": [
+        { "action": "trim" }
+      ],
+      "errorMessage": "日期格式不正确"
+    },
+    "datetime": {
+      "formats": ["YYYY-MM-DD HH:mm:ss", "YYYY-MM-DD HH:mm", "YYYY-MM-DD"],
+      "naturalLanguage": true,
+      "sanitize": true,
+      "errorMessage": "日期时间格式不正确"
+    },
+    "url": {
+      "pattern": "^https?://[\\w\\-]+(\\.[\\w\\-]+)+[/#?]?.*$",
+      "description": "HTTP/HTTPS URL",
+      "sanitize": true,
+      "sanitizeRules": [
+        { "action": "trim" }
+      ],
+      "errorMessage": "URL格式不正确，应以http://或https://开头"
+    },
+    "amount": {
+      "patterns": [
+        { "pattern": "(\\d+(?:\\.\\d+)?)\\s*元?", "extract": "number" },
+        { "pattern": "(\\d+)k", "multiply": 1000 }
+      ],
+      "keywords": {
+        "多": "ceilToNextRange",
+        "左右": "approximate",
+        "大概": "approximate"
+      },
+      "sanitize": true,
+      "sanitizeRules": [
+        { "action": "remove", "pattern": "[，,]" },
+        { "action": "trim" }
+      ]
+    },
+    "rating": {
+      "min": 1,
+      "max": 5,
+      "type": "integer",
+      "description": "1-5分评分"
+    }
+  },
+  "deduplicationRules": {
+    "customer": {
+      "uniqueFields": ["联系方式"],
+      "fuzzyMatchFields": ["客户姓名", "联系方式"],
+      "matchThreshold": 0.85,
+      "action": "prompt",
+      "promptOptions": ["update", "skip", "force_create"]
+    },
+    "project": {
+      "uniqueFields": ["项目名称", "拍摄日期"],
+      "fuzzyMatchFields": ["项目名称"],
+      "matchThreshold": 0.9,
+      "action": "prompt"
+    },
+    "resource": {
+      "uniqueFields": ["资源名称", "联系方式"],
+      "fuzzyMatchFields": ["资源名称"],
+      "matchThreshold": 0.85,
+      "action": "prompt"
+    }
+  },
+  "validationLevels": {
+    "required": {
+      "level": "block",
+      "action": "stop_and_request",
+      "message": "缺少必填字段，请补充后继续"
+    },
+    "recommended": {
+      "level": "warn",
+      "action": "prompt",
+      "message": "缺少推荐字段，建议补充"
+    },
+    "optional": {
+      "level": "info",
+      "action": "auto_fill_default",
+      "message": ""
+    }
+  },
+  "scoringWeights": {
+    "dataQuality": {
+      "requiredFieldsComplete": 0.4,
+      "recommendedFieldsComplete": 0.2,
+      "formatValid": 0.2,
+      "noDuplicates": 0.2
+    },
+    "confidenceThresholds": {
+      "autoAccept": 0.9,
+      "autoCorrect": 0.7,
+      "needsConfirmation": 0.5,
+      "reject": 0.3
+    },
+    "resourceRating": {
+      "cooperationQuality": 0.35,
+      "punctuality": 0.25,
+      "pricePerformance": 0.2,
+      "communication": 0.2
+    },
+    "contentPerformance": {
+      "likes": 0.25,
+      "comments": 0.2,
+      "saves": 0.25,
+      "shares": 0.15,
+      "conversion": 0.15
+    }
+  },
+  "logicConsistencyRules": [
+    {
+      "name": "shoot_date_after_consult_date",
+      "description": "拍摄日期应晚于咨询日期",
+      "level": "warning",
+      "condition": "project.shootDate >= customer.consultDate"
+    },
+    {
+      "name": "product_publish_after_shoot",
+      "description": "成品发布时间应晚于拍摄完成时间",
+      "level": "warning",
+      "condition": "product.publishDate >= project.completionDate"
+    },
+    {
+      "name": "material_archive_near_shoot",
+      "description": "素材归档时间应接近拍摄时间（±1天）",
+      "level": "info",
+      "condition": "Math.abs(material.archiveDate - project.shootDate) <= 1"
+    },
+    {
+      "name": "parent_child_no_dark_style",
+      "description": "亲子类型拍摄通常不含暗调情绪风格",
+      "level": "info",
+      "condition": "customer.shootType !== '亲子' || !customer.intendedStyle.includes('暗调情绪')"
+    }
+  ],
+  "stateMachines": {
+    "projectStatus": {
+      "states": ["待立项", "待策划", "待拍摄", "拍摄完成", "初筛完成", "修图中", "已交付", "已归档"],
+      "initial": "待立项",
+      "transitions": {
+        "待立项": ["待策划"],
+        "待策划": ["待拍摄"],
+        "待拍摄": ["拍摄完成"],
+        "拍摄完成": ["初筛完成"],
+        "初筛完成": ["修图中"],
+        "修图中": ["已交付"],
+        "已交付": ["已归档"],
+        "已归档": []
+      },
+      "allowRollback": false,
+      "allowJump": false
+    },
+    "productStatus": {
+      "states": ["待制作", "待审核", "待发布", "已发布", "已下架"],
+      "initial": "待制作",
+      "transitions": {
+        "待制作": ["待审核"],
+        "待审核": ["待发布", "待制作"],
+        "待发布": ["已发布"],
+        "已发布": ["已下架"],
+        "已下架": []
+      }
+    },
+    "resourceStatus": {
+      "states": ["待沟通", "意向合作", "已合作", "优质合作", "暂停合作"],
+      "initial": "待沟通",
+      "transitions": {
+        "待沟通": ["意向合作", "暂停合作"],
+        "意向合作": ["已合作", "暂停合作"],
+        "已合作": ["优质合作", "暂停合作"],
+        "优质合作": ["暂停合作"],
+        "暂停合作": ["待沟通", "意向合作"]
+      }
+    },
+    "materialStatus": {
+      "states": ["待归档", "已归档", "已初筛", "已调用", "已废弃"],
+      "initial": "待归档",
+      "transitions": {
+        "待归档": ["已归档", "已废弃"],
+        "已归档": ["已初筛", "已废弃"],
+        "已初筛": ["已调用", "已废弃"],
+        "已调用": ["已废弃"],
+        "已废弃": []
+      }
+    },
+    "sopStatus": {
+      "states": ["草案", "试用中", "已发布", "已废弃"],
+      "initial": "草案",
+      "transitions": {
+        "草案": ["试用中", "已废弃"],
+        "试用中": ["已发布", "已废弃", "草案"],
+        "已发布": ["已废弃"],
+        "已废弃": []
+      }
+    }
+  }
+}

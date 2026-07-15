@@ -1,0 +1,1 @@
+lark-cli base +field-list --base-token MwGMbF0Q0alPc6s3jOccovvOnob --table-id tbljPr2PuZLFhSaI --as user

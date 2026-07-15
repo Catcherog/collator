@@ -1,0 +1,1 @@
+lark-cli drive files list --as user --page-limit 1 --format table

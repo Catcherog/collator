@@ -1,0 +1,1 @@
+{"type": "select", "name": "目标平台", "multiple": true, "options": [{"name": "小红书", "hue": "Red", "lightness": "Light"}, {"name": "抖音", "hue": "Blue", "lightness": "Light"}, {"name": "朋友圈", "hue": "Green", "lightness": "Light"}, {"name": "视频号", "hue": "Purple", "lightness": "Light"}], "description": "此素材应该发布到哪些平台（全平台发布）"}

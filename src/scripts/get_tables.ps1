@@ -1,0 +1,1 @@
+lark-cli base +table-list --base-token MwGMbF0Q0alPc6s3jOccovvOnob --as user

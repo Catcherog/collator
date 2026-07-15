@@ -1,0 +1,255 @@
+[
+  {
+    "id": "customer-001",
+    "schemaKey": "customer",
+    "description": "手机号含横杠，姓名含前后空格",
+    "input": {
+      "客户姓名": "  李婷  ",
+      "联系方式": "138-1234-5678",
+      "来源渠道": "小红书",
+      "预算区间": "3000-5000元",
+      "咨询时间": "2025-06-26"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "李婷",
+        "联系方式": "13812345678",
+        "来源渠道": "小红书",
+        "预算区间": "3000-5000元",
+        "咨询时间": "2025-06-26"
+      },
+      "expectedCorrections": [
+        { "field": "客户姓名", "original": "  李婷  ", "corrected": "李婷" },
+        { "field": "联系方式", "original": "138-1234-5678", "corrected": "13812345678" }
+      ],
+      "expectedStatus": "passed",
+      "minScore": 90
+    }
+  },
+  {
+    "id": "customer-002",
+    "schemaKey": "customer",
+    "description": "同义词映射：小清新→日系清新",
+    "input": {
+      "客户姓名": "王小姐",
+      "联系方式": "13900139000",
+      "意向风格": ["小清新"],
+      "预算区间": "2000左右",
+      "来源渠道": "小红书"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "王小姐",
+        "联系方式": "13900139000",
+        "意向风格": ["日系清新"],
+        "预算区间": "2000-3000元",
+        "来源渠道": "小红书"
+      },
+      "expectedStatus": "passed",
+      "minScore": 85
+    }
+  },
+  {
+    "id": "customer-003",
+    "schemaKey": "customer",
+    "description": "缺少必填字段联系方式",
+    "input": {
+      "客户姓名": "张先生",
+      "来源渠道": "抖音",
+      "咨询时间": "2025-06-25"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "张先生",
+        "来源渠道": "抖音",
+        "咨询时间": "2025-06-25"
+      },
+      "expectedStatus": "failed",
+      "expectedErrorCodes": ["REQUIRED_MISSING"],
+      "minScore": 50
+    }
+  },
+  {
+    "id": "customer-004",
+    "schemaKey": "customer",
+    "description": "手机号格式错误",
+    "input": {
+      "客户姓名": "李女士",
+      "联系方式": "12345678901",
+      "来源渠道": "朋友圈",
+      "咨询时间": "2025-06-24"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "李女士",
+        "联系方式": "12345678901",
+        "来源渠道": "朋友圈",
+        "咨询时间": "2025-06-24"
+      },
+      "expectedStatus": "failed",
+      "expectedErrorCodes": ["FORMAT_ERROR"],
+      "minScore": 60
+    }
+  },
+  {
+    "id": "customer-005",
+    "schemaKey": "customer",
+    "description": "自然语言日期：今天",
+    "input": {
+      "客户姓名": "陈先生",
+      "联系方式": "13700137000",
+      "来源渠道": "老客转介绍",
+      "咨询时间": "今天"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "陈先生",
+        "联系方式": "13700137000",
+        "来源渠道": "老客转介绍"
+      },
+      "expectedStatus": "passed",
+      "minScore": 85
+    }
+  },
+  {
+    "id": "customer-006",
+    "schemaKey": "customer",
+    "description": "全角字符与多余空格",
+    "input": {
+      "客户姓名": "　赵女士　",
+      "联系方式": "１３６００１３６０００",
+      "来源渠道": "线下",
+      "预算区间": "5k左右"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "赵女士",
+        "联系方式": "13600136000",
+        "来源渠道": "线下",
+        "预算区间": "5000元以上"
+      },
+      "expectedStatus": "passed",
+      "minScore": 85
+    }
+  },
+  {
+    "id": "customer-007",
+    "schemaKey": "customer",
+    "description": "多选风格含同义词",
+    "input": {
+      "客户姓名": "刘女士",
+      "联系方式": "13500135000",
+      "意向风格": ["法式", "复古胶片风"],
+      "预算区间": "5000以上",
+      "来源渠道": "视频号"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "刘女士",
+        "联系方式": "13500135000",
+        "意向风格": ["法式浪漫", "复古胶片"],
+        "预算区间": "5000元以上",
+        "来源渠道": "视频号"
+      },
+      "expectedStatus": "passed",
+      "minScore": 85
+    }
+  },
+  {
+    "id": "customer-008",
+    "schemaKey": "customer",
+    "description": "未知枚举值",
+    "input": {
+      "客户姓名": "孙女士",
+      "联系方式": "13400134000",
+      "来源渠道": "微博",
+      "预算区间": "3000-5000元"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "孙女士",
+        "联系方式": "13400134000",
+        "来源渠道": "微博",
+        "预算区间": "3000-5000元"
+      },
+      "expectedStatus": "failed",
+      "expectedErrorCodes": ["ENUM_MISMATCH"],
+      "minScore": 70
+    }
+  },
+  {
+    "id": "customer-009",
+    "schemaKey": "customer",
+    "description": "预算边界值：1000元",
+    "input": {
+      "客户姓名": "周先生",
+      "联系方式": "13300133000",
+      "来源渠道": "小红书",
+      "预算区间": "1000元"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "周先生",
+        "联系方式": "13300133000",
+        "来源渠道": "小红书",
+        "预算区间": "1000元以下"
+      },
+      "expectedStatus": "passed",
+      "minScore": 85
+    }
+  },
+  {
+    "id": "customer-010",
+    "schemaKey": "customer",
+    "description": "跟进记录含换行与emoji",
+    "input": {
+      "客户姓名": "吴女士",
+      "联系方式": "13200132000",
+      "来源渠道": "老客转介绍",
+      "跟进记录": "  客户很喜欢日系风格\n预计下周下单  "
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "吴女士",
+        "联系方式": "13200132000",
+        "来源渠道": "老客转介绍",
+        "跟进记录": "客户很喜欢日系风格 预计下周下单"
+      },
+      "expectedStatus": "passed",
+      "minScore": 85
+    }
+  },
+  {
+    "id": "customer-011",
+    "schemaKey": "customer",
+    "description": "空输入",
+    "input": {},
+    "expected": {
+      "cleanedData": {},
+      "expectedStatus": "failed",
+      "expectedErrorCodes": ["REQUIRED_MISSING"],
+      "minScore": 0
+    }
+  },
+  {
+    "id": "customer-012",
+    "schemaKey": "customer",
+    "description": "微信号代替手机号",
+    "input": {
+      "客户姓名": "郑先生",
+      "联系方式": "zheng123",
+      "来源渠道": "其他",
+      "咨询时间": "2025-06-20"
+    },
+    "expected": {
+      "cleanedData": {
+        "客户姓名": "郑先生",
+        "联系方式": "zheng123",
+        "来源渠道": "其他",
+        "咨询时间": "2025-06-20"
+      },
+      "expectedStatus": "passed",
+      "minScore": 80
+    }
+  }
+]

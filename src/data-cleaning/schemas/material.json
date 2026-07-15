@@ -1,0 +1,108 @@
+{
+  "tableId": "tblho2dCpIDAonuc",
+  "tableName": "素材库目录管理表",
+  "primaryKey": {
+    "fieldId": "fldibg94tx",
+    "fieldName": "素材目录ID",
+    "format": "SC + 3位递增"
+  },
+  "fields": [
+    {
+      "fieldName": "素材目录ID",
+      "fieldId": "fldibg94tx",
+      "type": "auto_number",
+      "required": true,
+      "enumValues": [],
+      "description": "唯一主键，格式：SC + 3位递增"
+    },
+    {
+      "fieldName": "项目名称",
+      "fieldId": "fld3SES6vU",
+      "type": "text",
+      "required": true,
+      "enumValues": [],
+      "description": "必填，必须与拍摄项目表中的项目匹配，识别关键词：项目名、属于哪个项目、对应项目"
+    },
+    {
+      "fieldName": "素材类型",
+      "fieldId": "fldXm5vKJO",
+      "type": "select",
+      "required": true,
+      "enumValues": ["RAW原片", "初筛成片", "花絮素材", "视频素材", "口播素材"],
+      "description": "必填，识别关键词：类型、素材类型、是什么素材、原片/成片"
+    },
+    {
+      "fieldName": "素材状态",
+      "fieldId": "fldZBkMivb",
+      "type": "select",
+      "required": true,
+      "enumValues": ["待归档", "已归档", "已初筛", "已调用", "已废弃"],
+      "description": "必填，有序状态机，默认值：待归档，识别关键词：状态、当前状态、处理进度"
+    },
+    {
+      "fieldName": "拍摄时间",
+      "fieldId": "fldCzGxHHj",
+      "type": "datetime",
+      "required": false,
+      "enumValues": [],
+      "description": "推荐填写，YYYY-MM-DD，识别关键词：拍摄时间、拍摄日期、什么时候拍的"
+    },
+    {
+      "fieldName": "素材数量",
+      "fieldId": "fldgmx1S8t",
+      "type": "number",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，数字，识别关键词：数量、多少张/个、几张照片、几个文件"
+    },
+    {
+      "fieldName": "摄影师",
+      "fieldId": "fldYB38wvy",
+      "type": "user(multi)",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，飞书用户（可多人），识别关键词：摄影、摄影师、谁拍的"
+    },
+    {
+      "fieldName": "素材存储路径",
+      "fieldId": "fldTLrsrvN",
+      "type": "text(url)",
+      "required": false,
+      "enumValues": [],
+      "description": "推荐填写，飞书云盘文件夹URL，识别关键词：路径、存储位置、放在哪里、云盘链接"
+    },
+    {
+      "fieldName": "调用记录",
+      "fieldId": "fldGcfM7yN",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，自由文本，识别关键词：调用、使用情况、被谁用过、用途"
+    },
+    {
+      "fieldName": "备注",
+      "fieldId": "fld3oxvacS",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，自由文本，识别关键词：备注、说明、特殊情况"
+    },
+    {
+      "fieldName": "关联项目 ID",
+      "fieldId": "fldpJFdstN",
+      "type": "relation",
+      "required": false,
+      "enumValues": [],
+      "description": "系统维护，双向关联拍摄项目表"
+    }
+  ],
+  "relations": [
+    {
+      "relationField": "关联项目 ID",
+      "targetTable": "tblGDULWtzvXLvPm",
+      "targetField": "关联素材记录",
+      "relationType": "many-to-one",
+      "description": "多条素材记录属于一个项目"
+    }
+  ]
+}

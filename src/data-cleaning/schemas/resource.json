@@ -1,0 +1,108 @@
+{
+  "tableId": "tblw4NagUnXw9yEw",
+  "tableName": "资源总库主表",
+  "primaryKey": {
+    "fieldId": "fld77XpBi4",
+    "fieldName": "资源 ID",
+    "format": "ZY + 3位递增"
+  },
+  "fields": [
+    {
+      "fieldName": "资源 ID",
+      "fieldId": "fld77XpBi4",
+      "type": "auto_number",
+      "required": true,
+      "enumValues": [],
+      "description": "唯一主键，格式：ZY + 3位递增"
+    },
+    {
+      "fieldName": "资源名称",
+      "fieldId": "fldvZDftJE",
+      "type": "text",
+      "required": true,
+      "enumValues": [],
+      "description": "具体名称，识别关键词：名称、名字、叫什么、资源名、场地名/人名"
+    },
+    {
+      "fieldName": "联系人",
+      "fieldId": "fldMw6JmWb",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "推荐填写，真实姓名，识别关键词：联系人、联系人是谁、对接人、负责人"
+    },
+    {
+      "fieldName": "联系方式",
+      "fieldId": "fldX6T3zNk",
+      "type": "text(phone)",
+      "required": true,
+      "enumValues": [],
+      "description": "必填，11位手机号或微信号，识别关键词：电话、手机、联系方式、怎么联系、号码"
+    },
+    {
+      "fieldName": "合作报价",
+      "fieldId": "fldEKdZLoy",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，文本形式（如800-1200元/天），识别关键词：报价、价格、费用、多少钱、收费标准"
+    },
+    {
+      "fieldName": "合作状态",
+      "fieldId": "fldwmjOKog",
+      "type": "select",
+      "required": true,
+      "enumValues": ["待沟通", "意向合作", "已合作", "优质合作", "暂停合作"],
+      "description": "必填，有序状态机，默认值：待沟通，识别关键词：状态、合作情况、目前关系、合作过吗"
+    },
+    {
+      "fieldName": "合作评分",
+      "fieldId": "fldLlRj0VR",
+      "type": "number(rating)",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，1-5分（五星制），识别关键词：评分、打分、星级、满意度、合作体验"
+    },
+    {
+      "fieldName": "档期日历",
+      "fieldId": "fldPJHuzaB",
+      "type": "datetime",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，YYYY-MM-DD，识别关键词：档期、空闲时间、可预约时间、什么时候有空"
+    },
+    {
+      "fieldName": "作品/实景超链接",
+      "fieldId": "fldvq3pxEA",
+      "type": "text(url)",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，URL链接，识别关键词：作品、案例、样片、作品集、实景图、模卡"
+    },
+    {
+      "fieldName": "备注",
+      "fieldId": "fld3PZHtjE",
+      "type": "text",
+      "required": false,
+      "enumValues": [],
+      "description": "可选，自由文本，识别关键词：备注、说明、特点、注意事项"
+    },
+    {
+      "fieldName": "关联项目记录",
+      "fieldId": "fldJajNEVf",
+      "type": "relation",
+      "required": false,
+      "enumValues": [],
+      "description": "系统维护，双向关联拍摄项目表"
+    }
+  ],
+  "relations": [
+    {
+      "relationField": "关联项目记录",
+      "targetTable": "tblGDULWtzvXLvPm",
+      "targetField": "关联资源 ID",
+      "relationType": "many-to-many",
+      "description": "资源与项目多对多关联"
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{"type": "select", "name": "已发布平台", "multiple": true, "options": [{"name": "小红书", "hue": "Red", "lightness": "Light"}, {"name": "抖音", "hue": "Blue", "lightness": "Light"}, {"name": "朋友圈", "hue": "Green", "lightness": "Light"}, {"name": "视频号", "hue": "Purple", "lightness": "Light"}], "description": "此素材实际已经发布到了哪些平台"}

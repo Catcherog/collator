@@ -1,0 +1,72 @@
+[
+  {
+    "image": "fixtures/matched/sample-001.jpg",
+    "title": "日系清新亲子照 | 阳光下的温馨时刻",
+    "copy": "#日系清新 #亲子照 #儿童摄影",
+    "trueStyle": "日系清新",
+    "matched": true
+  },
+  {
+    "image": "fixtures/matched/sample-002.jpg",
+    "title": "韩系唯美写真 | 温柔的午后光线",
+    "copy": "#韩系唯美 #写真 #个人写真",
+    "trueStyle": "韩系唯美",
+    "matched": true
+  },
+  {
+    "image": "fixtures/matched/sample-003.jpg",
+    "title": "复古胶片创作片 | 城市街头的光影故事",
+    "copy": "#复古胶片 #创作片 #街拍摄影",
+    "trueStyle": "复古胶片",
+    "matched": true
+  },
+  {
+    "image": "fixtures/matched/sample-004.jpg",
+    "title": "法式浪漫少女写真 | 午后花园",
+    "copy": "#法式浪漫 #少女写真 #花园摄影",
+    "trueStyle": "法式浪漫",
+    "matched": true
+  },
+  {
+    "image": "fixtures/matched/sample-005.jpg",
+    "title": "国潮古风人像 | 汉服外景",
+    "copy": "#国潮古风 #汉服 #古风摄影",
+    "trueStyle": "国潮古风",
+    "matched": true
+  },
+  {
+    "image": "fixtures/mismatched/sample-001.jpg",
+    "title": "日系清新亲子照",
+    "copy": "#日系清新",
+    "trueStyle": "暗调情绪",
+    "matched": false
+  },
+  {
+    "image": "fixtures/mismatched/sample-002.jpg",
+    "title": "韩系唯美写真",
+    "copy": "#韩系唯美",
+    "trueStyle": "复古胶片",
+    "matched": false
+  },
+  {
+    "image": "fixtures/mismatched/sample-003.jpg",
+    "title": "暗调情绪创作片",
+    "copy": "#暗调情绪",
+    "trueStyle": "日系清新",
+    "matched": false
+  },
+  {
+    "image": "fixtures/mismatched/sample-004.jpg",
+    "title": "法式浪漫少女写真",
+    "copy": "#法式浪漫",
+    "trueStyle": "国潮古风",
+    "matched": false
+  },
+  {
+    "image": "fixtures/mismatched/sample-005.jpg",
+    "title": "国潮古风人像",
+    "copy": "#国潮古风",
+    "trueStyle": "韩系唯美",
+    "matched": false
+  }
+]
