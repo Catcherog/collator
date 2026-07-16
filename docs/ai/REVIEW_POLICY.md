@@ -118,7 +118,8 @@ Trae 发现冲突
 |---|---|---|---|
 | A | 代码基线 | `npm ci` / `audit:legacy` / `typecheck` / `lint` / `test` / `test:integration` / `build` / `test:coverage` 全部退出码 0；`git diff origin/main -- src/data-cleaning` 无输出（Legacy 源码零修改） | PASSED |
 | B | API 合同 | `docs/API_CONTRACT.md` 完整；集成测试覆盖全部 V1 接口 | PASSED |
-| C | 数据质量 | 50 条评测集与 CleaningPipeline 跑通；Pipeline 不可变性、确定性、错误传播、PII 脱敏均测试通过 | IN_PROGRESS |
+| C-Core | 数据质量（确定性） | 50 条评测集与 CleaningPipeline 跑通（不依赖 Dify/LLM）；字段准确率≥90%、必填字段召回率≥95%、枚举映射精确率≥95%、错误拦截率≥95% | IN_PROGRESS |
+| C-LLM | 数据质量（LLM 语义） | Dify 真实 LLM 调用链路评测通过（CandidateRecord 语义提取准确率达标） | BLOCKED_EXTERNAL_ENV（DEBT-001）|
 | D | 飞书集成 | 配置测试 Base 凭据（`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_BASE_APP_TOKEN` 及各表 ID）；`FeishuTaskRepository` 集成测试通过 | BLOCKED_EXTERNAL_ENV |
 | E | 安全隐私 | 无 `.env` / Secret 入库；签名验签、脱敏、幂等、Legacy Import 禁令、Legacy Import 禁令均测试通过 | PASSED |
 | F | 部署运行 | 提供 Dockerfile；容器化构建与启动验证通过 | NOT_STARTED |
@@ -127,9 +128,12 @@ Trae 发现冲突
 ### Gate 与 P0/P1/P2 的对应关系
 
 - Gate A/B/E 未通过 → P0 阻塞，必须在当前任务解决。
-- Gate C 未通过 → P0 阻塞数据质量验收，但不阻塞已完成的 Phase 2C 代码合并。
+- Gate C-Core 未通过 → P0 阻塞数据质量验收，但不阻塞已完成的 Phase 2C 代码合并。
+- Gate C-LLM 未通过因外部环境（Dify 凭据未配置，DEBT-001）→ 登记为 P1 技术债，不阻塞 Gate C-Core 与 V1 Core Service 代码合并。
 - Gate D 未通过因外部环境（凭据未配置）→ 登记为 P1 技术债（DEBT-001、DEBT-002），不阻塞 V1 Core Service 代码合并，但阻塞飞书集成验收。
 - Gate F/G 未通过 → 属于 Phase 5/6 范围，当前阶段不阻塞。
+
+> 重要边界声明：Gate C-Core 通过仅证明确定性清洗/校验管道达标，**不得**用于宣称端到端语义提取（含 Dify/LLM）已通过。LLM 语义提取验收属于 Gate C-LLM 范围。
 
 ### 覆盖率 Gate A 口径
 

@@ -43,6 +43,14 @@
 | 2026-07-16 | `npm run test:coverage` (Phase 2C) | 0 | 102 | 0 | Pipeline Lines 100% / Branch 95.23% |
 | 2026-07-16 | `npm run build` (Phase 2C) | 0 | - | - | `dist/` 构建成功 |
 | 2026-07-16 | `git diff origin/main -- src/data-cleaning` (Phase 2C) | 0 | - | - | 无输出（Legacy 源码未修改） |
+| 2026-07-17 | `npm run typecheck` (Phase 2F) | 0 | - | - | TypeScript 无错误（含 scripts/） |
+| 2026-07-17 | `npm run lint` (Phase 2F) | 0 | - | - | ESLint 无错误（eslint src tests scripts） |
+| 2026-07-17 | `npm run test` (Phase 2F) | 0 | 157 | 0 | 20 test files passed（含 44 evaluation tests + 11 runner integration tests） |
+| 2026-07-17 | `npm run test:coverage` (Phase 2F) | 0 | 157 | 0 | All files Lines 85.35% / Branch 81.17% / Funcs 86.06%；evaluation 模块 Lines 85.50% / Funcs 100% |
+| 2026-07-17 | `npm run build` (Phase 2F) | 0 | - | - | `dist/` 构建成功 |
+| 2026-07-17 | `npm run audit:legacy` (Phase 2F) | 0 | 62 modules | 0 | SAFE: 4, UNSAFE: 57, BLOCKED: 1 |
+| 2026-07-17 | `npm run evaluate` (Phase 2F) | 0 | 50 | 0 | Gate C-Core PASS，50/50 case，所有指标 100% |
+| 2026-07-17 | `git diff origin/main -- src/data-cleaning` (Phase 2F) | 0 | - | - | 无输出（Legacy 源码未修改） |
 
 ## API 合同验证
 
@@ -82,9 +90,11 @@
 
 | 指标 | 结果 | 门槛 | 状态 |
 |---|---:|---:|---|
-| 总字段准确率 | - | 90% | IN_PROGRESS（Phase 2 构建评测集中） |
-| 必填字段召回率 | - | 95% | IN_PROGRESS |
-| 枚举映射精确率 | - | 95% | IN_PROGRESS |
+| 总字段准确率 | 100.00% (132/132) | 90% | PASSED（Phase 2F Gate C-Core） |
+| 必填字段召回率 | 100.00% (91/91) | 95% | PASSED（Phase 2F Gate C-Core） |
+| 枚举映射精确率 | 100.00% (33/33) | 95% | PASSED（Phase 2F Gate C-Core） |
+| 错误拦截率 | 100.00% (1/1) | 95% | PASSED（Phase 2F Gate C-Core） |
+| 持久化检查 | N/A | N/A | NOT_APPLICABLE（Phase 2F 不涉及持久化） |
 | 非法枚举写入 | 0 | 0 | PASSED（V1 未直接写业务主表） |
 | 缺失必填字段直接写入 | 0 | 0 | PASSED（V1 未直接写业务主表） |
 | 重复写入率 | 0 | 0 | PASSED（幂等 + 审核状态验证） |
@@ -162,3 +172,41 @@
 | Phase 2A 生产代码 | NOT_STARTED | 本轮仅 Planning Correction，未修改生产/测试代码 |
 | Phase 2 全部实现（2A-2G） | NOT_STARTED | 待 Phase 2A 启动 |
 | Gate C 数据质量验收 | NOT_STARTED | 待 Phase 2F 评测集与 2G 验收证据 |
+
+## Phase 2F Gate C-Core 验收结论
+
+- **Phase 2F 代码基线：PASSED**（`typecheck` / `lint` / `test` / `test:coverage` / `build` / `audit:legacy` / `evaluate` 全部退出码 0）
+- **Gate C-Core 评测 Runner：DONE**（`scripts/run-evaluation.ts` + `src/evaluation/` 6 模块 + 50 条评测集）
+- **Gate C-Core 数据质量：PASSED**（50/50 case 通过，4 项核心指标 100%，1 项 N/A）
+  - field_accuracy: 132/132 = 100.00% (门槛 90%)
+  - required_field_recall: 91/91 = 100.00% (门槛 95%)
+  - enum_precision: 33/33 = 100.00% (门槛 95%)
+  - error_interception_rate: 1/1 = 100.00% (门槛 95%)
+  - persistence_check: N/A (Phase 2F 不涉及持久化)
+- **Runner 复用生产入口：PASSED**（调用 `runCleaningPipeline`，不复制业务逻辑）
+- **禁止网络访问：PASSED**（fetch spy 未被调用 + 源码静态扫描不 import 网络模块）
+- **退出码语义：PASSED**（0=PASS, 1=指标未达标, 2=Runner/fixture 错误，均有测试覆盖）
+- **错误比较稳定性：PASSED**（使用 code+field/stage 元组比较，不比较完整文案）
+- **Legacy 源码保护：PASSED**（`git diff origin/main -- src/data-cleaning` 无输出）
+- **覆盖率：GATE_A_PASSED**（evaluation 模块 Lines 85.50% / Branch 82.04% / Funcs 100%；reporter.ts 100%, metrics.ts 97.03%）
+- **外部联动验收：BLOCKED_EXTERNAL_ENV**（未配置真实 Dify / 飞书环境，Gate C-LLM 待 Phase 2G）
+
+### Phase 2F 评测集构成
+
+| 分类 | case 数 | case_id 范围 | 场景 |
+|---|---:|---|---|
+| valid（有效输入） | 15 | CC-001~CC-015 | 全字段/渠道/拍摄类型/预算区间覆盖 |
+| clean（清洗能力） | 12 | CC-016~CC-027 | 空白/手机号分隔/全角/预算归一/日期解析/文本去噪 |
+| enum（枚举映射） | 8 | CC-028~CC-035 | 风格/渠道/类型同义词映射 |
+| boundary（校验边界） | 10 | CC-036~CC-045 | 缺必填/空值/无效枚举/格式错误 |
+| edge（极端边界） | 5 | CC-046~CC-050 | 全空/超长/不支持的记录类型 |
+
+### Phase 2F 覆盖率基线
+
+| 范围 | Statements | Branches | Functions | Lines |
+|---|---:|---:|---:|---:|
+| All files（src/server + src/evaluation） | 85.35% | 81.17% | 86.06% | 85.35% |
+| evaluation 模块 | 85.50% | 82.04% | 100% | 85.50% |
+| CleaningPipeline | 100% | 95.65% | 100% | 100% |
+
+> 整体状态：PHASE_2F_GATE_C_CORE_DONE

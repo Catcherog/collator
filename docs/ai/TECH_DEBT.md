@@ -26,9 +26,9 @@
 - Severity: P1
 - Introduced By: Phase 0 基线盘点
 - Context: V1 Core Service 需要对接 Dify 进行语义提取与回调，但本地与仓库均未配置 Dify 环境变量（`DIFY_BASE_URL`、`DIFY_WORKFLOW_API_KEY`、`DIFY_WORKFLOW_ID`）。
-- Risk: 无法运行端到端 Dify 回调流程；Gate D 飞书集成验收与 Gate C 数据质量评测集的真实 LLM 跑通受阻。
-- Reason Deferred: 当前阶段优先完成 Core Service 确定性逻辑与 CleaningPipeline；Dify 凭据需由用户在外部环境配置后注入 `.env`，不进入仓库。
-- Resolve Before: Gate D 验收
+- Risk: 无法运行端到端 Dify 回调流程；未来 Dify/LLM 真实联调阶段（Gate C-LLM）受阻。不阻塞 Phase 2F Gate C-Core 确定性数据质量验收。
+- Reason Deferred: Phase 2F 已明确拆分为 Gate C-Core（确定性 Pipeline 评测，不依赖 Dify）与未来 Gate C-LLM（Dify 真实联调）。Dify 凭据需由用户在外部环境配置后注入 `.env`，不进入仓库。
+- Resolve Before: Gate C-LLM（Dify/LLM 真实联调阶段）
 - Related Files:
   - .env.example
 

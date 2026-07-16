@@ -11,12 +11,13 @@
     "start": "node dist/server/app.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
-    "lint": "eslint src tests",
+    "lint": "eslint src tests scripts",
     "test": "vitest run",
     "test:integration": "vitest run tests/integration",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
-    "audit:legacy": "tsx scripts/phase2/run-legacy-audit.ts"
+    "audit:legacy": "tsx scripts/phase2/run-legacy-audit.ts",
+    "evaluate": "tsx scripts/run-evaluation.ts"
   },
   "dependencies": {
     "ajv": "^8.17.1",
