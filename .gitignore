@@ -31,3 +31,7 @@ Thumbs.db
 
 # Runtime temp files
 _bitable_temp_*.json
+
+# Cross-window handoff inputs (GPT→Trae), not long-term facts (see AGENTS.md)
+GPT to Trae.txt
+*handoff*.txt

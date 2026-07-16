@@ -21,13 +21,13 @@
 
 1. `.trae/Knowledge/项目总览.md`
 2. `.trae/Knowledge/业务场景.md`
-3. `docs/PROJECT_STATE.md`（若存在）
+3. `docs/ai/PROJECT_STATE.md`（若存在）
 4. `docs/DECISIONS.md`（若存在）
 5. `docs/ACCEPTANCE_REPORT.md`（若存在）
-6. `Collator_Dify_飞书_Trae实施协作包_v1.0/collator_handoff_v1/README.md`
-7. `Collator_Dify_飞书_Trae实施协作包_v1.0/collator_handoff_v1/Collator_璺ㄧ獥鍙ｅ疄鏂芥墜鍐宊v1.0.md`
-8. `Collator_Dify_飞书_Trae实施协作包_v1.0/collator_handoff_v1/Trae_涓绘墽琛屾彁绀鸿瘝_Collator_v1.0.md`
-9. `Collator_Dify_飞书_Trae实施协作包_v1.0/collator_handoff_v1/Collator_楠屾敹娓呭崟_v1.0.md`
+6. `docs/Collator_Dify_飞书_Trae实施协作包_v1.0/collator_handoff_v1/README.md`
+7. `docs/Collator_Dify_飞书_Trae实施协作包_v1.0/collator_handoff_v1/Collator_璺ㄧ獥鍙ｅ疄鏂芥墜鍐宊v1.0.md`
+8. `docs/Collator_Dify_飞书_Trae实施协作包_v1.0/collator_handoff_v1/Trae_涓绘墽琛屾彁绀鸿瘝_Collator_v1.0.md`
+9. `docs/Collator_Dify_飞书_Trae实施协作包_v1.0/collator_handoff_v1/Collator_楠屾敹娓呭崟_v1.0.md`
 
 ---
 
@@ -79,7 +79,7 @@
 
 每次阶段执行后，必须更新以下文档（如不存在则创建）：
 
-- `docs/PROJECT_STATE.md`
+- `docs/ai/PROJECT_STATE.md`
   - 当前阶段、状态、最近 Commit、分支
   - 已完成 / 正在进行
   - 各 Gate 验收状态与证据
@@ -100,8 +100,10 @@
 
 ## 6. 证据要求
 
-- 代码必须通过 `npm ci`、`npm run typecheck`、`npm run lint`、`npm run test`、`npm run test:integration`、`npm run build`。
-- 声称“通过”前必须实际运行对应命令并记录退出码和输出摘要。
+> 验证规则（只报告实际执行的验证、无法执行验证时的处理、推荐验证顺序）见 `改造方案.txt` 第9节及 `docs/ai/TRAE_COLLABORATION_GUIDE.md`。本项目额外要求如下。
+
+- Gate A 全套验证命令：`npm ci` / `npm run audit:legacy` / `npm run typecheck` / `npm run lint` / `npm run test` / `npm run test:integration` / `npm run test:coverage` / `npm run build`。
+- 声称"通过"前必须实际运行对应命令并记录退出码和输出摘要。
 - 外部集成（飞书 / Dify）声称通过必须提供真实环境运行的截图、Trace 或日志路径；无法访问真实环境时状态必须标记为 `BLOCKED_EXTERNAL_ENV`，不得伪造通过。
 
 ---

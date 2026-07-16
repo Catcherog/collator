@@ -1,1 +1,0 @@
-{"type":"formula","name":"PublishStatus","expression":"IF(CONTAINSALL(TargetPlatform, PublishedPlatform), \"DONE\", CONCAT(\"MISSING: \", ARRAYJOIN(FILTER(TargetPlatform, NOT(CONTAIN(PublishedPlatform, CurrentValue))), \", \")))","description":"Auto-calculated publishing status"}
