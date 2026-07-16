@@ -9,7 +9,7 @@
 - 飞书测试 Base：未配置
 - 分支：`phase/2b-legacy-adapters`
 - 基线 Commit：`edb68a4`
-- 当前 Commit：`763b187de83d91b085bfd17a5424f8a24745250a`
+- 当前 Commit：`fd86087fdadb77c79ada7966f470037afc925c28`
 
 ## 工程命令
 
