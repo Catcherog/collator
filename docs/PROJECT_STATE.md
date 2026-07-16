@@ -1,11 +1,12 @@
 # PROJECT STATE
 
-- 当前阶段：Phase 2
-- 状态：IN_PROGRESS
-- Planning Review：APPROVED_WITH_REQUIRED_CHANGES（已在本轮提交中完成全部必需修正）
+- 当前阶段：Phase 2B
+- 状态：DONE（覆盖率未完全达标，缺口需在 Phase 2C 前补充）
+- Planning Review：APPROVED_WITH_REQUIRED_CHANGES（Phase 2 Planning Correction 已完成）
 - 最近更新：2026-07-16
-- 当前分支：main
-- 当前 Commit：见 `git log -1`（Phase 2 Planning Correction 提交；基线为 edb68a4）
+- 当前分支：phase/2b-legacy-adapters
+- 当前 Commit：`763b187de83d91b085bfd17a5424f8a24745250a`
+- 基线 Commit：`edb68a4`
 - 当前版本：v1.0
 
 ## 已完成
@@ -39,6 +40,29 @@
   - `npm ci` + `typecheck` / `lint` / `test` / `test:integration` / `build` / `test:coverage` 全部通过。
   - 15 项核心能力矩阵完整，HMAC 与脱敏均有测试。
   - 核心服务可执行代码覆盖率基线：Stmts 90.3% / Branch 82.56% / Funcs 88.57% / Lines 90.3%。
+
+### Phase 2B
+
+- 建立分支 `phase/2b-legacy-adapters`，基于最新 `origin/main`。
+- 实现 `src/server/cleaning/legacy-module-loader.ts`：统一 Legacy 模块加载，VM 沙箱 + `legacyRequire`，支持路径校验、导出白名单、Hash 校验、安全缓存、错误标准化。
+- 实现 `src/server/cleaning/errors.ts`：7 个错误码的 `LegacyAdapterError`，错误信息脱敏。
+- 实现 `src/server/cleaning/legacy-audit.ts` + `contracts/legacy-module-profile.ts`：加载并校验审计报告，提供查询接口。
+- 实现 8 个 Adapter：
+  - `utils-adapter.ts`
+  - `config-adapter.ts`
+  - `schema-adapter.ts`
+  - `cleaner-adapter.ts`
+  - `noop-logger-adapter.ts`
+  - `rules-adapter.ts`
+  - `quality-adapter.ts`
+  - `benchmark-adapter.ts`
+- 实现 `tests/unit/cleaning/import-ban.test.ts`：生产代码直接 Legacy Import 禁令扫描。
+- 为 Loader 和每个 Adapter 编写契约/边界测试。
+- 更新 `docs/PHASE2B_ADAPTER_CONTRACTS.md`、`docs/PHASE2_ADAPTER_MAP.md`、`docs/PROJECT_STATE.md`、`docs/ACCEPTANCE_REPORT.md`。
+- **Phase 2B 验收**：
+  - `npm ci` / `audit:legacy` / `typecheck` / `lint` / `test` / `test:integration` / `test:coverage` / `build` 全部通过。
+  - `git diff origin/main -- src/data-cleaning` 无输出（Legacy 源码未修改）。
+  - 覆盖率：`src/server/cleaning` Lines 76.06% / Branch 72.72% / Funcs 79.31%，未达 90/90/90/85 目标。
 
 ## Phase 1 能力矩阵
 
@@ -90,9 +114,9 @@
 |---|---|---|
 | A 代码基线 | PASSED | `npm ci` / `typecheck` / `lint` / `test` / `test:integration` / `build` / `test:coverage` 全部通过 |
 | B API 合同 | PASSED | `docs/API_CONTRACT.md` + 10 项集成测试覆盖全部 V1 接口 |
-| C 数据质量 | IN_PROGRESS | Phase 2 正在构建 50 条固定评测集与评测脚本 |
+| C 数据质量 | IN_PROGRESS | Phase 2B 完成 Legacy Adapter；50 条评测集与 CleaningPipeline 在 Phase 2C/2F |
 | D 飞书集成 | BLOCKED_EXTERNAL_ENV | 未配置测试 Base 凭据 |
-| E 安全隐私 | PASSED | 无 .env/Secret 入库；签名验签、脱敏、幂等均已测试 |
+| E 安全隐私 | PASSED | 无 .env/Secret 入库；签名验签、脱敏、幂等、Legacy Import 禁令均已测试 |
 | F 部署运行 | NOT_STARTED | 无 Dockerfile（Phase 5/6） |
 | G 展示证据 | NOT_STARTED | 无运行证据（待 Docker/部署后补充） |
 
@@ -108,21 +132,17 @@
 - 硬编码飞书资源 ID 较多，Phase 3 需逐步迁出源码。
 - `core/data-cleaner.js` 导入闭包触发 `schemas/index.js` 与 `config/index.js` 的 import-time 文件读取，Phase 2A 审计需标记为 `EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY`，不得简单 WRAP。
 
-## Phase 2 Planning Correction（本轮完成）
+## Phase 2B 完成说明
 
-- **Planning Review 结果**：APPROVED_WITH_REQUIRED_CHANGES
-- **本轮修正内容**（未修改任何生产/测试代码）：
-  1. `PHASE2_EVALUATION_SPEC.md`：Enum Mapping Precision 门槛 85% → 95%（与手册 Gate C 一致）；Validation Detection Recall 保留为补充门槛 ≥85%，不得降低主门槛；同步示例报告。
-  2. `PHASE2_IMPLEMENTATION_PLAN.md` Phase 2E：冻结状态语义——业务校验 error 进入 `pending_review`；`validation_failed` 仅用于 Schema/配置/Adapter/Pipeline/Validator 执行异常；同步测试与完成条件。Phase 2A 完成条件新增 `LegacyModuleProfile` 6 字段要求；`data-cleaner.js` 处理方式改为 `EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY`。
-  3. `PHASE2_DATA_CONTRACTS.md`：新增 `ValidatorExecutionError` 与 `execution_error` 字段；新增 2.8 节 Validator 执行异常表示与状态转换；新增 2.9 节日期边界策略与测试要求（无效 timezone/received_at、DST 边界、非法日期、年份推断）。
-  4. `PHASE2_ADAPTER_MAP.md`：`data-cleaner.js` 处理方式 WRAP → `EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY`；新增第四章 `LegacyModuleProfile` 结构要求（importSafe/importStrategy/transitiveSideEffects/runtimeInterop/allowedExports/sideEffectTest）。
-- **未开始**：Phase 2A 生产代码、Phase 2 全部实现、Gate C 验收。
+- **范围**：LegacyModuleLoader、8 个 Adapter、Adapter 合同与契约测试、直接 Legacy Import 禁令、错误标准化、Phase 2B 文档。
+- **未修改 Legacy 源码**：`git diff origin/main -- src/data-cleaning` 无输出。
+- **覆盖率缺口**：`src/server/cleaning` Lines 76.06% / Branch 72.72% / Funcs 79.31%，未达 90/90/90/85 目标，需在 Phase 2C 前补充测试。
 
 ## 下一步唯一动作
 
-1. Phase 2A：合同与副作用审计（`src/server/cleaning/legacy-audit.ts` + `PHASE2_ADAPTER_MAP.md` 冻结 + `LegacyModuleProfile` 记录）。
+1. Phase 2C：实现 immutable CleaningPipeline，将 Adapter 组合为确定性的清洗/校验/质量评估流程。
 
 ## 最近一次执行
 
-- 命令：`npm ci; npm run typecheck; npm run lint; npm run test; npm run test:integration; npm run build`
-- 结果：见下方"执行命令与结果"（本轮为 Planning Correction，未修改生产代码，工程命令用于回归验证基线不变）。
+- 命令：`npm ci; npm run audit:legacy; npm run typecheck; npm run lint; npm run test; npm run test:integration; npm run test:coverage; npm run build; git diff origin/main -- src/data-cleaning`
+- 结果：全部命令退出码 0；`git diff src/data-cleaning` 无输出；测试 86 passed + 10 integration passed；覆盖率见 `docs/PHASE2B_ADAPTER_CONTRACTS.md`。

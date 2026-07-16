@@ -1,8 +1,9 @@
 # Phase 2 Legacy Adapter 映射表
 
-> **状态**：PLANNING_CORRECTION_APPLIED  
+> **状态**：AUDIT_COMPLETE / IMPLEMENTATION_COMPLETE（Phase 2B）  
 > **用途**：基于实际代码阅读，决定 `src/data-cleaning/**/*.js` 各模块在 `src/server/cleaning/` 中的处理方式  
-> **约束**：处理方式只能是 {REUSE, WRAP, EXTRACT_PURE_FUNCTION, MIGRATE_INCREMENTALLY, DEPRECATE_WITH_REASON}
+> **约束**：处理方式只能是 {REUSE, WRAP, EXTRACT_PURE_FUNCTION, MIGRATE_INCREMENTALLY, DEPRECATE_WITH_REASON}  
+> **审计结果**：62 个模块中，SAFE(`CREATE_REQUIRE`) 4 个，UNSAFE(`BLOCKED_UNSAFE_IMPORT`) 57 个，BLOCKED 1 个。详见 `reports/phase2/legacy-module-profiles.json` 与 `docs/PHASE2B_ADAPTER_CONTRACTS.md`。
 
 ---
 
@@ -27,6 +28,8 @@
 | `agent/execution/rollback-manager.js` | `createRollbackManager` | 调用 `bitable-writer` 删除记录 | 不修改输入 | `./bitable-writer` | DEPRECATE_WITH_REASON | — | 无需新测试 |
 | `agent/perception/dispatcher.js` | `dispatchInput` 等 | 可能调用 OCR/ASR/CLIP | 不修改输入 | `../multimodal/*` | DEPRECATE_WITH_REASON | — | 无需新测试 |
 | `agent/understanding/field-extractor.js` | `extractFields` 等 | 调用 LLM/Dify（外部网络） | 不修改输入 | `axios`/fetch | DEPRECATE_WITH_REASON | — | 无需新测试 |
+
+> **Phase 2B 契约测试状态**：8 个 Adapter 及 Loader 的契约测试均已实现并通过（见 `tests/unit/cleaning/`）。`DEPRECATE_WITH_REASON` 模块未创建新 Adapter，旧测试保持原样但不被新服务端代码引用。
 
 ---
 

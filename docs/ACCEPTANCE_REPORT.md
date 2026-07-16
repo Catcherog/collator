@@ -7,7 +7,9 @@
 - npm：v10.9.2
 - Dify：未配置
 - 飞书测试 Base：未配置
-- Commit：8d06da9
+- 分支：`phase/2b-legacy-adapters`
+- 基线 Commit：`edb68a4`
+- 当前 Commit：`763b187de83d91b085bfd17a5424f8a24745250a`
 
 ## 工程命令
 
@@ -23,6 +25,15 @@
 | 2026-07-15 | `npm run test:integration` | 0 | 10 | 0 | 集成测试全部通过 |
 | 2026-07-15 | `npm run test:coverage` | 0 | - | - | Core Service 覆盖率 Stmts 90.3% / Branch 82.56% / Funcs 88.57% / Lines 90.3% |
 | 2026-07-15 | `npm run build` | 0 | - | - | `dist/` 构建成功 |
+| 2026-07-16 | `npm ci` | 0 | - | - | 261 packages added |
+| 2026-07-16 | `npm run audit:legacy` | 0 | 62 modules | 0 | SAFE: 4, UNSAFE: 57, BLOCKED: 1 |
+| 2026-07-16 | `npm run typecheck` | 0 | - | - | TypeScript 无错误 |
+| 2026-07-16 | `npm run lint` | 0 | - | - | ESLint 无错误 |
+| 2026-07-16 | `npm run test` | 0 | 86 | 0 | 13 test files passed |
+| 2026-07-16 | `npm run test:integration` | 0 | 10 | 0 | 1 test file passed |
+| 2026-07-16 | `npm run test:coverage` | 0 | 86 | 0 | 全仓库 Lines 80.05% / Branch 75.28% / Funcs 81.25% |
+| 2026-07-16 | `npm run build` | 0 | - | - | `dist/` 构建成功 |
+| 2026-07-16 | `git diff origin/main -- src/data-cleaning` | 0 | - | - | 无输出（Legacy 源码未修改） |
 
 ## API 合同验证
 
@@ -100,6 +111,14 @@
 - **Phase 1 安全隐私：PASSED**
 - **Phase 1 收尾审计：PASSED**
 - **外部联动验收：BLOCKED_EXTERNAL_ENV**（未配置真实 Dify / 飞书环境，按手册要求不声称联动验收通过）
+
+## Phase 2B 验收结论
+
+- **Phase 2B 代码基线：PASSED**（`npm ci` / `audit:legacy` / `typecheck` / `lint` / `test` / `test:integration` / `build` 全部通过）
+- **Phase 2B Adapter 实现：DONE**（8 个 Adapter + LegacyModuleLoader + 契约/边界测试 + 直接 Import 禁令）
+- **Legacy 源码保护：PASSED**（`git diff origin/main -- src/data-cleaning` 无输出）
+- **Phase 2B 覆盖率：IN_PROGRESS**（`src/server/cleaning` Lines 76.06% / Branch 72.72% / Funcs 79.31%，未达 90/90/90/85 目标，需在 Phase 2C 前补充）
+- **外部联动验收：BLOCKED_EXTERNAL_ENV**（未配置真实 Dify / 飞书环境）
 
 > 整体状态：READY_FOR_PHASE_2
 
