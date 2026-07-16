@@ -13,7 +13,7 @@ export default ts.config(
     },
   },
   {
-    files: ['src/**/*.ts', 'tests/**/*.ts'],
+    files: ['src/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts'],
     rules: {
       '@typescript-eslint/no-unused-vars': [
         'error',
@@ -28,6 +28,6 @@ export default ts.config(
     },
   },
   {
-    ignores: ['dist/', 'node_modules/', 'coverage/', 'src/data-cleaning/', 'src/scripts/', 'src/importers/'],
+    ignores: ['dist/', 'node_modules/', 'coverage/', 'src/data-cleaning/', 'src/scripts/', 'src/importers/', 'scripts/**/*.cjs', 'tests/**/*.cjs'],
   }
 );

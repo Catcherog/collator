@@ -121,3 +121,79 @@
 | Phase 2A 生产代码 | NOT_STARTED | 本轮仅 Planning Correction，未修改生产/测试代码 |
 | Phase 2 全部实现（2A-2G） | NOT_STARTED | 待 Phase 2A 启动 |
 | Gate C 数据质量验收 | NOT_STARTED | 待 Phase 2F 评测集与 2G 验收证据 |
+
+## Phase 2A Acceptance（Legacy Contract & Side Effect Audit）
+
+- 本轮 Commit：`phase/2a-legacy-audit` 分支
+- 基线 Commit：9d62350
+- 审计工具版本：phase2a-1.0.0
+
+### 工程命令
+
+| 日期 | 命令 | 退出码 | 结果 | 证据 |
+|---|---|---:|---|---|
+| 2026-07-16 | `npm run typecheck` | 0 | PASS | TypeScript 无错误 |
+| 2026-07-16 | `npm run lint` | 0 | PASS | ESLint 无错误（含 scripts/**/*.ts） |
+| 2026-07-16 | `npm run test` | 0 | 43/43 PASS | 含 17 项 legacy-audit 契约测试 |
+| 2026-07-16 | `npm run test:integration` | 0 | 10/10 PASS | 集成测试回归通过 |
+| 2026-07-16 | `npm run test:coverage` | 0 | PASS | Stmts 91.47% / Branch 82.56% / Funcs 88.57% / Lines 91.47%；`legacy-module-profile.ts` 100% |
+| 2026-07-16 | `npm run build` | 0 | PASS | `dist/` 构建成功 |
+| 2026-07-16 | `npm run audit:legacy` | 0 | PASS | 62 模块审计完成：29 SAFE / 33 UNSAFE |
+
+### 审计结果
+
+| 指标 | 值 |
+|------|-----|
+| discovered_module_count | 62 |
+| profiled_module_count | 62 |
+| excluded_module_count | 0 |
+| safe_module_count | **29** |
+| unsafe_module_count | **33** |
+| import_failed_count | 33 |
+| cjs_module_count | 62 |
+| esm_module_count | 0 |
+| unprofiled_modules | [] (空) |
+
+### 确定性验证
+
+连续两次运行 `npm run audit:legacy`，对比 `reports/phase2/legacy-module-profiles.json`：
+- 62 个模块的 `modulePath` / `importSafe` / `importStrategy` / `allowedExports` / `transitiveSideEffects` / `runtimeInterop` 字段完全一致
+- 仅 `metadata.generated_at` 和 `metadata.duration_ms` 不同（符合预期）
+
+### 关键发现（推翻 Planning 预判）
+
+| Planning 预判 | 真实审计结果 | 影响 |
+|---|---|---|
+| `schemas/index.js` 有 import-time readFileSync | importSafe=true，filesystemReads=0（JSON 走 require 加载器） | CREATE_REQUIRE 安全 |
+| `config/index.js` 有 import-time readFileSync | importSafe=true，filesystemReads=0 | CREATE_REQUIRE 安全 |
+| `core/data-cleaner.js` 有传递性副作用 | importSafe=true，传递依赖均 SAFE | CREATE_REQUIRE 安全 |
+| 9 个模块运算符正常 | 9 个模块 HTML 实体损坏（`&&` → `&amp;&amp;`） | BLOCKED_UNSAFE_IMPORT |
+
+### Adapter Map 冻结
+
+- `docs/PHASE2_ADAPTER_MAP.md` 状态：AUDIT_COMPLETE
+- Phase 2B 需实现 8 个 Adapter（全部 CREATE_REQUIRE）
+- 33 个 UNSAFE 模块保持 BLOCKED_UNSAFE_IMPORT
+
+### 交付物
+
+| 文件 | 用途 |
+|---|---|
+| `src/server/cleaning/contracts/legacy-module-profile.ts` | 冻结 LegacyModuleProfile 契约（TS 类型 + Zod Schema） |
+| `scripts/phase2/audit-legacy-modules.ts` | 审计器编排（child_process 隔离） |
+| `scripts/phase2/audit-worker.cjs` | 子进程 worker（fs-observer + Module._extensions 覆盖） |
+| `tests/unit/cleaning/fixtures/fs-observer.cjs` | fs 调用观测钩子 |
+| `tests/unit/cleaning/legacy-audit.test.ts` | 17 项契约测试 |
+| `reports/phase2/legacy-module-profiles.json` | 机器可读审计报告 |
+| `reports/phase2/legacy-module-profiles.md` | 人类可读审计报告 |
+| `docs/PHASE2_ADAPTER_MAP.md` | 基于 audit 真实数据重写的 Adapter Map |
+
+### Phase 2A 最终结论
+
+- **Phase 2A 审计工具**：PASSED（17 项契约测试 + 真实子进程无 mock）
+- **Phase 2A 真实审计**：PASSED（62 模块全部 Profile 化，Zod Runtime Schema 校验通过）
+- **Phase 2A 确定性**：PASSED（连续两次运行结果一致）
+- **Phase 2A Adapter Map**：PASSED（基于 audit 真实数据冻结，未使用 Planning 预判）
+- **Phase 2A 验收命令**：PASSED（typecheck / lint / test / test:integration / test:coverage / build / audit:legacy 全部通过）
+
+> 整体状态：READY_FOR_PHASE_2B

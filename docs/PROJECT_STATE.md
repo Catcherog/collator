@@ -1,11 +1,12 @@
 # PROJECT STATE
 
-- 当前阶段：Phase 2
-- 状态：IN_PROGRESS
-- Planning Review：APPROVED_WITH_REQUIRED_CHANGES（已在本轮提交中完成全部必需修正）
+- 当前阶段：Phase 2A（Legacy Contract & Side Effect Audit）
+- 状态：PHASE_2A_COMPLETE
+- Planning Review：APPROVED_WITH_REQUIRED_CHANGES（已完成全部必需修正）
+- Phase 2A 审计：AUDIT_COMPLETE（29 SAFE / 33 UNSAFE，确定性验证通过）
 - 最近更新：2026-07-16
-- 当前分支：main
-- 当前 Commit：见 `git log -1`（Phase 2 Planning Correction 提交；基线为 edb68a4）
+- 当前分支：phase/2a-legacy-audit
+- 基线 Commit：9d62350
 - 当前版本：v1.0
 
 ## 已完成
@@ -106,7 +107,42 @@
 - 旧 `src/data-cleaning/agent/index.js` 存在 `&&amp;` HTML 实体语法错误，任何引用该文件的入口无法运行；V1 采用新建 `src/server/` 替代旧 Agent 入口，不修复旧入口。
 - 现有 Schema 使用中文 fieldName，Dify Candidate 输出英文 raw 字段，Phase 2 需要增加映射层。
 - 硬编码飞书资源 ID 较多，Phase 3 需逐步迁出源码。
-- `core/data-cleaner.js` 导入闭包触发 `schemas/index.js` 与 `config/index.js` 的 import-time 文件读取，Phase 2A 审计需标记为 `EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY`，不得简单 WRAP。
+- 旧 `src/data-cleaning/**/*.js` 中 9 个模块存在 HTML 实体损坏（`&&` → `&amp;&amp;` 等），Phase 2A 审计已确认为 BLOCKED_UNSAFE_IMPORT，Phase 2B 不得 import；待 Phase 3 后逐步清理或重写。
+
+## Phase 2A 完成（Legacy Contract & Side Effect Audit）
+
+### 审计工具实现
+
+- `src/server/cleaning/contracts/legacy-module-profile.ts`：冻结 LegacyModuleProfile 契约（TypeScript 类型 + Zod Runtime Schema）
+- `scripts/phase2/audit-worker.cjs`：隔离子进程 worker，安装 fs-observer、env Proxy、global snapshot
+- `scripts/phase2/audit-legacy-modules.ts`：审计器编排，child_process 隔离 + temp CWD
+- `tests/unit/cleaning/fixtures/fs-observer.cjs`：fs 调用观测钩子
+- `tests/unit/cleaning/legacy-audit.test.ts`：17 项契约测试（真实子进程，无 mock）
+- `npm run audit:legacy` 脚本
+
+### 真实审计结果
+
+- **审计范围**：`src/data-cleaning/**/*.js`（62 个模块）
+- **SAFE（CREATE_REQUIRE）**：29 个模块
+- **UNSAFE（BLOCKED_UNSAFE_IMPORT）**：33 个模块
+  - 9 个直接 HTML 实体损坏（`&&` → `&amp;&amp;` 等）
+  - 12 个传递性损坏（require 链引用损坏文件）
+  - 7 个 import-time stdout 污染（测试脚本在 import 时执行）
+  - 2 个子进程超时（测试脚本 hang）
+  - 1 个依赖缺失
+  - 2 个其他 SyntaxError
+- **确定性验证**：连续两次运行结果一致（仅 `generated_at`/`duration_ms` 不同）
+- **报告文件**：
+  - `reports/phase2/legacy-module-profiles.json`（机器可读）
+  - `reports/phase2/legacy-module-profiles.md`（人类可读）
+- **Adapter Map**：`docs/PHASE2_ADAPTER_MAP.md` 已基于真实审计结果重写
+
+### 关键发现（推翻 Planning 预判）
+
+1. `schemas/index.js` 和 `config/index.js` 是 SAFE（Planning 误判为有 import-time fs.readFileSync 副作用）
+2. `core/data-cleaner.js` 是 SAFE（Planning 误判为有传递性副作用）
+3. 9 个模块有 HTML 实体损坏（源码中 `&&` 被替换为 `&amp;&amp;`）
+4. Phase 2B 需实现 8 个 Adapter（全部使用 CREATE_REQUIRE 策略）
 
 ## Phase 2 Planning Correction（本轮完成）
 
@@ -120,7 +156,7 @@
 
 ## 下一步唯一动作
 
-1. Phase 2A：合同与副作用审计（`src/server/cleaning/legacy-audit.ts` + `PHASE2_ADAPTER_MAP.md` 冻结 + `LegacyModuleProfile` 记录）。
+1. Phase 2B：基于已冻结的 `docs/PHASE2_ADAPTER_MAP.md`（AUDIT_COMPLETE 状态）实现 8 个 Adapter（cleaner / quality / noop-logger / rules / schema / config / utils / benchmark），全部使用 CREATE_REQUIRE 策略；33 个 UNSAFE 模块保持 BLOCKED_UNSAFE_IMPORT，Phase 2B 不得 import。
 
 ## 最近一次执行
 
