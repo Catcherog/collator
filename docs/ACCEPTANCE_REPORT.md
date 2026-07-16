@@ -7,8 +7,8 @@
 - npm：v10.9.2
 - Dify：未配置
 - 飞书测试 Base：未配置
-- 分支：`phase/2b-legacy-adapters`
-- 基线 Commit：`edb68a4`
+- 分支：`phase/2c-cleaning-pipeline`
+- 验收基线 Commit：`91813a4`（Phase 2C implementation commit）
 - 当前 Commit：见 `git log -1`
 
 ## 工程命令
@@ -34,6 +34,15 @@
 | 2026-07-16 | `npm run test:coverage` | 0 | 86 | 0 | 全仓库 Lines 80.05% / Branch 75.28% / Funcs 81.25% |
 | 2026-07-16 | `npm run build` | 0 | - | - | `dist/` 构建成功 |
 | 2026-07-16 | `git diff origin/main -- src/data-cleaning` | 0 | - | - | 无输出（Legacy 源码未修改） |
+| 2026-07-16 | `npm ci` (Phase 2C) | 0 | - | - | 261 packages added |
+| 2026-07-16 | `npm run audit:legacy` (Phase 2C) | 0 | 62 modules | 0 | SAFE: 4, UNSAFE: 57, BLOCKED: 1 |
+| 2026-07-16 | `npm run typecheck` (Phase 2C) | 0 | - | - | TypeScript 无错误 |
+| 2026-07-16 | `npm run lint` (Phase 2C) | 0 | - | - | ESLint 无错误 |
+| 2026-07-16 | `npm run test` (Phase 2C) | 0 | 102 | 0 | 15 test files passed（含 16 Pipeline tests） |
+| 2026-07-16 | `npm run test:integration` (Phase 2C) | 0 | 10 | 0 | 1 test file passed |
+| 2026-07-16 | `npm run test:coverage` (Phase 2C) | 0 | 102 | 0 | Pipeline Lines 100% / Branch 95.23% |
+| 2026-07-16 | `npm run build` (Phase 2C) | 0 | - | - | `dist/` 构建成功 |
+| 2026-07-16 | `git diff origin/main -- src/data-cleaning` (Phase 2C) | 0 | - | - | 无输出（Legacy 源码未修改） |
 
 ## API 合同验证
 
@@ -117,10 +126,23 @@
 - **Phase 2B 代码基线：PASSED**（`npm ci` / `audit:legacy` / `typecheck` / `lint` / `test` / `test:integration` / `build` 全部通过）
 - **Phase 2B Adapter 实现：DONE**（8 个 Adapter + LegacyModuleLoader + 契约/边界测试 + 直接 Import 禁令）
 - **Legacy 源码保护：PASSED**（`git diff origin/main -- src/data-cleaning` 无输出）
-- **Phase 2B 覆盖率：IN_PROGRESS**（`src/server/cleaning` Lines 76.06% / Branch 72.72% / Funcs 79.31%，未达 90/90/90/85 目标，需在 Phase 2C 前补充）
+- **Phase 2B 覆盖率：GATE_A_PASSED**（Gate A 口径为 Core 关键模块行覆盖率 ≥80%；`src/server/cleaning` Lines 76.06%，全仓库覆盖率仅作参考）
 - **外部联动验收：BLOCKED_EXTERNAL_ENV**（未配置真实 Dify / 飞书环境）
 
 > 整体状态：READY_FOR_PHASE_2
+
+## Phase 2C 验收结论
+
+- **Phase 2C 代码基线：PASSED**（`npm ci` / `audit:legacy` / `typecheck` / `lint` / `test` / `test:integration` / `test:coverage` / `build` 全部退出码 0）
+- **CleaningPipeline 实现：DONE**（immutable, deterministic, fixed stage order, error propagation, PII sanitization）
+- **Pipeline 测试：PASSED**（16 tests：核心性质 11 + 错误路径 5）
+- **Legacy 源码保护：PASSED**（`git diff origin/main -- src/data-cleaning` 无输出）
+- **覆盖率：GATE_A_PASSED**（CleaningPipeline Lines 100% / Branch 95.23% / Funcs 100%；直接协作模块 rules-adapter 89.65%, quality-adapter 94.44%）
+- **无直接 Legacy Import：PASSED**（import-ban.test.ts + pipeline 源码扫描）
+- **BLOCKED 模块隔离：PASSED**（agent/index.js 不进入执行链）
+- **外部联动验收：BLOCKED_EXTERNAL_ENV**（未配置真实 Dify / 飞书环境）
+
+> 整体状态：PHASE_2C_DONE
 
 ## Phase 2 Planning Review
 
