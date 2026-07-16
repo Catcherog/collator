@@ -1,0 +1,1340 @@
+{
+  "generatedAt": "2026-07-16T07:40:58.646Z",
+  "legacyRoot": "src/data-cleaning",
+  "total": 62,
+  "summary": {
+    "safe": 4,
+    "unsafe": 57,
+    "blocked": 1
+  },
+  "profiles": [
+    {
+      "module": "agent/execution/bitable-writer.js",
+      "modulePath": "agent/execution/bitable-writer.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "c0ec418f5a1175073b15cde0471d086d779d04a2912d7af175d1bc372bb6146e"
+    },
+    {
+      "module": "agent/execution/confirmation-ui.js",
+      "modulePath": "agent/execution/confirmation-ui.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "dd4413b7bd966e196a79aff847c3ad70f6de377a97672bd1e9aaba79b1ee5b11"
+    },
+    {
+      "module": "agent/execution/index.js",
+      "modulePath": "agent/execution/index.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "b0fd1fa019ba4166d69d439bfa0f4958822ce2296cb47449625092f8678104dd"
+    },
+    {
+      "module": "agent/execution/linkage-engine.js",
+      "modulePath": "agent/execution/linkage-engine.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "c3b6fa84660e37ccc5b1249cf2f3b1588a7fc69b06ba70bd939b27c969044ce4"
+    },
+    {
+      "module": "agent/execution/rollback-manager.js",
+      "modulePath": "agent/execution/rollback-manager.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "f78a8dd95ebec4b62f594bc27dfafd0ab4f33bb27f765115eff0d13df0761296"
+    },
+    {
+      "module": "agent/index.js",
+      "modulePath": "agent/index.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED",
+      "transitiveSideEffects": [
+        "HTML 实体语法污染导致 Node 无法解析模块"
+      ],
+      "runtimeInterop": [
+        "CJS 模块含 &&amp; 语法错误，require 会抛出 SyntaxError"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "尝试 require 该模块必须抛出 SyntaxError",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "源码存在 HTML 实体污染，无法被 Node CommonJS Loader 解析；V1 不经过旧 Agent 入口",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "aed1da8150928566ee2853c68d99d7ae7518421b6b8d8cbf1d43d61b98f2a8a7",
+      "notes": "9 个 HTML 实体污染模块的代表性示例（其余模块未检出同类污染，但按 BLOCKED 策略统一处理）"
+    },
+    {
+      "module": "agent/perception/dispatcher.js",
+      "modulePath": "agent/perception/dispatcher.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "0075e6906f8ec5202425261cd73d3e40912be932536ff240413c435d5d06a517"
+    },
+    {
+      "module": "agent/perception/doc-parser.js",
+      "modulePath": "agent/perception/doc-parser.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "69c9790716ca5f67ef151575cb8eb30369cdcb01064d0cc4bafe9653e45fd1d9"
+    },
+    {
+      "module": "agent/perception/index.js",
+      "modulePath": "agent/perception/index.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "87b5b730382bd8da9d6f09cb41b33980e45fa184d1ecd738102a95e30329a9b9"
+    },
+    {
+      "module": "agent/perception/input-classifier.js",
+      "modulePath": "agent/perception/input-classifier.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "a874ccd662aa3ad469a1425a65a522d303d09dceedb0d35e4cba37e1cd077403"
+    },
+    {
+      "module": "agent/understanding/ambiguity-detector.js",
+      "modulePath": "agent/understanding/ambiguity-detector.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "da20ab758780e99d23d144e225b690f5f927855acfbf16e7daffaa2e62cf02eb"
+    },
+    {
+      "module": "agent/understanding/confidence-scorer.js",
+      "modulePath": "agent/understanding/confidence-scorer.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "084bb1cc4fb43df3745e7ab2b55cace4884c08e8d2aab04232cdc99e879d363f"
+    },
+    {
+      "module": "agent/understanding/field-extractor.js",
+      "modulePath": "agent/understanding/field-extractor.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "1d6b6922e9149613d0d83c11fa0e1bb513e902a8d4409962cdefe4fe105935fc"
+    },
+    {
+      "module": "agent/understanding/index.js",
+      "modulePath": "agent/understanding/index.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "9d50645bc3d8f57b0d1893630d961e80bd4f6e0769be3896d48728d6498bb4de"
+    },
+    {
+      "module": "agent/understanding/scene-classifier.js",
+      "modulePath": "agent/understanding/scene-classifier.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "18b24ef6086d5edbd927522c5bd98cd246352c3f7a9375eb3a5f3d362b4b0cbb"
+    },
+    {
+      "module": "agent/workflows/base-workflow.js",
+      "modulePath": "agent/workflows/base-workflow.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "cd81e193b21e6fc14b34f23a0ce1b81dd0a991c2ee33082b82a720702efa7f5c"
+    },
+    {
+      "module": "agent/workflows/batch-import.js",
+      "modulePath": "agent/workflows/batch-import.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "80fd866452370b597b942dcdb062a5e285b61b789d7230e4a13336b11a0e1a26"
+    },
+    {
+      "module": "agent/workflows/customer-consultation.js",
+      "modulePath": "agent/workflows/customer-consultation.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "5b1e4388b14561aa537f5576057608e13ed9f4845254d813d371a13ec880c4c4"
+    },
+    {
+      "module": "agent/workflows/index.js",
+      "modulePath": "agent/workflows/index.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "508e07e033f9246b25ea2ee81b352c7d7c7381dd91dbe75131b54c8df7ce99da"
+    },
+    {
+      "module": "agent/workflows/namecard-ocr.js",
+      "modulePath": "agent/workflows/namecard-ocr.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "5f86b7c162a742276be70191e1278b95ee4866f6a1f52983c8a3bca5286181e7"
+    },
+    {
+      "module": "agent/workflows/resource-onboarding.js",
+      "modulePath": "agent/workflows/resource-onboarding.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "1003ba4060a02a2e39075f824d09b4d78a981b1daf4a0533eb970080749882aa"
+    },
+    {
+      "module": "benchmark/metrics.js",
+      "modulePath": "benchmark/metrics.js",
+      "importSafe": true,
+      "importStrategy": "CREATE_REQUIRE",
+      "transitiveSideEffects": [
+        "通过 CommonJS Loader 读取固定 JSON 静态依赖"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，ESM 需通过 createRequire 加载；无类型声明"
+      ],
+      "allowedExports": [
+        "isEqual",
+        "accuracy",
+        "computeFieldAccuracy",
+        "computeCorrectionsAccuracy",
+        "computeStatusMatch",
+        "computeCasePassed",
+        "computeSynonymRecall",
+        "computeRequiredInterception",
+        "scoreWithinRange",
+        "computeWER",
+        "computeCRA"
+      ],
+      "sideEffectTest": "导入 benchmark/metrics.js 不访问文件系统、不依赖当前时间",
+      "handling": "REUSE",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "fe9b1cffbd4385f8327661baecf66c4676b14a1a8aa8ffa83d6474d4288b2344"
+    },
+    {
+      "module": "benchmark/run-benchmark.js",
+      "modulePath": "benchmark/run-benchmark.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "9ebc7eae8c418635d83d46c212a88468dfdc0aecd0b218d30be800aac63c9881"
+    },
+    {
+      "module": "config/index.js",
+      "modulePath": "config/index.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "import-time 文件读取、目录创建或全局缓存初始化"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，ESM 需通过 createRequire 加载；无类型声明"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "导入 config/index.js 不创建 logs 目录、不写文件、不初始化网络客户端",
+      "handling": "WRAP",
+      "deprecateReason": "模块存在 import-time 副作用，不适合通过 CommonJS Loader 直接加载；由 Adapter 隔离或重新实现",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "a9a0282fd1eb74a1c37a77186cdbe33eed43f9ccb85bd94ac8921af1a56e0499",
+      "notes": "import-time 读取 synonyms.json/cleaning-rules.json 并缓存；getRuleLearner() 会构造 RuleLearner 读写文件。config-adapter 改为按需读取 JSON。"
+    },
+    {
+      "module": "core/batch-processor.js",
+      "modulePath": "core/batch-processor.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "64a9e0886fcaaebfbbc55af2904d506de9e37d864e27aefffa1795367bc2e636"
+    },
+    {
+      "module": "core/data-cleaner.js",
+      "modulePath": "core/data-cleaner.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "import-time 文件读取、目录创建或全局缓存初始化"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，ESM 需通过 createRequire 加载；无类型声明"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "导入 core/data-cleaner.js 不创建 logs 目录、不写文件、不初始化网络客户端",
+      "handling": "EXTRACT_PURE_FUNCTION",
+      "deprecateReason": "模块存在 import-time 副作用，不适合通过 CommonJS Loader 直接加载；由 Adapter 隔离或重新实现",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "1723e65854e8a089dfee12541219ef1351b2769fff8044148bd17be822aeae16",
+      "notes": "导入闭包触发 schemas/index.js 与 config/index.js 的 import-time 文件读取，且构造 DataCleaner 会创建 logs 目录。Phase 2B 不通过 Loader 加载，改为提取纯函数实现。"
+    },
+    {
+      "module": "core/data-scanner.js",
+      "modulePath": "core/data-scanner.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "88c3046b5405f0edc9c40bf991fcc2d70c4a97bf977ea3d44d61079a7fb9773c"
+    },
+    {
+      "module": "core/index.js",
+      "modulePath": "core/index.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "2e77c252190d8e1a20c889937e6ac93e6d1a6691e64dcb5ea9587188b4e88557"
+    },
+    {
+      "module": "core/operation-logger.js",
+      "modulePath": "core/operation-logger.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "import-time 文件读取、目录创建或全局缓存初始化"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，ESM 需通过 createRequire 加载；无类型声明"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "导入 core/operation-logger.js 不创建 logs 目录、不写文件、不初始化网络客户端",
+      "handling": "WRAP",
+      "deprecateReason": "模块存在 import-time 副作用，不适合通过 CommonJS Loader 直接加载；由 Adapter 隔离或重新实现",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "c2900398df84ead991c05e9a20f405bb7d394e06368523e37a63d524250d6bd5",
+      "notes": "构造时调用 fs.mkdirSync 创建日志目录，运行时写文件。Phase 2B 用 noop-logger-adapter 禁用文件 I/O。"
+    },
+    {
+      "module": "core/quality-scorer.js",
+      "modulePath": "core/quality-scorer.js",
+      "importSafe": true,
+      "importStrategy": "CREATE_REQUIRE",
+      "transitiveSideEffects": [
+        "通过 CommonJS Loader 读取固定 JSON 静态依赖"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，ESM 需通过 createRequire 加载；无类型声明"
+      ],
+      "allowedExports": [
+        "QualityScorer",
+        "createQualityScorer"
+      ],
+      "sideEffectTest": "导入 quality-scorer.js 只读固定 JSON 配置与 Schema；不触发网络或文件写入",
+      "handling": "WRAP",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [
+        {
+          "modulePath": "schemas/customer.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "schemas/project.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "schemas/product.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "schemas/resource.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "schemas/material.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "schemas/research.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "schemas/sop.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "config/synonyms.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "config/cleaning-rules.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        }
+      ],
+      "sourceHash": "bb16f014922b1c896933cc6425bc68d91f7b0c84dbfc69e36e1b62aa02f070a6"
+    },
+    {
+      "module": "core/rule-learning.js",
+      "modulePath": "core/rule-learning.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "3299ae751d218053ddb704648ea7f95c7359aa76c5a7316829915da75b34e499"
+    },
+    {
+      "module": "core/test-batch.js",
+      "modulePath": "core/test-batch.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "e385f138a13d3bdfe0ba21bd3eb1f987de39001b300664a4280c201cd4531f33"
+    },
+    {
+      "module": "core/test-cleaner.js",
+      "modulePath": "core/test-cleaner.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "84cf47bf064419465bd134f9dcfbfb2b41bf4311b5e699ab0c1627b9aefddb16"
+    },
+    {
+      "module": "core/test-learning.js",
+      "modulePath": "core/test-learning.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "1c7171ad844e570c66684dcbad51902021582ced0248d906fa58d8e1ab72111c"
+    },
+    {
+      "module": "core/test-logger.js",
+      "modulePath": "core/test-logger.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "f3983cc72153baa62693a4b2dd4dfb9482a2f552be91efa24a8f520e15812ee2"
+    },
+    {
+      "module": "core/test-quality.js",
+      "modulePath": "core/test-quality.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "e2c54023694917bebf49dbf569746ad2ada82b8a1e3b303a349ef0a326047b56"
+    },
+    {
+      "module": "core/test-scanner.js",
+      "modulePath": "core/test-scanner.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "95b506bcdba5a7537f5df24d7cc6551ac73ca958cdf834c60cbe97b7c8bf23ae"
+    },
+    {
+      "module": "examples/example-add-synonym.js",
+      "modulePath": "examples/example-add-synonym.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "cac1f767189dd74c1af7084ecab064db0ae1d61b917160cf22b53e004e443d3f"
+    },
+    {
+      "module": "examples/example-batch-process.js",
+      "modulePath": "examples/example-batch-process.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "5b0f8579739b9ba07519120280196053a87e19331002a04c6c88ee7077d59aa4"
+    },
+    {
+      "module": "examples/example-single-clean.js",
+      "modulePath": "examples/example-single-clean.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "8e13480f1f1219c5a197a150f9198ddfb5ffaf589174802c0cb1c58c4dc7c0ad"
+    },
+    {
+      "module": "index.js",
+      "modulePath": "index.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "b49831a23213bee7f3d6b99e1db4a832ac9108d2d5404a67a457f709840208d8"
+    },
+    {
+      "module": "multimodal/asr/feishu-minutes-adapter.js",
+      "modulePath": "multimodal/asr/feishu-minutes-adapter.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "f6e4ae5dc8c026a46d8e378fbd4f71509374bdfb2ca7bbe40d65371253e72f6e"
+    },
+    {
+      "module": "multimodal/asr/index.js",
+      "modulePath": "multimodal/asr/index.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "7f8d27175b51f24b209167920a8cb9ca2c67720839e5a83db4813e4ab5bcc153"
+    },
+    {
+      "module": "multimodal/asr/local-whisper-adapter.js",
+      "modulePath": "multimodal/asr/local-whisper-adapter.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "0a851c51e90af2fcd7e69f51d76cb44fc7a00575c2dfae3cd72ffd9fddbca785"
+    },
+    {
+      "module": "multimodal/asr/test-asr.js",
+      "modulePath": "multimodal/asr/test-asr.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "2348c8d4bd582d76fd416345f71fff9004d97861b52de1f76715c9391392922a"
+    },
+    {
+      "module": "multimodal/asr/wechat-voice-converter.js",
+      "modulePath": "multimodal/asr/wechat-voice-converter.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "bb28738b1d02614d818de7a1073d1b06309b91189c1d92f67e1c9cd38ed16ef6"
+    },
+    {
+      "module": "multimodal/clip/index.js",
+      "modulePath": "multimodal/clip/index.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "0e44b1d11095433d85fc16e8f7f6f276bce34986b3234bc412c905ffb89a44e5"
+    },
+    {
+      "module": "multimodal/clip/python-bridge.js",
+      "modulePath": "multimodal/clip/python-bridge.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "8b31dcab4958f4e345483a3aa9d855ef8eb6715a147d7a6a70e3c6e494f68a5f"
+    },
+    {
+      "module": "multimodal/clip/test-clip.js",
+      "modulePath": "multimodal/clip/test-clip.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "61847a17474bc0752f75b78399e86676b11e8569dc5f03107ecd3e0950aa685d"
+    },
+    {
+      "module": "multimodal/ocr/business-card-parser.js",
+      "modulePath": "multimodal/ocr/business-card-parser.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "519d5e18b1addb742458c4987164a37a7e318921ff3d8fc9955f0dafb95000bf"
+    },
+    {
+      "module": "multimodal/ocr/feishu-ocr-adapter.js",
+      "modulePath": "multimodal/ocr/feishu-ocr-adapter.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "be5e6e734cf5f690cd2eeea1ef2de454ffa4d9bb8d1776ca4c8b47d2701bdce0"
+    },
+    {
+      "module": "multimodal/ocr/index.js",
+      "modulePath": "multimodal/ocr/index.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "8e30d1ea0909a93fa3c33bc15294de7ee71f43aca93a1a530bc5e858a38fe32e"
+    },
+    {
+      "module": "multimodal/ocr/tesseract-adapter.js",
+      "modulePath": "multimodal/ocr/tesseract-adapter.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "037586e9377fb260e111b9f1dd658c46aa3c86571f4b2bc0daa0985e256af2ed"
+    },
+    {
+      "module": "multimodal/ocr/test-ocr.js",
+      "modulePath": "multimodal/ocr/test-ocr.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "4f90ee509df43a44e47e8ed816f7bf59fa10aaef2d92b62a897a41ab40718b5b"
+    },
+    {
+      "module": "multimodal/test-modules.js",
+      "modulePath": "multimodal/test-modules.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "5b23e0d8b9f0a7ac758e70c74ae2d8f73d289bd950d5a9d1bc85b1ecfa6e99e6"
+    },
+    {
+      "module": "rules/index.js",
+      "modulePath": "rules/index.js",
+      "importSafe": true,
+      "importStrategy": "CREATE_REQUIRE",
+      "transitiveSideEffects": [
+        "通过 CommonJS Loader 读取固定 JSON 静态依赖"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，ESM 需通过 createRequire 加载；无类型声明"
+      ],
+      "allowedExports": [
+        "validateRecord",
+        "validateField",
+        "validateRequiredFields",
+        "validateLogicConsistency",
+        "validateStateTransition",
+        "makeIssue",
+        "isEmpty"
+      ],
+      "sideEffectTest": "导入 rules/index.js 只读固定 JSON 配置与 Schema；不触发网络或文件写入",
+      "handling": "EXTRACT_PURE_FUNCTION",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [
+        {
+          "modulePath": "schemas/customer.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "schemas/project.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "schemas/product.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "schemas/resource.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "schemas/material.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "schemas/research.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "schemas/sop.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "config/synonyms.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        },
+        {
+          "modulePath": "config/cleaning-rules.json",
+          "withinAllowedRange": true,
+          "readOnly": true,
+          "deterministic": true
+        }
+      ],
+      "sourceHash": "31b86d89de5871805e46fdec996ee6c776c236905d5a4bfd08915af8adfa9659"
+    },
+    {
+      "module": "rules/test-rules.js",
+      "modulePath": "rules/test-rules.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "3d291adc3549748cbee996732496d8c8ca7de43821bed0d9e74e68003e05db85"
+    },
+    {
+      "module": "schemas/index.js",
+      "modulePath": "schemas/index.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "import-time 文件读取、目录创建或全局缓存初始化"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，ESM 需通过 createRequire 加载；无类型声明"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "导入 schemas/index.js 不创建 logs 目录、不写文件、不初始化网络客户端",
+      "handling": "WRAP",
+      "deprecateReason": "模块存在 import-time 副作用，不适合通过 CommonJS Loader 直接加载；由 Adapter 隔离或重新实现",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "6b7913dd28a3dbe9f3fdc3a2e7cc1798b0a3dbe7a948d8bb819ac8c6690250c6",
+      "notes": "import-time 读取 7 个 schema JSON 文件并缓存。schema-adapter 改为按需读取 customer.json。"
+    },
+    {
+      "module": "test-integration.js",
+      "modulePath": "test-integration.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "f64283b696b943c68da1abae6f562487fcab5e00abc25090348f72efc41ef722"
+    },
+    {
+      "module": "test-multimodal-integration.js",
+      "modulePath": "test-multimodal-integration.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "4c9f30cfe68894263a0656da1a8fef4a7a98ea2d5e81e2dd240795d8d8538ffe"
+    },
+    {
+      "module": "utils/index.js",
+      "modulePath": "utils/index.js",
+      "importSafe": true,
+      "importStrategy": "CREATE_REQUIRE",
+      "transitiveSideEffects": [
+        "通过 CommonJS Loader 读取固定 JSON 静态依赖"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，ESM 需通过 createRequire 加载；无类型声明"
+      ],
+      "allowedExports": [
+        "toHalfWidth",
+        "sanitizePhone",
+        "sanitizeText",
+        "sanitizeUrl",
+        "isValidPhone",
+        "isValidWechat",
+        "isValidUrl",
+        "isValidRating",
+        "parseAmount",
+        "formatDate",
+        "chineseToNum",
+        "parseDate",
+        "normalizeBudget",
+        "findMatchingStyle",
+        "findMatchingShootType"
+      ],
+      "sideEffectTest": "导入 utils/index.js 不创建 logs 目录；parseDate 返回可序列化对象",
+      "handling": "EXTRACT_PURE_FUNCTION",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "23c05e1bcf88729b009ab0d1a8a70444f65eb8888c2b31bb487d5a859200252f"
+    },
+    {
+      "module": "utils/test-utils.js",
+      "modulePath": "utils/test-utils.js",
+      "importSafe": false,
+      "importStrategy": "BLOCKED_UNSAFE_IMPORT",
+      "transitiveSideEffects": [
+        "超出 Phase 2B 范围，或存在文件/网络/环境副作用"
+      ],
+      "runtimeInterop": [
+        "CJS module.exports，未做 Adapter 适配"
+      ],
+      "allowedExports": [],
+      "sideEffectTest": "生产代码不直接 import 该模块；扫描测试验证无直接引用",
+      "handling": "DEPRECATE_WITH_REASON",
+      "deprecateReason": "超出 Phase 2B 实施范围或存在不可接受的副作用；旧测试与脚本保持原样",
+      "mutatesInput": false,
+      "staticLoaderDependencies": [],
+      "sourceHash": "45ee26a6c9ea7f732c8f1af8ddac92849d419ab8a5bd484396fd5d4a93fd5e43"
+    }
+  ]
+}
