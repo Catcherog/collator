@@ -9,6 +9,9 @@ import type {
 } from '../domain/ingestion.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../domain/errors.js';
 import type { TaskRepository } from '../repositories/task-repository.js';
+import type { NewReviewRecord, ReviewRepository } from '../repositories/review-repository.js';
+import { mapCustomerCandidate } from '../mapping/customer-candidate-mapper.js';
+import { runCleaningPipeline } from '../cleaning/pipeline/cleaning-pipeline.js';
 
 function computeIdempotencyKey(req: CreateIngestionRequest): string {
   const normalizedContent = req.content.trim();
@@ -22,8 +25,15 @@ function nowIso(): string {
 
 export class IngestionService {
   private readonly pendingCreations = new Map<string, Promise<IngestionResponse>>();
+  private readonly pendingCandidates = new Map<
+    string,
+    Promise<{ ingestion_id: string; status: string; review_record_id: string }>
+  >();
 
-  constructor(private readonly repository: TaskRepository) {}
+  constructor(
+    private readonly repository: TaskRepository,
+    private readonly reviewRepository: ReviewRepository
+  ) {}
 
   async createIngestion(req: CreateIngestionRequest): Promise<IngestionResponse> {
     if (req.target_domain !== 'customer_consultation') {
@@ -107,10 +117,28 @@ export class IngestionService {
     ingestionId: string,
     req: CandidateCallbackRequest
   ): Promise<{ ingestion_id: string; status: string; review_record_id: string }> {
+    // Per-ingestion serialization: concurrent callbacks for the same ingestion
+    // share a single in-flight promise so the pipeline runs once and all
+    // callers observe the same review_record_id.
+    const inFlight = this.pendingCandidates.get(ingestionId);
+    if (inFlight) return inFlight;
+
+    const promise = this.doReceiveCandidate(ingestionId, req).finally(() => {
+      this.pendingCandidates.delete(ingestionId);
+    });
+    this.pendingCandidates.set(ingestionId, promise);
+    return promise;
+  }
+
+  private async doReceiveCandidate(
+    ingestionId: string,
+    req: CandidateCallbackRequest
+  ): Promise<{ ingestion_id: string; status: string; review_record_id: string }> {
     const task = await this.getIngestion(ingestionId);
 
+    // Idempotent replay: candidate already processed (success or failure).
+    // Return existing review_record_id (empty string when validation_failed).
     if (task.candidate) {
-      // Idempotent replay: return existing review record
       return {
         ingestion_id: task.ingestion_id,
         status: task.status,
@@ -118,24 +146,84 @@ export class IngestionService {
       };
     }
 
-    const reviewRecordId = `rec_review_${randomUUID().replace(/-/g, '')}`;
+    // Step 1: Map candidate fields to the canonical Chinese schema.
+    const { mappedFields, warnings: mapperWarnings } = mapCustomerCandidate(
+      req.candidate.fields
+    );
+    const canonicalCandidate = { ...req.candidate, fields: mappedFields };
+
+    // Step 2: Run the deterministic cleaning pipeline.
+    const pipelineResult = runCleaningPipeline({
+      schemaKey: 'customer',
+      recordType: task.target_domain,
+      data: mappedFields,
+    });
+
     const now = nowIso();
+
+    // Convert pipeline errors to the task's {field, code, message} shape,
+    // using `stage` as the field identifier.
+    const pipelineErrorsAsTaskErrors = pipelineResult.errors.map((e) => ({
+      field: e.stage,
+      code: e.code,
+      message: e.message,
+    }));
+
+    // Step 3: On pipeline failure, save task as validation_failed and create no review.
+    if (!pipelineResult.success) {
+      const failed: IngestionTask = {
+        ...task,
+        status: 'validation_failed',
+        candidate: canonicalCandidate,
+        workflow_run_id: req.workflow_run_id,
+        warnings: mapperWarnings,
+        errors: pipelineErrorsAsTaskErrors,
+        updated_at: now,
+      };
+      await this.repository.save(failed);
+      return {
+        ingestion_id: failed.ingestion_id,
+        status: 'validation_failed',
+        review_record_id: '',
+      };
+    }
+
+    // Step 4: On success, create the review record with full pipeline evidence.
+    const newReview: NewReviewRecord = {
+      ingestion_id: task.ingestion_id,
+      status: 'pending_review',
+      candidate: canonicalCandidate,
+      normalized_fields: pipelineResult.standardizedRecord,
+      validation: {
+        pipelineVersion: pipelineResult.pipelineVersion,
+        stages: pipelineResult.stages,
+        validation: pipelineResult.validation,
+        corrections: pipelineResult.corrections,
+        warnings: pipelineResult.warnings,
+        errors: pipelineResult.errors,
+        qualityReport: pipelineResult.qualityReport,
+      },
+      updated_at: now,
+    };
+    const review = await this.reviewRepository.create(newReview);
 
     const updated: IngestionTask = {
       ...task,
       status: 'pending_review',
-      candidate: req.candidate,
+      candidate: canonicalCandidate,
       workflow_run_id: req.workflow_run_id,
-      review_record_id: reviewRecordId,
+      review_record_id: review.review_record_id,
+      normalized_fields: pipelineResult.standardizedRecord,
+      warnings: mapperWarnings,
+      errors: pipelineErrorsAsTaskErrors,
       updated_at: now,
     };
-
     await this.repository.save(updated);
 
     return {
       ingestion_id: updated.ingestion_id,
-      status: updated.status,
-      review_record_id: reviewRecordId,
+      status: 'pending_review',
+      review_record_id: review.review_record_id,
     };
   }
 
