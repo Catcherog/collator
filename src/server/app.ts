@@ -3,15 +3,41 @@ import { loadConfig } from './config.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestionRoutes } from './routes/ingestions.js';
 import { IngestionService } from './services/ingestion-service.js';
-import { createTaskRepository } from './repositories/repository-factory.js';
+import {
+  createRepositories,
+} from './repositories/repository-factory.js';
+import type { TaskRepository } from './repositories/task-repository.js';
+import type { ReviewRepository } from './repositories/review-repository.js';
 import { CollatorError } from './domain/errors.js';
 
-export async function buildApp(options?: { repository?: import('./repositories/task-repository.js').TaskRepository }) {
+export interface BuildAppOptions {
+  repository?: TaskRepository;
+  reviewRepository?: ReviewRepository;
+}
+
+export async function buildApp(options?: BuildAppOptions) {
   const config = loadConfig();
-  // Production wiring: pick repository by config.taskRepository. Tests can
-  // pass an explicit repository to bypass config-driven selection.
-  const repository = options?.repository ?? createTaskRepository(config);
-  const service = new IngestionService(repository);
+  // Production wiring: build the matching task+review bundle from config.
+  // Tests can pass explicit repositories to bypass config-driven selection.
+  let repository: TaskRepository;
+  let reviewRepository: ReviewRepository;
+  if (options?.repository && options?.reviewRepository) {
+    repository = options.repository;
+    reviewRepository = options.reviewRepository;
+  } else if (options?.repository) {
+    // Backward-compat: caller injected only a task repository. Synthesize
+    // an in-memory review repository so the service can still run.
+    repository = options.repository;
+    const { InMemoryReviewRepository } = await import(
+      './repositories/in-memory-review-repository.js'
+    );
+    reviewRepository = new InMemoryReviewRepository();
+  } else {
+    const bundle = createRepositories(config);
+    repository = bundle.taskRepository;
+    reviewRepository = bundle.reviewRepository;
+  }
+  const service = new IngestionService(repository, reviewRepository);
 
   const app = Fastify({
     logger: {
@@ -52,7 +78,7 @@ export async function buildApp(options?: { repository?: import('./repositories/t
     await ingestionRoutes(instance, service, config.webhookSecret);
   });
 
-  return { app, config, service, repository };
+  return { app, config, service, repository, reviewRepository };
 }
 
 async function main() {

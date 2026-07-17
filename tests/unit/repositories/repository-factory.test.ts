@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { createTaskRepository } from '../../../src/server/repositories/repository-factory.js';
+import {
+  createRepositories,
+  createTaskRepository,
+} from '../../../src/server/repositories/repository-factory.js';
 import { InMemoryTaskRepository } from '../../../src/server/repositories/in-memory-task-repository.js';
+import { InMemoryReviewRepository } from '../../../src/server/repositories/in-memory-review-repository.js';
 import { FeishuTaskRepository } from '../../../src/server/repositories/feishu-task-repository.js';
+import { FeishuReviewRepository } from '../../../src/server/repositories/feishu-review-repository.js';
 import type { Config } from '../../../src/server/config.js';
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
@@ -28,7 +33,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
   } as Config;
 }
 
-describe('createTaskRepository', () => {
+describe('createTaskRepository (legacy compat)', () => {
   describe('TASK_REPOSITORY=memory', () => {
     it('returns an InMemoryTaskRepository', () => {
       const repo = createTaskRepository(makeConfig({ taskRepository: 'memory' }));
@@ -91,6 +96,81 @@ describe('createTaskRepository', () => {
         expect(e).not.toBeInstanceOf(InMemoryTaskRepository);
         expect((e as Error).message).toMatch(/FEISHU_/);
       }
+    });
+  });
+});
+
+describe('createRepositories (TASK-002)', () => {
+  describe('TASK_REPOSITORY=memory', () => {
+    it('returns an InMemoryTaskRepository as taskRepository', () => {
+      const bundle = createRepositories(makeConfig({ taskRepository: 'memory' }));
+      expect(bundle.taskRepository).toBeInstanceOf(InMemoryTaskRepository);
+    });
+
+    it('returns an InMemoryReviewRepository as reviewRepository', () => {
+      const bundle = createRepositories(makeConfig({ taskRepository: 'memory' }));
+      expect(bundle.reviewRepository).toBeInstanceOf(InMemoryReviewRepository);
+    });
+
+    it('ignores feishu config when memory mode is selected', () => {
+      const bundle = createRepositories(makeConfig({ taskRepository: 'memory' }));
+      expect(bundle.taskRepository).toBeInstanceOf(InMemoryTaskRepository);
+      expect(bundle.reviewRepository).toBeInstanceOf(InMemoryReviewRepository);
+    });
+  });
+
+  describe('TASK_REPOSITORY=feishu', () => {
+    const fullFeishu: Partial<Config> = {
+      taskRepository: 'feishu',
+      feishuAppId: 'cli_xxx',
+      feishuAppSecret: 'secret_xxx',
+      feishuBaseAppToken: 'base_token_xxx',
+      feishuIngestionTableId: 'tblIngestion',
+      feishuReviewTableId: 'tblReview',
+      feishuWriteLogTableId: 'tblWriteLog',
+      feishuCustomerTableId: 'tblCustomer',
+    };
+
+    it('returns FeishuTaskRepository and FeishuReviewRepository when all required config is present', () => {
+      const bundle = createRepositories(makeConfig(fullFeishu));
+      expect(bundle.taskRepository).toBeInstanceOf(FeishuTaskRepository);
+      expect(bundle.reviewRepository).toBeInstanceOf(FeishuReviewRepository);
+    });
+
+    it('throws a clear error when feishuReviewTableId is missing', () => {
+      expect(() =>
+        createRepositories(
+          makeConfig({ ...fullFeishu, feishuReviewTableId: undefined })
+        )
+      ).toThrow(/FEISHU_REVIEW_TABLE_ID/);
+    });
+
+    it('throws a clear error when feishuReviewTableId is empty', () => {
+      expect(() =>
+        createRepositories(
+          makeConfig({ ...fullFeishu, feishuReviewTableId: '   ' })
+        )
+      ).toThrow(/FEISHU_REVIEW_TABLE_ID/);
+    });
+
+    it('does not silently fall back to InMemoryReviewRepository on missing review table', () => {
+      try {
+        createRepositories(
+          makeConfig({ ...fullFeishu, feishuReviewTableId: undefined })
+        );
+        expect.fail('should have thrown');
+      } catch (e) {
+        expect(e).not.toBeInstanceOf(InMemoryReviewRepository);
+        expect((e as Error).message).toMatch(/FEISHU_REVIEW_TABLE_ID/);
+      }
+    });
+
+    it('still surfaces existing ingestion table validation', () => {
+      expect(() =>
+        createRepositories(
+          makeConfig({ ...fullFeishu, feishuIngestionTableId: undefined })
+        )
+      ).toThrow(/FEISHU_INGESTION_TABLE_ID/);
     });
   });
 });
