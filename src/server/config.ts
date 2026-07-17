@@ -13,6 +13,13 @@ const configSchema = z.object({
   difyWorkflowApiKey: z.string().optional(),
   difyWorkflowId: z.string().optional(),
 
+  // TASK_REPOSITORY selects the production TaskRepository implementation.
+  // - `memory` (default): InMemoryTaskRepository, used by tests and dev.
+  // - `feishu`: FeishuTaskRepository backed by a real Feishu Base. All
+  //   FEISHU_* credentials below must be set, otherwise startup fails. There
+  //   is no silent fallback to memory (TASK-001 acceptance).
+  taskRepository: z.enum(['memory', 'feishu']).default('memory'),
+
   feishuAppId: z.string().optional(),
   feishuAppSecret: z.string().optional(),
   feishuBaseAppToken: z.string().optional(),
@@ -22,6 +29,24 @@ const configSchema = z.object({
   feishuCustomerTableId: z.string().optional(),
 
   defaultTimezone: z.string().default('Asia/Shanghai'),
+}).superRefine((data, ctx) => {
+  if (data.taskRepository !== 'feishu') return;
+  const required: Array<[keyof typeof data, string]> = [
+    ['feishuAppId', 'FEISHU_APP_ID'],
+    ['feishuAppSecret', 'FEISHU_APP_SECRET'],
+    ['feishuBaseAppToken', 'FEISHU_BASE_APP_TOKEN'],
+    ['feishuIngestionTableId', 'FEISHU_INGESTION_TABLE_ID'],
+  ];
+  for (const [key, envName] of required) {
+    const v = data[key];
+    if (typeof v !== 'string' || v.trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `TASK_REPOSITORY=feishu requires ${envName} to be set (no silent fallback to memory)`,
+      });
+    }
+  }
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -39,6 +64,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     difyBaseUrl: env.DIFY_BASE_URL,
     difyWorkflowApiKey: env.DIFY_WORKFLOW_API_KEY,
     difyWorkflowId: env.DIFY_WORKFLOW_ID,
+
+    taskRepository: env.TASK_REPOSITORY,
 
     feishuAppId: env.FEISHU_APP_ID,
     feishuAppSecret: env.FEISHU_APP_SECRET,

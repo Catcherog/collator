@@ -3,10 +3,11 @@
 ## 项目当前阶段
 
 - 项目名称：collator（数据清洗服务）
-- 当前阶段：Phase 2C 完成，准备 Gate C 数据质量验收
-- 当前里程碑：V1 Core Service 验收
-- 当前任务位置：docs/ai/tasks/（暂无活动任务文件，当前处于 Phase 2C 完成、Gate C 数据质量验收准备阶段）
-- 最近一次更新：2026-07-16
+- 当前阶段：Phase 3A / TASK-001 完成，等待 GPT 复审
+- 当前里程碑：Phase 3 飞书集成 / V1 Core Service 验收
+- 当前任务位置：docs/ai/tasks/TASK-001.md（Status: DONE — AWAITING_GPT_REVIEW）
+- 当前分支：phase/3-feishu-integration
+- 最近一次更新：2026-07-17
 
 ## GPT 与 Trae 的角色
 
@@ -78,9 +79,9 @@ Trae 不得把 GPT 输出视为绝对正确。GPT 输出是任务输入，本地
 
 ## 当前任务位置
 
-- 当前任务文件：暂无活动任务文件（Phase 2C 已完成，准备进入 Gate C 数据质量验收）
-- 当前分支：phase/2c-cleaning-pipeline
-- 当前 PR：无
+- 当前任务文件：docs/ai/tasks/TASK-001.md（Status: DONE — AWAITING_GPT_REVIEW）
+- 当前分支：phase/3-feishu-integration
+- 当前 PR：无（待 GPT 复审通过后由用户决定是否创建 PR）
 
 ## 项目事实来源声明
 

@@ -51,6 +51,15 @@
 | 2026-07-17 | `npm run audit:legacy` (Phase 2F) | 0 | 62 modules | 0 | SAFE: 4, UNSAFE: 57, BLOCKED: 1 |
 | 2026-07-17 | `npm run evaluate` (Phase 2F) | 0 | 50 | 0 | Gate C-Core PASS，50/50 case，所有指标 100% |
 | 2026-07-17 | `git diff origin/main -- src/data-cleaning` (Phase 2F) | 0 | - | - | 无输出（Legacy 源码未修改） |
+| 2026-07-17 | `npm run typecheck` (Phase 3A) | 0 | - | - | TypeScript 无错误（含 scripts/） |
+| 2026-07-17 | `npm run lint` (Phase 3A) | 0 | - | - | ESLint 无错误（eslint src tests scripts） |
+| 2026-07-17 | `npm run test` (Phase 3A) | 0 | 194 | 0 | 24 test files passed（含 14 feishu-client + 9 feishu-task-repository + 8 repository-factory 单元测试） |
+| 2026-07-17 | `npm run test:integration` (Phase 3A) | 0 | 27 | 0 | 3 test files passed（含 6 feishu-task-repository 跨实例集成测试） |
+| 2026-07-17 | `npm run test:coverage` (Phase 3A) | 0 | 194 | 0 | All files Lines 85.92% / Branch 81.2% / Funcs 87.83% / Lines 85.92%；feishu-client Lines 95.3%；feishu-errors Lines 100%；feishu-task-repository Lines 91.2%；repository-factory Lines 100%（合并显示行 86.95%） |
+| 2026-07-17 | `npm run build` (Phase 3A) | 0 | - | - | `dist/` 构建成功 |
+| 2026-07-17 | `npm run audit:legacy` (Phase 3A) | 0 | 62 modules | 0 | SAFE: 4, UNSAFE: 57, BLOCKED: 1 |
+| 2026-07-17 | `npx tsx src/scripts/temp/smoke-test-lark-cli.ts` (Phase 3A) | 0 | 4 steps | 0 | 真实 Base 结构核验：create→search→update→search 全流程；字段深度等价；datetime 毫秒时间戳格式正确；单选字段返回数组形式符合预期；cleanup 后 0 记录残留 |
+| 2026-07-17 | `git diff origin/main -- src/data-cleaning` (Phase 3A) | 0 | - | - | 无输出（Legacy 源码未修改） |
 
 ## API 合同验证
 
@@ -210,3 +219,50 @@
 | CleaningPipeline | 100% | 95.65% | 100% | 100% |
 
 > 整体状态：PHASE_2F_GATE_C_CORE_DONE
+
+## Phase 3A Gate A 验收结论
+
+- **Phase 3A 代码基线：PASSED**（`typecheck` / `lint` / `test` / `test:integration` / `test:coverage` / `build` / `audit:legacy` 全部退出码 0）
+- **TASK-001 飞书运行表：DONE**
+  - `Collator 摄入任务`（tblGY7zQxcQ7GELB）：7 字段（摄入 ID / 幂等键 / 状态单选 / 来源记录 ID / 任务快照 JSON / 创建时间 / 更新时间）
+  - `Collator 审核任务`（tblExcx7KC9pg8DR）：9 字段（摄入 ID / 状态 / 候选 JSON / 标准化结果 JSON / 校验结果 JSON / 审核人 / 审核决定 / 人工修正 JSON / 更新时间）
+  - `Collator 写入日志`（tblUCinPv92Tkhlt）：8 字段（写入日志 ID / 摄入 ID / 目标表 ID / 业务记录 ID / 写入状态单选 / 错误码 / 脱敏错误消息 / 创建时间）
+  - 客户表（tblmRVrUnfodlzlo）新增 `Collator 摄入 ID` 隐藏文本字段，未修改任何现有业务字段
+- **FeishuClient 实现：DONE**（Node 20 原生 fetch；tenant_access_token 缓存 + 60s 提前刷新；401 单次刷新重试；CRUD + searchRecords；fetchFn 注入支持单测）
+- **FeishuTaskRepository 实现：DONE**（JSON 快照策略；save 先 search by 摄入 ID 决定 update/create；datetime 毫秒时间戳）
+- **Repository Factory：DONE**（feishu 模式下缺凭据抛错，不静默回退；memory 模式保持当前测试行为）
+- **配置与组合根：DONE**（config.ts superRefine 校验 feishu 必需凭据；app.ts 用 createTaskRepository 替代直接 new）
+- **生产代码无 lark-cli 调用、无飞书 SDK 依赖：PASSED**（仅 src/scripts/temp/ 一次性脚本使用 lark-cli）
+- **真实 Base 结构核验：PASSED**（lark-cli 端到端烟雾测试：create→search→update→search 全流程；字段深度等价；datetime 毫秒时间戳格式正确；单选字段返回数组形式符合预期；cleanup 后 0 记录残留）
+- **Legacy 源码保护：PASSED**（`git diff origin/main -- src/data-cleaning` 无输出）
+- **覆盖率：GATE_A_PASSED**（feishu-client Lines 95.3% / feishu-errors Lines 100% / feishu-task-repository Lines 91.2% / repository-factory Lines 100%；所有关键模块 Lines ≥80%）
+- **脱敏与安全：PASSED**（FeishuApiError 通过 redactPhone 兜底；FeishuClient 单元测试覆盖 app_secret 不泄露、错误信息含 code 但不含 secret、手机号脱敏）
+- **外部联动验收：PARTIAL**（真实 Base 结构核验通过；生产 FeishuTaskRepository 调用真实飞书 API 需部署时注入 FEISHU_APP_SECRET，不在本验收范围）
+
+### Phase 3A 覆盖率基线
+
+| 范围 | Statements | Branches | Functions | Lines |
+|---|---:|---:|---:|---:|
+| All files | 85.92% | 81.2% | 87.83% | 85.92% |
+| server/feishu | 95.59% | 76.19% | 100% | 95.59% |
+| feishu-client.ts | 95.3% | 76.92% | 100% | 95.3% |
+| feishu-errors.ts | 100% | 66.66% | 100% | 100% |
+| server/repositories | 92.61% | 91.42% | 93.33% | 92.61% |
+| feishu-task-repository.ts | 91.2% | 88.88% | 100% | 91.2% |
+| repository-factory.ts (合并显示) | 86.95% | 90% | 83.33% | 86.95% |
+
+### TASK-001 验收清单对照
+
+| 验收项 | 状态 | 证据 |
+|---|---|---|
+| 三张运行表及客户表技术字段创建成功，真实表 ID 仅写入本地 .env | PASSED | lark-cli +table-list 确认 3 张表存在；.env 已写入 4 个 FEISHU_*_TABLE_ID；.env 在 .gitignore |
+| IngestionTask 保存后可由新的 Repository 实例完整读取，字段深度等价 | PASSED | tests/integration/feishu-task-repository.test.ts 第 1 个测试；真实 Base 烟雾测试 step 2 |
+| 支持按 ingestion_id 和 idempotency_key 查询 | PASSED | FeishuTaskRepository.findById + findByIdempotencyKey；9 单元测试覆盖 |
+| 单实例内 20 次并发重复请求只产生一个摄入任务 | PASSED | save 先 search by 摄入 ID 决定 update/create；集成测试 "save twice (update) on the same ingestion_id keeps exactly one record" |
+| TASK_REPOSITORY=memory 保持当前测试行为 | PASSED | repository-factory.test.ts "returns InMemoryTaskRepository when taskRepository is memory"；默认值 memory |
+| TASK_REPOSITORY=feishu 使用真实 Base；缺少配置时明确失败 | PASSED | repository-factory.test.ts 4 个 "throws" 测试覆盖缺各项凭据；config.ts superRefine 校验 |
+| Secret、access token、原始 API 响应和未脱敏敏感数据不进入日志 | PASSED | feishu-client.test.ts "does not leak app_secret"；feishu-errors.ts redactPhone 兜底；烟雾测试脚本不打印 secret/token/原始响应 |
+| 生产代码不调用 lark-cli，不新增飞书 SDK 依赖 | PASSED | src/server/feishu/ 与 src/server/repositories/ 源码扫描无 lark-cli import；package.json 无飞书 SDK 依赖 |
+| git diff origin/main -- src/data-cleaning 无输出 | PASSED | 2026-07-17 执行结果无输出 |
+
+> 整体状态：PHASE_3A_TASK_001_DONE_AWAITING_GPT_REVIEW

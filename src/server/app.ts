@@ -3,12 +3,14 @@ import { loadConfig } from './config.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestionRoutes } from './routes/ingestions.js';
 import { IngestionService } from './services/ingestion-service.js';
-import { InMemoryTaskRepository } from './repositories/in-memory-task-repository.js';
+import { createTaskRepository } from './repositories/repository-factory.js';
 import { CollatorError } from './domain/errors.js';
 
 export async function buildApp(options?: { repository?: import('./repositories/task-repository.js').TaskRepository }) {
   const config = loadConfig();
-  const repository = options?.repository ?? new InMemoryTaskRepository();
+  // Production wiring: pick repository by config.taskRepository. Tests can
+  // pass an explicit repository to bypass config-driven selection.
+  const repository = options?.repository ?? createTaskRepository(config);
   const service = new IngestionService(repository);
 
   const app = Fastify({
