@@ -288,7 +288,7 @@ GPT 基于 Commit `0be872d` 复审 TASK-001 时发现 2 个 P0，本次提交进
 
 ### P0-02：真实运行表 ID 入库
 
-- **问题**：新建运行表的真实 table ID（`tblGY7zQxcQ7GELB` 等）被写入 `docs/ACCEPTANCE_REPORT.md` 和 `src/scripts/temp/smoke-test-lark-cli.ts`，与"真实表 ID 仅写入本地 `.env`"验收条件直接冲突。
+- **问题**：新建运行表的真实 table ID（如 `<FEISHU_INGESTION_TABLE_ID>` 等）被写入 `docs/ACCEPTANCE_REPORT.md` 和 `src/scripts/temp/smoke-test-lark-cli.ts`，与"真实表 ID 仅写入本地 `.env`"验收条件直接冲突。
 - **修复**：
   - `docs/ACCEPTANCE_REPORT.md`：移除 3 张运行表和客户表的真实 table ID，改为引用 `.env` 中的环境变量名（`FEISHU_INGESTION_TABLE_ID` 等）
   - `src/scripts/temp/smoke-test-lark-cli.ts`：移除硬编码 `BASE_TOKEN` 和 `INGESTION_TABLE_ID`，改为通过 `requireEnv()` 从 `process.env` 读取（与生产代码 `config.ts` 一致），缺失时报错并提示从本地 `.env` 注入

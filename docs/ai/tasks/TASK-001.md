@@ -2,7 +2,7 @@
 
 ## Status
 
-DONE — AWAITING_GPT_REVIEW
+P0_FIX_REQUIRED — ONE_DOCUMENT_REFERENCE_REMAINS
 
 ## Stage
 
@@ -180,3 +180,12 @@ MVP / Phase 3A
 - `npm run audit:legacy`
 - `git diff origin/main -- src/data-cleaning`
 
+## Review History
+
+### GPT P0 Fix Re-review — Commit `9102da1`（2026-07-17）
+
+- 复审范围仅限原 P0-01 与 P0-02。
+- P0-01：PASSED。定向测试 `tests/unit/feishu/feishu-client.test.ts` 17/17 通过；HTTP 200 + `code=99991663` 会刷新 token 并仅重试一次，非 token 业务错误不触发刷新。
+- P0-02：FAILED。`git grep` 仍在 `docs/ACCEPTANCE_REPORT.md:291` 找到真实摄入表 ID；与“真实表 ID 仅写入本地 `.env`”验收条件冲突。
+- 最小修复：将该真实 ID 替换为 ``<FEISHU_INGESTION_TABLE_ID>`` 或仅写环境变量名。无需改代码、无需重跑完整 Gate A；提交后运行目标 ID 的 `git grep`，无匹配即可再次复审。
+- 结论：`MVP_FAIL`（仅剩 1 个 P0 文档残留）。

@@ -2,14 +2,14 @@
 
 ## Current Stage
 
-Phase 3A（TASK-001 P0 修复完成，等待 GPT 复审）
+Phase 3A（TASK-001 P0 修复复审未通过，剩余 1 处文档脱敏）
 
-- 状态：DONE — P0_FIX_APPLIED_AWAITING_GPT_REVIEW（GPT 基于 Commit `0be872d` 提出的 2 个 P0 已最小修复，Gate A 全套通过）
+- 状态：MVP_FAIL（Commit `9102da1` 已解决 P0-01；P0-02 仍有 1 处真实运行表 ID 残留，等待单行修复）
 - Planning Review：APPROVED_WITH_REQUIRED_CHANGES（Phase 2 Planning Correction 已完成）
 - 当前分支：phase/3-feishu-integration
 - 验收基线 Commit：`0ef131c`（Phase 3 preparation commit）
 - 上一次 Commit：`0be872d`（TASK-001 implementation，GPT 复审 MVP_FAIL）
-- 当前 Commit：待 commit（TASK-001 P0 修复）
+- 当前 Commit：`9102da1`（TASK-001 P0 修复，复审发现 1 处文档残留）
 - 当前版本：v1.0
 
 ## Current Milestone
@@ -18,7 +18,7 @@ Phase 3 飞书集成 / TASK-001 P0 修复完成，等待 GPT 复审
 
 ## In Progress
 
-- TASK-001 P0 修复后 GPT 复审（等待 GPT 审阅本次 P0 修复提交）
+- TASK-001 P0-02 收尾：将 `docs/ACCEPTANCE_REPORT.md` 历史问题描述中的真实摄入表 ID 替换为脱敏占位符或环境变量名
 
 ## Recently Completed
 
@@ -32,7 +32,7 @@ Phase 3 飞书集成 / TASK-001 P0 修复完成，等待 GPT 复审
 
 ## Next Priorities
 
-1. **TASK-001 P0 修复后 GPT 复审**：等待 GPT 基于 P0 修复提交（Commit 见本次 push）重新审查 TASK-001。
+1. **TASK-001 P0-02 单行修复**：移除 `docs/ACCEPTANCE_REPORT.md:291` 残留的真实摄入表 ID；无需修改代码或重跑完整 Gate A，提交后仅做 Git 扫描复审。
 2. TASK-001 复审通过后启动 TASK-002（审核任务仓库 + 审核工作流）。
 3. TASK-002 完成后启动 TASK-003（写入日志仓库 + 业务主表写入）。
 4. 配置 Dify 环境与凭据（DEBT-001），解锁 Gate C-LLM 真实 LLM 联调。
@@ -70,7 +70,7 @@ Phase 3 飞书集成 / TASK-001 P0 修复完成，等待 GPT 复审
 ## Active Blockers
 
 - ~~TASK-001 P0-01~~：RESOLVED（2026-07-17）— `FeishuClient.callWithRetry` 现在识别飞书业务错误码 `code=99991663`（即使在 HTTP 200 路径上），触发单次 token 刷新 + 重试；新增 3 个单元测试覆盖重试成功、不二次重试、非 token 错误不触发刷新。
-- ~~TASK-001 P0-02~~：RESOLVED（2026-07-17）— `docs/ACCEPTANCE_REPORT.md` 移除 3 张运行表和客户表的真实 table ID，改为引用 `.env` 中的环境变量名；`src/scripts/temp/smoke-test-lark-cli.ts` 移除硬编码 `BASE_TOKEN` 和 `INGESTION_TABLE_ID`，改为通过 `requireEnv()` 从 `process.env` 读取，与"真实表 ID 仅写入本地 `.env`"验收条件一致。
+- TASK-001 P0-02：REOPENED（2026-07-17，Commit `9102da1`）— 运行配置与脚本中的硬编码已移除，但 `docs/ACCEPTANCE_REPORT.md:291` 的历史问题描述仍直接包含真实摄入表 ID；替换该单处文本后即可复审。
 - 未配置 Dify 环境与凭据（`DIFY_BASE_URL`、`DIFY_WORKFLOW_API_KEY`、`DIFY_WORKFLOW_ID`）— 见 DEBT-001。阻塞 Gate C-LLM 真实 LLM 联调。
 - 飞书测试 Base 凭据与表结构 **部分已配置**（TASK-001）：`FEISHU_APP_ID` / `FEISHU_BASE_APP_TOKEN` / `FEISHU_INGESTION_TABLE_ID` / `FEISHU_REVIEW_TABLE_ID` / `FEISHU_WRITE_LOG_TABLE_ID` / `FEISHU_CUSTOMER_TABLE_ID` 已写入 `.env`；`FEISHU_APP_SECRET` 占位为 `replace_me`，生产部署时需通过环境变量或密钥管理器注入，不写入文件。Gate D 飞书集成验收仍需 TASK-002（审核工作流）+ TASK-003（写入日志+业务主表）完成。
 
@@ -85,7 +85,7 @@ Phase 3 飞书集成 / TASK-001 P0 修复完成，等待 GPT 复审
 
 ## Last Updated
 
-2026-07-17（Phase 3A / TASK-001 P0 修复完成，等待 GPT 复审）
+2026-07-17（Phase 3A / TASK-001 P0 修复复审，剩余 1 处文档脱敏）
 
 ---
 
