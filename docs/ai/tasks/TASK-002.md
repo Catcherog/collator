@@ -12,6 +12,12 @@ MVP / Phase 3B
 
 - TASK-001 完成并通过复审。
 
+## Batch Execution
+
+- Trae 可按 `docs/ai/plans/TASK-002_BATCH_EXECUTION_PLAN.md` 一次连续完成本任务的实现、测试、Gate A、Gate C-Core 回归、文档与 push。
+- 执行中无需逐小步等待用户确认；仅在规格冲突、范围必须扩大、测试无法通过或需要新的真实外部凭据时暂停。
+- 完成本任务后必须停止在 GPT 复审检查点，不得在 TASK-002 通过复审前开始 TASK-003。
+
 ## Objective
 
 把 Dify Candidate 的英文键转换为中文 Schema，执行 Phase 2C 确定性清洗管道，并将候选、标准化结果和校验信息写入飞书审核表。
@@ -97,4 +103,3 @@ MVP / Phase 3B
 - `npm run audit:legacy`
 - `npm run evaluate`
 - `git diff origin/main -- src/data-cleaning`
-
