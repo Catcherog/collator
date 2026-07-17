@@ -161,15 +161,16 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
     payload: unknown
   ) {
     const { timestamp, signature } = signPayload(payload);
-    return app.inject({
+    const response = await app.inject({
       method: 'POST',
       url: `/v1/internal/ingestions/${ingestionId}/candidate`,
       headers: {
         'x-collator-timestamp': timestamp,
         'x-collator-signature': signature,
       },
-      payload,
+      payload: payload as Record<string, unknown>,
     });
+    return response;
   }
 
   it('accepts a signed candidate callback and stores the mapped review record', async () => {

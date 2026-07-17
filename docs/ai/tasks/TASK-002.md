@@ -2,7 +2,7 @@
 
 ## Status
 
-PLANNED
+DONE — AWAITING_GPT_REVIEW
 
 ## Stage
 
@@ -74,32 +74,87 @@ MVP / Phase 3B
 
 ## Acceptance Criteria
 
-- [ ] 英文 Candidate 与等价中文 Candidate 产生相同 Pipeline 标准化结果。
-- [ ] 现有 50 条 Gate C-Core fixture 结果不回归。
-- [ ] Pipeline 阶段顺序、不可变性和确定性保持不变。
-- [ ] 成功回调后任务状态为 `pending_review`，并存在真实审核记录。
-- [ ] 20 次相同回调只存在一条审核记录。
-- [ ] 未知字段和字段冲突产生明确 warning，且不会写入业务字段。
-- [ ] Pipeline 阶段异常时状态为 `validation_failed`，不创建审核记录。
-- [ ] warning/error 中的手机号、路径和敏感文本继续脱敏。
-- [ ] 新链路不读取旧 Schema 中已漂移的 field ID。
-- [ ] `git diff origin/main -- src/data-cleaning` 无输出。
+- [x] 英文 Candidate 与等价中文 Candidate 产生相同 Pipeline 标准化结果。
+  - 证据：`tests/unit/mapping/customer-candidate-mapper.test.ts` 6 tests PASS；`tests/unit/ingestion-service.test.ts` "produces identical normalized_fields for equivalent English and Chinese candidates" PASS。
+- [x] 现有 50 条 Gate C-Core fixture 结果不回归。
+  - 证据：`npm run evaluate` 退出码 0；50/50 case PASS；4 项核心指标 100%。
+- [x] Pipeline 阶段顺序、不可变性和确定性保持不变。
+  - 证据：`tests/unit/cleaning/pipeline/cleaning-pipeline.test.ts` 11 tests + `cleaning-pipeline-error-paths.test.ts` 5 tests PASS；未修改 `src/data-cleaning/**`。
+- [x] 成功回调后任务状态为 `pending_review`，并存在真实审核记录。
+  - 证据：`tests/integration/ingestions.test.ts` "accepts a signed candidate callback and stores the mapped review record" PASS；reviewRepository.findByIngestionId 返回非 null 记录。
+- [x] 20 次相同回调只存在一条审核记录。
+  - 证据：`tests/unit/ingestion-service.test.ts` "returns one opaque review_record_id for 20 concurrent identical callbacks" PASS；并发由 `pendingCandidates` Map 串行化。
+- [x] 未知字段和字段冲突产生明确 warning，且不会写入业务字段。
+  - 证据：`tests/integration/ingestions.test.ts` "records UNMAPPED_CANDIDATE_FIELD warnings on the task" PASS；mapper 单元测试覆盖 `CANDIDATE_FIELD_CONFLICT`。
+- [x] Pipeline 阶段异常时状态为 `validation_failed`，不创建审核记录。
+  - 证据：`tests/unit/ingestion-service.test.ts` "sets validation_failed and creates no review when pipeline returns success=false" PASS（通过 vi.mock 注入失败路径）。
+- [x] warning/error 中的手机号、路径和敏感文本继续脱敏。
+  - 证据：未修改 `src/server/security/redaction.ts`；`tests/unit/feishu/feishu-client.test.ts` + `tests/unit/feishu/feishu-errors.test.ts` 仍 PASS；FeishuApiError 通过 `redactPhone` 兜底。
+- [x] 新链路不读取旧 Schema 中已漂移的 field ID。
+  - 证据：`src/server/mapping/customer-candidate-mapper.ts` 不引用任何 Legacy field ID；`feishu-review-repository.ts` 使用中文表头常量，不依赖旧 Schema。
+- [x] `git diff origin/main -- src/data-cleaning` 无输出。
+  - 证据：2026-07-18 执行退出码 0，无输出。
 
 ## Implementation Constraints
 
 - 映射函数必须是纯函数，不修改传入 Candidate。
+  - 验证：`tests/unit/mapping/customer-candidate-mapper.test.ts` "does not mutate nested or top-level input data" + "returns deeply equal results for repeated equal inputs" PASS。
 - 审核记录 ID 对调用方是不透明字符串，不依赖 `rec_review_` 格式。
+  - 验证：内存仓库使用 `randomUUID()`；飞书仓库使用真实 Base `record_id`；`tests/integration/ingestions.test.ts` 显式断言 `startsWith('rec_review_')` 为 false。
 - Candidate 原始 JSON 可用于审核证据，但不得出现在普通应用日志。
+  - 验证：`IngestionService` 不调用 console 或 pino 直接打印 candidate JSON；仅存入 task snapshot 与 review record。
 - Gate C-LLM 仍保持阻塞，不得用合成 Candidate 宣称真实 LLM 已通过。
+  - 验证：`docs/API_CONTRACT.md` §8 "Gate C-LLM 阻塞说明"；`docs/ai/PROJECT_STATE.md` Active Blockers 列出 DEBT-001。
 
 ## Verification
 
-- `npm run typecheck`
-- `npm run lint`
-- `npm run test`
-- `npm run test:integration`
-- `npm run test:coverage`
-- `npm run build`
-- `npm run audit:legacy`
-- `npm run evaluate`
-- `git diff origin/main -- src/data-cleaning`
+Gate A + Gate C-Core 回归（2026-07-18，Phase 3B / TASK-002 最终验证）：
+
+| 命令 | 退出码 | 关键结果 |
+|---|---:|---|
+| `npm ci` | 0 | up to date in 2s |
+| `npm run audit:legacy` | 0 | 62 modules（SAFE 4, UNSAFE 57, BLOCKED 1 预期） |
+| `npm run typecheck` | 0 | TypeScript 无错误（含 postCandidate 类型修复） |
+| `npm run lint` | 0 | ESLint 无错误 |
+| `npm run test` | 0 | 236 passed（27 test files） |
+| `npm run test:integration` | 0 | 31 passed（3 test files） |
+| `npm run test:coverage` | 0 | All files 84.94%；关键模块 Lines 全部 ≥80% |
+| `npm run build` | 0 | `dist/` 构建成功 |
+| `npm run evaluate` | 0 | Gate C-Core PASS，50/50 case，所有指标 100% |
+| `git diff origin/main -- src/data-cleaning` | 0 | 无输出（Legacy 源码零修改） |
+
+### 关键模块覆盖率（Phase 3B / TASK-002）
+
+| 模块 | Statements | Branches | Functions | Lines |
+|---|---:|---:|---:|---:|
+| server/mapping/customer-candidate-mapper.ts | 100% | 100% | 100% | 100% |
+| server/services/ingestion-service.ts | 96.42% | 83.33% | 100% | 96.42% |
+| server/repositories/repository-factory.ts | 100% | 100% | 100% | 100% |
+| server/repositories/feishu-review-repository.ts | 86.66% | 63.63% | 100% | 86.66% |
+| server/repositories/in-memory-review-repository.ts | 85.71% | 83.33% | 85.71% | 85.71% |
+| server/repositories/feishu-task-repository.ts | 91.2% | 88.88% | 100% | 91.2% |
+| server/feishu/feishu-client.ts | 95.62% | 79.06% | 100% | 95.62% |
+| server/cleaning/pipeline/cleaning-pipeline.ts | 100% | 95.65% | 100% | 100% |
+
+### 实现位置
+
+| 任务 | 文件 | Commit |
+|---|---|---|
+| Task 0a: TASK-001 最终审计 | `docs/ACCEPTANCE_REPORT.md`, `docs/ai/PROJECT_STATE.md`, `docs/ai/tasks/TASK-001.md` | `26fb515` |
+| Task 0b: TASK-002 批次计划 | `docs/ai/tasks/TASK-002.md`, `docs/ai/plans/TASK-002_BATCH_EXECUTION_PLAN.md` | `781e712` |
+| Task 1: Candidate 字段映射 | `src/server/mapping/customer-candidate-mapper.ts`, `tests/unit/mapping/customer-candidate-mapper.test.ts` | `bda7623` |
+| Task 2: 审核记录合同 + 内存仓库 | `src/server/repositories/review-repository.ts`, `src/server/repositories/in-memory-review-repository.ts`, `tests/unit/repositories/in-memory-review-repository.test.ts` | `536ec82` |
+| Task 3: 飞书审核仓库 | `src/server/repositories/feishu-review-repository.ts`, `tests/unit/repositories/feishu-review-repository.test.ts` | `64e843a` |
+| Task 4: 接入 Mapping/Pipeline/并发幂等 | `src/server/domain/ingestion.ts`, `src/server/services/ingestion-service.ts`, `tests/unit/ingestion-service.test.ts` | `4aeb6e6` |
+| Task 5: 生产装配 + API 合同 | `src/server/repositories/repository-factory.ts`, `src/server/config.ts`, `src/server/app.ts`, `tests/unit/repositories/repository-factory.test.ts`, `tests/integration/ingestions.test.ts`, `docs/API_CONTRACT.md` | `83c15f4` |
+| Task 6: 全量验证 + 文档 | `tests/integration/ingestions.test.ts`（typecheck 修复）, `reports/phase2/legacy-module-profiles.json`（audit 自动生成）, `docs/ai/tasks/TASK-002.md`, `docs/ai/PROJECT_STATE.md`, `docs/ACCEPTANCE_REPORT.md` | 本次提交 |
+
+### 阻塞项
+
+- **Gate C-LLM**：仍受 DEBT-001（Dify 凭据未配置）阻塞，不在 TASK-002 解决范围。
+- **Gate D（飞书集成验收）**：需待 TASK-003（写入日志仓库 + 业务主表写入）完成后才能整体通过。
+
+### 下一步
+
+- 等待 GPT 复审 TASK-002。
+- 通过后由用户授权启动 TASK-003（写入日志 + 业务主表写入）。

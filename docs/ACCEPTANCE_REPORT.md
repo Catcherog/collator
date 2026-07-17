@@ -6,10 +6,10 @@
 - Node：v22.22.1
 - npm：v10.9.2
 - Dify：未配置
-- 飞书测试 Base：未配置
-- 分支：`phase/2c-cleaning-pipeline`
-- 验收基线 Commit：`91813a4`（Phase 2C implementation commit）
-- 当前 Commit：见 `git log -1`
+- 飞书测试 Base：部分配置（4 个 FEISHU_*_TABLE_ID + APP_ID 已写入 .env；APP_SECRET 占位为 replace_me）
+- 分支：`phase/3-feishu-integration`
+- 验收基线 Commit：`0ef131c`（Phase 3 preparation commit）
+- 当前 Commit：见 `git log -1`（TASK-002 批次执行后最新提交）
 
 ## 工程命令
 
@@ -68,6 +68,22 @@
 | 2026-07-17 | `npm run build` (Phase 3A / P0 修复后) | 0 | - | - | `dist/` 构建成功 |
 | 2026-07-17 | `npm run audit:legacy` (Phase 3A / P0 修复后) | 0 | 62 modules | 0 | SAFE: 4, UNSAFE: 57, BLOCKED: 1 |
 | 2026-07-17 | `git diff origin/main -- src/data-cleaning` (Phase 3A / P0 修复后) | 0 | - | - | LEGACY_DIFF_EMPTY（Legacy 源码未修改） |
+| 2026-07-18 | `npm ci` (Phase 3B) | 0 | - | - | up to date in 2s |
+| 2026-07-18 | `npm run audit:legacy` (Phase 3B) | 0 | 62 modules | 0 | SAFE: 4, UNSAFE: 57, BLOCKED: 1（预期） |
+| 2026-07-18 | `npm run typecheck` (Phase 3B) | 0 | - | - | TypeScript 无错误（含 postCandidate 类型修复） |
+| 2026-07-18 | `npm run lint` (Phase 3B) | 0 | - | - | ESLint 无错误 |
+| 2026-07-18 | `npm run test` (Phase 3B) | 0 | 236 | 0 | 27 test files passed（新增 6 mapper + 6 in-memory-review-repository + 8 feishu-review-repository + 4 ingestion-service 增量 + 8 repository-factory 增量） |
+| 2026-07-18 | `npm run test:integration` (Phase 3B) | 0 | 31 | 0 | 3 test files passed（新增 5 个 TASK-002 集成测试：中文键持久化 / 英文映射为中文 normalized_fields / replay 同一 ID / UNMAPPED_CANDIDATE_FIELD warning / validation_failed 不创建审核记录） |
+| 2026-07-18 | `npm run test:coverage` (Phase 3B) | 0 | 236 | 0 | All files Lines 84.94% / Branch 81.34% / Funcs 88.2%；关键模块 Lines 全部 ≥80%（mapping 100%, ingestion-service 96.42%, repository-factory 100%, feishu-review-repository 86.66%, in-memory-review-repository 85.71%, feishu-task-repository 91.2%, feishu-client 95.62%, cleaning-pipeline 100%） |
+| 2026-07-18 | `npm run build` (Phase 3B) | 0 | - | - | `dist/` 构建成功（tsc -p tsconfig.json） |
+| 2026-07-18 | `npm run evaluate` (Phase 3B) | 0 | 50 | 0 | Gate C-Core PASS，50/50 case，4 项核心指标 100%（field_accuracy 132/132, required_field_recall 91/91, enum_precision 33/33, error_interception_rate 1/1） |
+| 2026-07-18 | `git diff origin/main -- src/data-cleaning` (Phase 3B) | 0 | - | - | 无输出（LEGACY_DIFF_EMPTY，Legacy 源码零修改） |
+| 2026-07-18 | `git status --short` (Phase 3B Step 2) | 0 | - | - | 仅 TASK-002 相关修改 + audit:legacy 自动重新生成时间戳 |
+| 2026-07-18 | `git diff --check` (Phase 3B Step 2) | 0 | - | - | 无冲突标记（仅 LF/CRLF 警告） |
+| 2026-07-18 | `git grep -n "lark-cli" -- src/server` (Phase 3B Step 2) | 1 | - | - | 无匹配（生产源码无 lark-cli） |
+| 2026-07-18 | `git grep -n -F -- <FEISHU_INGESTION_TABLE_ID>` (Phase 3B Step 2) | 1 | - | - | 无匹配 |
+| 2026-07-18 | `git grep -n -F -- <FEISHU_REVIEW_TABLE_ID>` (Phase 3B Step 2) | 1 | - | - | 无匹配 |
+| 2026-07-18 | `git grep -n -F -- <FEISHU_WRITE_LOG_TABLE_ID>` (Phase 3B Step 2) | 1 | - | - | 无匹配 |
 
 ## API 合同验证
 
@@ -314,3 +330,80 @@ GPT 基于 Commit `0be872d` 复审 TASK-001 时发现 2 个 P0，本次提交进
 - **结论**：`MVP_PASS`。P0-01 与 P0-02 均已解决，TASK-001 无剩余 P0。
 
 > 整体状态：PHASE_3A_TASK_001_MVP_PASS
+
+## Phase 3B / TASK-002 Gate A + Gate C-Core 回归结论（2026-07-18）
+
+### 实现摘要
+
+- **Task 1**：新增 `src/server/mapping/customer-candidate-mapper.ts`（9 个英文键→中文规范 Schema 的纯函数映射；immutable；`UNMAPPED_CANDIDATE_FIELD` + `CANDIDATE_FIELD_CONFLICT` 警告；6 tests PASS）。
+- **Task 2**：新增 `src/server/repositories/review-repository.ts` + `in-memory-review-repository.ts`（`ReviewRecord` / `NewReviewRecord` / `ReviewRepository` 合同；内存模式用 `randomUUID()` 生成不透明 ID；深拷贝防护；6 tests PASS）。
+- **Task 3**：新增 `src/server/repositories/feishu-review-repository.ts`（9 个中文表头字段常量；JSON 字段存完整对象；索引列只用于查询；幂等 create：先 search by 摄入 ID，存在则返回；datetime 毫秒时间戳；malformed JSON 错误不暴露原始 candidate；8 tests PASS）。
+- **Task 4**：修改 `src/server/services/ingestion-service.ts` + `src/server/domain/ingestion.ts`（构造函数双参数 `repository` + `reviewRepository`；`pendingCandidates` Map 实现 per-ingestion 串行化；`receiveCandidate` 拆分为公开入口 + `doReceiveCandidate` 私有实现；Pipeline 失败路径保存 task 为 `validation_failed` 且不创建审核记录；成功路径创建 `ReviewRecord` 并持久化 Pipeline 证据；17 tests PASS）。
+- **Task 5**：重写 `src/server/repositories/repository-factory.ts`（新增 `RepositoryBundle` 接口 + `createRepositories(config)`；Feishu 模式下两个仓库共享同一个 `FeishuClient`；保留 `createTaskRepository()` 兼容包装）；修改 `src/server/config.ts`（`FEISHU_REVIEW_TABLE_ID` 加入 feishu 模式必填校验）；修改 `src/server/app.ts`（新增 `BuildAppOptions` 支持双仓库注入；三分支装配逻辑）；修改 `docs/API_CONTRACT.md`（§3.3 区分成功/失败响应；§3.4 corrections 中文键；§4 状态机新增 `validation_failed`；§5 幂等规则增加并发/进程重启；§6 新增「Candidate 字段映射」完整章节；§7 安全边界；§8 Gate C-LLM 阻塞说明）。8 个新单元测试（repository-factory）+ 5 个新集成测试 PASS。
+- **Task 6**：完成 Gate A + Gate C-Core 回归，更新文档。
+
+### Gate A 验收
+
+- **代码基线：PASSED**（`npm ci` / `audit:legacy` / `typecheck` / `lint` / `test` (236) / `test:integration` (31) / `test:coverage` (84.94%) / `build` / `evaluate` (50/50) 全部退出码 0）
+- **TASK-002 实现：DONE**（Candidate 映射纯函数；内存 + 飞书审核仓库合同；并发幂等 `pendingCandidates` Map；Pipeline 失败状态机；生产装配支持双仓库注入；API 合同完整记录映射规则与不透明 ID 语义）
+- **Legacy 源码保护：PASSED**（`git diff origin/main -- src/data-cleaning` 无输出）
+- **覆盖率：GATE_A_PASSED**（所有关键模块 Lines ≥80%：mapping 100%, ingestion-service 96.42%, repository-factory 100%, feishu-review-repository 86.66%, in-memory-review-repository 85.71%, feishu-task-repository 91.2%, feishu-client 95.62%, cleaning-pipeline 100%）
+- **生产代码无 lark-cli 调用：PASSED**（`git grep -n "lark-cli" -- src/server` 无匹配）
+- **运行时表 ID 零硬编码：PASSED**（3 个运行时表 ID 在源码中无匹配，仅存在于 `.env` / `.env.example` 占位 `replace_me`）
+- **脱敏与安全：PASSED**（未修改 `src/server/security/redaction.ts`；FeishuApiError 通过 `redactPhone` 兜底；Candidate 原始 JSON 仅存入 task snapshot 与 review record 的 `candidate` 字段，不进入应用日志）
+- **外部联动验收：PARTIAL**（真实飞书 Base 调用需部署时注入 `FEISHU_APP_SECRET`，不在本验收范围；真实 Dify 凭据仍阻塞，Gate C-LLM 仍为 BLOCKED_EXTERNAL_ENV）
+
+### Gate C-Core 回归
+
+- **评测结果：PASS**（50/50 case；4 项核心指标 100%）
+  - field_accuracy: 132/132 = 100.00% (门槛 90%)
+  - required_field_recall: 91/91 = 100.00% (门槛 95%)
+  - enum_precision: 33/33 = 100.00% (门槛 95%)
+  - error_interception_rate: 1/1 = 100.00% (门槛 95%)
+  - persistence_check: N/A
+- **Runner 复用生产入口：PASSED**（调用 `runCleaningPipeline`，未复制业务逻辑）
+- **未回归证据**：与 Phase 2F / Phase 3A 结果一致（所有指标 100%）
+
+### Phase 3B 覆盖率基线
+
+| 范围 | Statements | Branches | Functions | Lines |
+|---|---:|---:|---:|---:|
+| All files | 84.94% | 81.34% | 88.2% | 84.94% |
+| server/mapping/customer-candidate-mapper.ts | 100% | 100% | 100% | 100% |
+| server/services/ingestion-service.ts | 96.42% | 83.33% | 100% | 96.42% |
+| server/repositories/repository-factory.ts | 100% | 100% | 100% | 100% |
+| server/repositories/feishu-review-repository.ts | 86.66% | 63.63% | 100% | 86.66% |
+| server/repositories/in-memory-review-repository.ts | 85.71% | 83.33% | 85.71% | 85.71% |
+| server/repositories/feishu-task-repository.ts | 91.2% | 88.88% | 100% | 91.2% |
+| server/feishu/feishu-client.ts | 95.62% | 79.06% | 100% | 95.62% |
+| server/cleaning/pipeline/cleaning-pipeline.ts | 100% | 95.65% | 100% | 100% |
+
+### TASK-002 验收清单对照
+
+| 验收项 | 状态 | 证据 |
+|---|---|---|
+| 英文 Candidate 与等价中文 Candidate 产生相同 Pipeline 标准化结果 | PASSED | tests/unit/mapping/customer-candidate-mapper.test.ts 6 tests；tests/unit/ingestion-service.test.ts "produces identical normalized_fields for equivalent English and Chinese candidates" |
+| 现有 50 条 Gate C-Core fixture 结果不回归 | PASSED | npm run evaluate 退出码 0；50/50 case；4 项核心指标 100% |
+| Pipeline 阶段顺序、不可变性和确定性保持不变 | PASSED | tests/unit/cleaning/pipeline/cleaning-pipeline.test.ts 11 tests + cleaning-pipeline-error-paths.test.ts 5 tests；未修改 src/data-cleaning/** |
+| 成功回调后任务状态为 `pending_review`，并存在真实审核记录 | PASSED | tests/integration/ingestions.test.ts "accepts a signed candidate callback and stores the mapped review record"；reviewRepository.findByIngestionId 返回非 null |
+| 20 次相同回调只存在一条审核记录 | PASSED | tests/unit/ingestion-service.test.ts "returns one opaque review_record_id for 20 concurrent identical callbacks"；pendingCandidates Map 串行化 |
+| 未知字段和字段冲突产生明确 warning，且不会写入业务字段 | PASSED | tests/integration/ingestions.test.ts "records UNMAPPED_CANDIDATE_FIELD warnings on the task"；mapper 单元测试覆盖 CANDIDATE_FIELD_CONFLICT |
+| Pipeline 阶段异常时状态为 `validation_failed`，不创建审核记录 | PASSED | tests/unit/ingestion-service.test.ts "sets validation_failed and creates no review when pipeline returns success=false"（vi.mock 注入失败路径） |
+| warning/error 中的手机号、路径和敏感文本继续脱敏 | PASSED | 未修改 src/server/security/redaction.ts；feishu-client + feishu-errors 测试仍 PASS |
+| 新链路不读取旧 Schema 中已漂移的 field ID | PASSED | customer-candidate-mapper.ts 不引用任何 Legacy field ID；feishu-review-repository.ts 使用中文表头常量 |
+| git diff origin/main -- src/data-cleaning 无输出 | PASSED | 2026-07-18 执行退出码 0，无输出 |
+
+### 实现约束验证
+
+- ✅ 映射函数为纯函数，不修改传入 Candidate（mapper 单元测试覆盖 "does not mutate nested or top-level input data" + "returns deeply equal results for repeated equal inputs"）
+- ✅ 审核记录 ID 对调用方不透明（内存模式 `randomUUID()`；飞书模式真实 Base `record_id`；集成测试显式断言 `startsWith('rec_review_')` 为 false）
+- ✅ Candidate 原始 JSON 仅用于审核证据，不进入应用日志（IngestionService 不调用 console/pino 直接打印 candidate JSON）
+- ✅ Gate C-LLM 仍保持阻塞（API_CONTRACT.md §8；PROJECT_STATE.md Active Blockers 列出 DEBT-001）
+
+### 阻塞项
+
+- **Gate C-LLM**：DEBT-001（Dify 凭据未配置），不在 TASK-002 解决范围。
+- **Gate D 飞书集成**：需待 TASK-003（写入日志仓库 + 业务主表写入）完成才能整体通过。
+- **TASK-002 GPT 复审**：本任务实现已完成，等待 GPT 基于 TASK-002 最终 commit 复审。
+
+> 整体状态：PHASE_3B_TASK_002_DONE_AWAITING_GPT_REVIEW
