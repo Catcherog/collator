@@ -1,6 +1,12 @@
 // TEMP: TASK-001 真实 Base 结构核验烟雾测试（via lark-cli） | 创建日期 2026-07-17 | 预计删除日期 2026-07-20
 // 用途：通过 lark-cli 在真实飞书 Base 上端到端验证 FeishuTaskRepository 字段映射、JSON 快照策略、datetime 格式
 // 执行：npx tsx src/scripts/temp/smoke-test-lark-cli.ts
+//   运行前必须注入环境变量（与生产代码 config.ts 一致），否则启动失败：
+//     - FEISHU_BASE_APP_TOKEN：目标 Base 的 app token
+//     - FEISHU_INGESTION_TABLE_ID：Collator 摄入任务 table ID
+//   示例（PowerShell）：
+//     $env:FEISHU_BASE_APP_TOKEN="<from .env>"; $env:FEISHU_INGESTION_TABLE_ID="<from .env>"; npx tsx src/scripts/temp/smoke-test-lark-cli.ts
+//   真实值仅存于本地 .env（gitignored），不入库、不进入本脚本。
 // 清理：完成后由用户决定删除或保留
 //
 // 验证项（对应 TASK-001 验收 #1 #2 #3）：
@@ -22,8 +28,19 @@
 
 import { execFileSync } from 'node:child_process';
 
-const BASE_TOKEN = 'MwGMbF0Q0alPc6s3jOccovvOnob';
-const INGESTION_TABLE_ID = 'tblGY7zQxcQ7GELB';
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || v.trim().length === 0) {
+    throw new Error(
+      `Missing required env var ${name}. Set it from your local .env before running this script. ` +
+        'Real Feishu Base/ table IDs must not be hardcoded in source (TASK-001 P0-02).'
+    );
+  }
+  return v.trim();
+}
+
+const BASE_TOKEN = requireEnv('FEISHU_BASE_APP_TOKEN');
+const INGESTION_TABLE_ID = requireEnv('FEISHU_INGESTION_TABLE_ID');
 const LARK_CLI = 'bin/lark-cli.exe';
 
 interface LarkEnvelope<T> {

@@ -5,6 +5,15 @@ import { FeishuApiError } from './feishu-errors.js';
  */
 const DEFAULT_API_BASE = 'https://open.feishu.cn';
 
+/**
+ * Feishu OpenAPI business error code that signals an invalid or expired
+ * tenant_access_token. The API typically returns this in the response body
+ * (HTTP 200) instead of an HTTP 401, so we must inspect the parsed envelope.
+ *
+ * Official signal: code=99991663 ("invalid access token" / "token expired").
+ */
+const TOKEN_INVALID_CODE = 99991663;
+
 export interface FeishuClientOptions {
   appId: string;
   appSecret: string;
@@ -177,10 +186,18 @@ export class FeishuClient {
   }
 
   /**
-   * Core HTTP call wrapper with single-retry-on-401.
+   * Core HTTP call wrapper with single-retry-on-token-invalid.
    *
-   * NOTE: the tenant_access_token endpoint is NOT retried here (it has no
-   * Authorization header and is fetched via getTenantAccessToken()).
+   * Triggers a single token refresh + retry in two cases:
+   *   1. HTTP 401 (rare for Feishu, but handled defensively).
+   *   2. HTTP 2xx with body code=99991663 (Feishu's official signal for an
+   *      invalid/expired tenant_access_token; returned even on HTTP 200).
+   *
+   * Only one retry is attempted per call. If the retry still fails with the
+   * same code, the error surfaces to the caller.
+   *
+   * NOTE: the tenant_access_token endpoint itself is NOT retried here (it has
+   * no Authorization header and is fetched via getTenantAccessToken()).
    */
   private async callWithRetry<T>(
     method: string,
@@ -196,11 +213,24 @@ export class FeishuClient {
       throw new FeishuApiError(-2, (e as Error).message ?? 'network error');
     }
     if (resp.status === 401) {
-      // Refresh token once and retry exactly once.
+      // HTTP-level 401: refresh token once and retry exactly once.
       const refreshed = await this.refreshToken();
       resp = await this.doRequest(method, path, refreshed, body);
+      return this.parseResponse<T>(resp);
     }
-    return this.parseResponse<T>(resp);
+    // HTTP was not 401. Feishu may still signal an invalid token via the
+    // body's `code` field (e.g. 99991663) even on HTTP 200 — parse the
+    // envelope and retry once if so.
+    try {
+      return await this.parseResponse<T>(resp);
+    } catch (e) {
+      if (e instanceof FeishuApiError && e.code === TOKEN_INVALID_CODE) {
+        const refreshed = await this.refreshToken();
+        const retryResp = await this.doRequest(method, path, refreshed, body);
+        return this.parseResponse<T>(retryResp);
+      }
+      throw e;
+    }
   }
 
   private async doRequest(

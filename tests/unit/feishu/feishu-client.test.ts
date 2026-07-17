@@ -301,6 +301,92 @@ describe('FeishuClient', () => {
     });
   });
 
+  describe('token refresh retry on business code 99991663', () => {
+    it('retries once when first call returns HTTP 200 with body code=99991663', async () => {
+      let tokenCallCount = 0;
+      let recordCallCount = 0;
+      const fetchFn = vi.fn(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const url = input.toString();
+        if (url.includes('/auth/v3/tenant_access_token')) {
+          tokenCallCount++;
+          return mockResponse(200, {
+            code: 0,
+            msg: 'ok',
+            tenant_access_token: `token_${tokenCallCount}`,
+            expire: 7200,
+          });
+        }
+        if (url.includes('/records') && init?.method === 'POST') {
+          recordCallCount++;
+          const authHeader = (init.headers as Record<string, string>)?.['Authorization'];
+          if (authHeader === 'Bearer token_1') {
+            // First attempt: Feishu signals invalid token via body code on HTTP 200
+            return mockResponse(200, { code: 99991663, msg: 'invalid access token' });
+          }
+          // Retry with refreshed token succeeds
+          return mockResponse(200, { code: 0, msg: 'ok', data: { record: { record_id: 'rec_retry_business' } } });
+        }
+        throw new Error(`Unexpected: ${url}`);
+      });
+      client.setFetchFn(fetchFn as FetchFn);
+
+      const recordId = await client.createRecord(TABLE_ID, { foo: 'bar' });
+
+      expect(recordId).toBe('rec_retry_business');
+      expect(tokenCallCount).toBe(2); // initial + refresh
+      expect(recordCallCount).toBe(2); // failed + retry
+    });
+
+    it('does not retry more than once on repeated code=99991663', async () => {
+      const fetchFn = vi.fn(async (input: string | URL | Request): Promise<Response> => {
+        const url = input.toString();
+        if (url.includes('/auth/v3/tenant_access_token')) {
+          return mockResponse(200, TENANT_TOKEN_RESP);
+        }
+        if (url.includes('/records')) {
+          // Always return HTTP 200 + code=99991663
+          return mockResponse(200, { code: 99991663, msg: 'invalid access token' });
+        }
+        throw new Error(`Unexpected: ${url}`);
+      });
+      client.setFetchFn(fetchFn as FetchFn);
+
+      await expect(client.createRecord(TABLE_ID, { foo: 'bar' })).rejects.toThrow(FeishuApiError);
+
+      const calls = (fetchFn as any).mock.calls as Array<[string | URL | Request, RequestInit?]>;
+      const tokenCalls = calls.filter((c) => c[0].toString().includes('/auth/v3/tenant_access_token'));
+      const recordCalls = calls.filter((c) => c[0].toString().includes('/records'));
+      // 1 initial token + 1 refresh token + 2 record calls (initial + 1 retry)
+      expect(tokenCalls).toHaveLength(2);
+      expect(recordCalls).toHaveLength(2);
+    });
+
+    it('does not refresh token on non-token business errors (e.g. 1254045)', async () => {
+      let tokenCallCount = 0;
+      const fetchFn = vi.fn(async (input: string | URL | Request): Promise<Response> => {
+        const url = input.toString();
+        if (url.includes('/auth/v3/tenant_access_token')) {
+          tokenCallCount++;
+          return mockResponse(200, TENANT_TOKEN_RESP);
+        }
+        if (url.includes('/records')) {
+          // Non-token business error: must NOT trigger retry
+          return mockResponse(200, { code: 1254045, msg: 'field name not exist' });
+        }
+        throw new Error(`Unexpected: ${url}`);
+      });
+      client.setFetchFn(fetchFn as FetchFn);
+
+      await expect(client.createRecord(TABLE_ID, { bad_field: 'x' })).rejects.toThrow(FeishuApiError);
+
+      // Token acquired exactly once (no refresh)
+      expect(tokenCallCount).toBe(1);
+      const calls = (fetchFn as any).mock.calls as Array<[string | URL | Request, RequestInit?]>;
+      const recordCalls = calls.filter((c) => c[0].toString().includes('/records'));
+      expect(recordCalls).toHaveLength(1);
+    });
+  });
+
   describe('searchRecords', () => {
     it('searches records with a filter condition', async () => {
       const fetchFn = createMockFetch([

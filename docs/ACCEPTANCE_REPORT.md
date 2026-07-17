@@ -60,6 +60,14 @@
 | 2026-07-17 | `npm run audit:legacy` (Phase 3A) | 0 | 62 modules | 0 | SAFE: 4, UNSAFE: 57, BLOCKED: 1 |
 | 2026-07-17 | `npx tsx src/scripts/temp/smoke-test-lark-cli.ts` (Phase 3A) | 0 | 4 steps | 0 | 真实 Base 结构核验：create→search→update→search 全流程；字段深度等价；datetime 毫秒时间戳格式正确；单选字段返回数组形式符合预期；cleanup 后 0 记录残留 |
 | 2026-07-17 | `git diff origin/main -- src/data-cleaning` (Phase 3A) | 0 | - | - | 无输出（Legacy 源码未修改） |
+| 2026-07-17 | `npm run typecheck` (Phase 3A / P0 修复后) | 0 | - | - | TypeScript 无错误 |
+| 2026-07-17 | `npm run lint` (Phase 3A / P0 修复后) | 0 | - | - | ESLint 无错误 |
+| 2026-07-17 | `npm run test` (Phase 3A / P0 修复后) | 0 | 197 | 0 | 24 test files passed（新增 3 个 feishu-client 重试测试：99991663 重试成功 / 不二次重试 / 非 token 错误不刷新） |
+| 2026-07-17 | `npm run test:integration` (Phase 3A / P0 修复后) | 0 | 27 | 0 | 3 test files passed |
+| 2026-07-17 | `npm run test:coverage` (Phase 3A / P0 修复后) | 0 | 197 | 0 | All files Lines 85.97% / Branch 81.29% / Funcs 87.83%；feishu-client Lines 95.62% / Branch 79.06% / Funcs 100%；feishu-errors 100%；feishu-task-repository 91.2%；repository-factory 100% |
+| 2026-07-17 | `npm run build` (Phase 3A / P0 修复后) | 0 | - | - | `dist/` 构建成功 |
+| 2026-07-17 | `npm run audit:legacy` (Phase 3A / P0 修复后) | 0 | 62 modules | 0 | SAFE: 4, UNSAFE: 57, BLOCKED: 1 |
+| 2026-07-17 | `git diff origin/main -- src/data-cleaning` (Phase 3A / P0 修复后) | 0 | - | - | LEGACY_DIFF_EMPTY（Legacy 源码未修改） |
 
 ## API 合同验证
 
@@ -224,11 +232,11 @@
 
 - **Phase 3A 代码基线：PASSED**（`typecheck` / `lint` / `test` / `test:integration` / `test:coverage` / `build` / `audit:legacy` 全部退出码 0）
 - **TASK-001 飞书运行表：DONE**
-  - `Collator 摄入任务`（tblGY7zQxcQ7GELB）：7 字段（摄入 ID / 幂等键 / 状态单选 / 来源记录 ID / 任务快照 JSON / 创建时间 / 更新时间）
-  - `Collator 审核任务`（tblExcx7KC9pg8DR）：9 字段（摄入 ID / 状态 / 候选 JSON / 标准化结果 JSON / 校验结果 JSON / 审核人 / 审核决定 / 人工修正 JSON / 更新时间）
-  - `Collator 写入日志`（tblUCinPv92Tkhlt）：8 字段（写入日志 ID / 摄入 ID / 目标表 ID / 业务记录 ID / 写入状态单选 / 错误码 / 脱敏错误消息 / 创建时间）
-  - 客户表（tblmRVrUnfodlzlo）新增 `Collator 摄入 ID` 隐藏文本字段，未修改任何现有业务字段
-- **FeishuClient 实现：DONE**（Node 20 原生 fetch；tenant_access_token 缓存 + 60s 提前刷新；401 单次刷新重试；CRUD + searchRecords；fetchFn 注入支持单测）
+  - `Collator 摄入任务`：7 字段（摄入 ID / 幂等键 / 状态单选 / 来源记录 ID / 任务快照 JSON / 创建时间 / 更新时间）— 真实 table ID 仅写入本地 `.env` 的 `FEISHU_INGESTION_TABLE_ID`
+  - `Collator 审核任务`：9 字段（摄入 ID / 状态 / 候选 JSON / 标准化结果 JSON / 校验结果 JSON / 审核人 / 审核决定 / 人工修正 JSON / 更新时间）— 真实 table ID 仅写入本地 `.env` 的 `FEISHU_REVIEW_TABLE_ID`
+  - `Collator 写入日志`：8 字段（写入日志 ID / 摄入 ID / 目标表 ID / 业务记录 ID / 写入状态单选 / 错误码 / 脱敏错误消息 / 创建时间）— 真实 table ID 仅写入本地 `.env` 的 `FEISHU_WRITE_LOG_TABLE_ID`
+  - 客户表新增 `Collator 摄入 ID` 隐藏文本字段，未修改任何现有业务字段 — 真实 table ID 仅写入本地 `.env` 的 `FEISHU_CUSTOMER_TABLE_ID`
+- **FeishuClient 实现：DONE**（Node 20 原生 fetch；tenant_access_token 缓存 + 60s 提前刷新；HTTP 401 与业务错误码 `99991663` 双路径单次刷新重试；CRUD + searchRecords；fetchFn 注入支持单测）
 - **FeishuTaskRepository 实现：DONE**（JSON 快照策略；save 先 search by 摄入 ID 决定 update/create；datetime 毫秒时间戳）
 - **Repository Factory：DONE**（feishu 模式下缺凭据抛错，不静默回退；memory 模式保持当前测试行为）
 - **配置与组合根：DONE**（config.ts superRefine 校验 feishu 必需凭据；app.ts 用 createTaskRepository 替代直接 new）
@@ -255,7 +263,7 @@
 
 | 验收项 | 状态 | 证据 |
 |---|---|---|
-| 三张运行表及客户表技术字段创建成功，真实表 ID 仅写入本地 .env | PASSED | lark-cli +table-list 确认 3 张表存在；.env 已写入 4 个 FEISHU_*_TABLE_ID；.env 在 .gitignore |
+| 三张运行表及客户表技术字段创建成功，真实表 ID 仅写入本地 .env | PASSED | lark-cli +table-list 确认 3 张表存在；.env 已写入 4 个 FEISHU_*_TABLE_ID；.env 在 .gitignore；P0-02 修复后 `docs/ACCEPTANCE_REPORT.md` 与 `src/scripts/temp/smoke-test-lark-cli.ts` 不再硬编码真实 table ID，全部通过 `.env` / `process.env` 注入 |
 | IngestionTask 保存后可由新的 Repository 实例完整读取，字段深度等价 | PASSED | tests/integration/feishu-task-repository.test.ts 第 1 个测试；真实 Base 烟雾测试 step 2 |
 | 支持按 ingestion_id 和 idempotency_key 查询 | PASSED | FeishuTaskRepository.findById + findByIdempotencyKey；9 单元测试覆盖 |
 | 单实例内 20 次并发重复请求只产生一个摄入任务 | PASSED | save 先 search by 摄入 ID 决定 update/create；集成测试 "save twice (update) on the same ingestion_id keeps exactly one record" |
@@ -265,4 +273,32 @@
 | 生产代码不调用 lark-cli，不新增飞书 SDK 依赖 | PASSED | src/server/feishu/ 与 src/server/repositories/ 源码扫描无 lark-cli import；package.json 无飞书 SDK 依赖 |
 | git diff origin/main -- src/data-cleaning 无输出 | PASSED | 2026-07-17 执行结果无输出 |
 
-> 整体状态：PHASE_3A_TASK_001_DONE_AWAITING_GPT_REVIEW
+## Phase 3A / TASK-001 P0 修复结论
+
+GPT 基于 Commit `0be872d` 复审 TASK-001 时发现 2 个 P0，本次提交进行最小修复：
+
+### P0-01：token 业务错误码刷新重试
+
+- **问题**：`FeishuClient.callWithRetry` 仅在 HTTP 401 时刷新 token 重试，未处理飞书官方失效信号 `code=99991663`（通常在 HTTP 200 响应体中返回）。真实 token 失效时不会执行单次刷新重试。
+- **修复**：`src/server/feishu/feishu-client.ts` 新增常量 `TOKEN_INVALID_CODE = 99991663`；`callWithRetry` 在 HTTP 非 401 路径上 parseResponse 抛出 `FeishuApiError(code=99991663)` 时触发单次 token 刷新 + 重试；重试后再次失败则错误冒泡，不递归重试。
+- **测试**：`tests/unit/feishu/feishu-client.test.ts` 新增 3 个测试：
+  1. HTTP 200 + code=99991663 首次失败 → 刷新 token 重试成功（断言 token 获取 2 次、record 调用 2 次、返回重试后的 record_id）
+  2. 重复 99991663 不会二次重试（断言 token 获取 2 次、record 调用 2 次，错误冒泡）
+  3. 非 token 业务错误（1254045）不触发刷新（断言 token 获取 1 次、record 调用 1 次）
+
+### P0-02：真实运行表 ID 入库
+
+- **问题**：新建运行表的真实 table ID（`tblGY7zQxcQ7GELB` 等）被写入 `docs/ACCEPTANCE_REPORT.md` 和 `src/scripts/temp/smoke-test-lark-cli.ts`，与"真实表 ID 仅写入本地 `.env`"验收条件直接冲突。
+- **修复**：
+  - `docs/ACCEPTANCE_REPORT.md`：移除 3 张运行表和客户表的真实 table ID，改为引用 `.env` 中的环境变量名（`FEISHU_INGESTION_TABLE_ID` 等）
+  - `src/scripts/temp/smoke-test-lark-cli.ts`：移除硬编码 `BASE_TOKEN` 和 `INGESTION_TABLE_ID`，改为通过 `requireEnv()` 从 `process.env` 读取（与生产代码 `config.ts` 一致），缺失时报错并提示从本地 `.env` 注入
+
+### P0 修复后 Gate A 复跑结论
+
+- **代码基线：PASSED**（`typecheck` / `lint` / `test` / `test:integration` / `test:coverage` / `build` / `audit:legacy` 全部退出码 0）
+- **测试：PASSED**（197 passed / 24 test files，新增 3 个 feishu-client 重试测试）
+- **覆盖率：GATE_A_PASSED**（feishu-client Lines 95.62% / Branch 79.06% / Funcs 100%；所有关键模块 Lines ≥80%）
+- **Legacy 源码保护：PASSED**（`git diff origin/main -- src/data-cleaning` 无输出，LEGACY_DIFF_EMPTY）
+- **未重跑真实 Base 烟雾测试**：脚本已改为 `requireEnv` 模式，需用户在运行时注入 `FEISHU_BASE_APP_TOKEN` 与 `FEISHU_INGESTION_TABLE_ID`（与生产代码 `config.ts` 一致）；真实 Base 结构未变，P0 修复不涉及字段映射或 JSON 快照策略，无需重跑。
+
+> 整体状态：PHASE_3A_TASK_001_P0_FIX_APPLIED_AWAITING_GPT_REVIEW
