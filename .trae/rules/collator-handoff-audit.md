@@ -1,7 +1,7 @@
 # Collator 跨窗口交付审计输出规则
 
 > **生效模式**：alwaysApply
-> **适用场景**：接收到跨窗口交付指令文件（如 `GPT to Trae.txt`），或按 `Collator_Dify_飞书_Trae实施协作包_v1.0` 执行分阶段实施时
+> **适用场景**：分阶段实施过程中，需要在会话结束时向 GPT（上游窗口）同步状态时
 
 ---
 
@@ -9,9 +9,9 @@
 
 满足以下任一条件即触发本规则：
 
-- 用户提供了 `GPT to Trae.txt` 或类似跨窗口 handoff 文本文件，并要求“执行下一步操作”。
-- 用户明确提到按 `Collator_Dify_飞书_Trae实施协作包_v1.0` 实施、交付或审计。
-- 当前任务属于 Phase 0—Phase 6 中的任一阶段，需要在会话结束时向 GPT（上游窗口）同步状态。
+- 用户要求在会话结束时向 GPT（上游窗口）同步状态。
+- 用户明确提到"给 GPT 审计"、"跨窗口实施"、"Phase X"、"阶段报告"、"验收报告"。
+- 当前任务属于 Phase 0-Phase 6 中的任一阶段，需要输出审计资料。
 
 ---
 
@@ -24,10 +24,6 @@
 3. `docs/ai/PROJECT_STATE.md`（若存在）
 4. `docs/DECISIONS.md`（若存在）
 5. `docs/ACCEPTANCE_REPORT.md`（若存在）
-6. `docs/Collator_Dify_飞书_Trae实施协作包_v1.0/collator_handoff_v1/README.md`
-7. `docs/Collator_Dify_飞书_Trae实施协作包_v1.0/collator_handoff_v1/Collator_璺ㄧ獥鍙ｅ疄鏂芥墜鍐宊v1.0.md`
-8. `docs/Collator_Dify_飞书_Trae实施协作包_v1.0/collator_handoff_v1/Trae_涓绘墽琛屾彁绀鸿瘝_Collator_v1.0.md`
-9. `docs/Collator_Dify_飞书_Trae实施协作包_v1.0/collator_handoff_v1/Collator_楠屾敹娓呭崟_v1.0.md`
 
 ---
 
