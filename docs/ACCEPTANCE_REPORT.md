@@ -302,3 +302,15 @@ GPT 基于 Commit `0be872d` 复审 TASK-001 时发现 2 个 P0，本次提交进
 - **未重跑真实 Base 烟雾测试**：脚本已改为 `requireEnv` 模式，需用户在运行时注入 `FEISHU_BASE_APP_TOKEN` 与 `FEISHU_INGESTION_TABLE_ID`（与生产代码 `config.ts` 一致）；真实 Base 结构未变，P0 修复不涉及字段映射或 JSON 快照策略，无需重跑。
 
 > 整体状态：PHASE_3A_TASK_001_P0_FIX_APPLIED_AWAITING_GPT_REVIEW
+
+## Phase 3A / TASK-001 GPT Git 扫描复审（2026-07-18）
+
+- **复审 Commit**：`1217942525fa149678f26c07ceefd590b3cfe241`
+- **复审范围**：仅 P0-02 的三个运行表真实 ID；客户表历史 ID 属 DEBT-005，不在本轮范围。
+- **仓库基线**：扫描前工作区干净；分支 `phase/3-feishu-integration`；`HEAD` 精确等于复审 Commit。
+- **指定文件扫描**：对 `docs/ACCEPTANCE_REPORT.md` 与 `src/scripts/temp/smoke-test-lark-cli.ts` 执行三个运行表真实 ID 的 `git grep`，0 匹配（退出码 1）。
+- **整个提交树扫描**：对 Commit `1217942` 的全部已跟踪文件执行相同 `git grep`，0 匹配（退出码 1）。
+- **提交范围核对**：仅 3 个审计/验收文档发生变更；无代码变更，因此按上一轮指令未重跑完整 Gate A。
+- **结论**：`MVP_PASS`。P0-01 与 P0-02 均已解决，TASK-001 无剩余 P0。
+
+> 整体状态：PHASE_3A_TASK_001_MVP_PASS

@@ -2,7 +2,7 @@
 
 ## Status
 
-P0_FIX_REQUIRED — ONE_DOCUMENT_REFERENCE_REMAINS
+REVIEW — MVP_PASS_AWAITING_USER_PR_DECISION
 
 ## Stage
 
@@ -189,3 +189,14 @@ MVP / Phase 3A
 - P0-02：FAILED。`git grep` 仍在 `docs/ACCEPTANCE_REPORT.md:291` 找到真实摄入表 ID；与“真实表 ID 仅写入本地 `.env`”验收条件冲突。
 - 最小修复：将该真实 ID 替换为 ``<FEISHU_INGESTION_TABLE_ID>`` 或仅写环境变量名。无需改代码、无需重跑完整 Gate A；提交后运行目标 ID 的 `git grep`，无匹配即可再次复审。
 - 结论：`MVP_FAIL`（仅剩 1 个 P0 文档残留）。
+
+### GPT Git Scan Re-review — Commit `1217942`（2026-07-18）
+
+- 复审范围仅限 P0-02 的三个运行表真实 ID（分别对应 `FEISHU_INGESTION_TABLE_ID`、`FEISHU_REVIEW_TABLE_ID`、`FEISHU_WRITE_LOG_TABLE_ID`；审计文档不复写真实值）。
+- 复审基线：工作区扫描前干净，当前分支为 `phase/3-feishu-integration`，`HEAD` 精确等于 `1217942525fa149678f26c07ceefd590b3cfe241`。
+- 提交范围：仅修改 `docs/ACCEPTANCE_REPORT.md`、`docs/ai/PROJECT_STATE.md`、`docs/ai/tasks/TASK-001.md`；没有代码变更。
+- `git grep` 指定 `docs/ACCEPTANCE_REPORT.md` 与 `src/scripts/temp/smoke-test-lark-cli.ts`：0 匹配（退出码 1）。
+- `git grep` 整个 Commit `1217942` 的已跟踪树：0 匹配（退出码 1）。
+- 客户表历史 ID `tblmRVrUnfodlzlo` 不在本次 P0-02 复审范围，继续按 DEBT-005 管理。
+- 按上一轮指令未重跑完整 Gate A；本提交无代码变更。
+- 结论：`MVP_PASS`。TASK-001 验收条件已满足且不存在剩余 P0；等待用户决定是否创建 PR，可开始 TASK-002。
