@@ -96,3 +96,16 @@
   - src/data-cleaning/core/data-cleaner.js
   - src/data-cleaning/schemas/index.js
   - src/data-cleaning/config/index.js
+
+## DEBT-007: 飞书审核记录幂等仅覆盖单服务实例
+
+- Status: OPEN
+- Severity: P1
+- Introduced By: TASK-002 GPT review
+- Context: `IngestionService.pendingCandidates` 只在单个进程内串行化同一摄入回调；`FeishuReviewRepository.create()` 使用先查询再创建，数据层没有唯一约束或原子 claim。
+- Risk: 多副本部署或两个重叠进程同时处理同一 `ingestion_id` 时，可能创建重复审核记录。
+- Reason Deferred: 当前 MVP 尚未进入多副本部署；本条不影响 TASK-002 单实例验收，但必须明确当前部署约束。
+- Resolve Before: 多副本生产部署
+- Related Files:
+  - src/server/services/ingestion-service.ts
+  - src/server/repositories/feishu-review-repository.ts

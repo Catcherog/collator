@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import type {
   CandidateCallbackRequest,
+  CandidateRecord,
   CreateIngestionRequest,
   IngestionResponse,
   IngestionTask,
@@ -12,6 +13,7 @@ import type { TaskRepository } from '../repositories/task-repository.js';
 import type { NewReviewRecord, ReviewRepository } from '../repositories/review-repository.js';
 import { mapCustomerCandidate } from '../mapping/customer-candidate-mapper.js';
 import { runCleaningPipeline } from '../cleaning/pipeline/cleaning-pipeline.js';
+import { sanitizeWarningText } from '../security/redaction.js';
 
 function computeIdempotencyKey(req: CreateIngestionRequest): string {
   const normalizedContent = req.content.trim();
@@ -21,6 +23,44 @@ function computeIdempotencyKey(req: CreateIngestionRequest): string {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function deepClone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/**
+ * Build the typed Pipeline evidence snapshot persisted on the task.
+ * Mapper warnings are kept separate (on `task.warnings`) so the two warning
+ * sources remain distinguishable in audit/diagnosis.
+ */
+function buildPipelineEvidence(result: ReturnType<typeof runCleaningPipeline>): Record<string, unknown> {
+  return {
+    pipelineVersion: result.pipelineVersion,
+    stages: result.stages,
+    validation: result.validation,
+    corrections: result.corrections,
+    warnings: result.warnings,
+    errors: result.errors,
+    qualityReport: result.qualityReport,
+    success: result.success,
+  };
+}
+
+/**
+ * Apply sanitization to mapper warnings before they are persisted or returned.
+ * An attacker-controlled unknown Candidate key could otherwise smuggle a
+ * phone number or a local filesystem path through `warning.field` and
+ * `warning.message`.
+ */
+function sanitizeMapperWarnings(
+  warnings: Array<{ field: string; code: string; message: string }>
+): Array<{ field: string; code: string; message: string }> {
+  return warnings.map((w) => ({
+    field: sanitizeWarningText(w.field),
+    code: w.code,
+    message: sanitizeWarningText(w.message),
+  }));
 }
 
 export class IngestionService {
@@ -147,10 +187,15 @@ export class IngestionService {
     }
 
     // Step 1: Map candidate fields to the canonical Chinese schema.
+    // The original Candidate is deep-cloned and persisted verbatim as raw
+    // audit evidence (P0-02); only `mappedFields` feeds the Pipeline and
+    // `normalized_fields`.
     const { mappedFields, warnings: mapperWarnings } = mapCustomerCandidate(
       req.candidate.fields
     );
-    const canonicalCandidate = { ...req.candidate, fields: mappedFields };
+    const sanitizedMapperWarnings = sanitizeMapperWarnings(mapperWarnings);
+    const rawCandidate = deepClone(req.candidate) as CandidateRecord;
+    const canonicalCandidate: CandidateRecord = { ...req.candidate, fields: mappedFields };
 
     // Step 2: Run the deterministic cleaning pipeline.
     const pipelineResult = runCleaningPipeline({
@@ -158,6 +203,7 @@ export class IngestionService {
       recordType: task.target_domain,
       data: mappedFields,
     });
+    const pipelineEvidence = buildPipelineEvidence(pipelineResult);
 
     const now = nowIso();
 
@@ -170,14 +216,18 @@ export class IngestionService {
     }));
 
     // Step 3: On pipeline failure, save task as validation_failed and create no review.
+    // Pipeline evidence is still persisted (P0-03) so the failure path keeps
+    // the audit trail needed for diagnosis.
     if (!pipelineResult.success) {
       const failed: IngestionTask = {
         ...task,
         status: 'validation_failed',
         candidate: canonicalCandidate,
+        raw_candidate: rawCandidate,
         workflow_run_id: req.workflow_run_id,
-        warnings: mapperWarnings,
+        warnings: sanitizedMapperWarnings,
         errors: pipelineErrorsAsTaskErrors,
+        pipeline_evidence: pipelineEvidence,
         updated_at: now,
       };
       await this.repository.save(failed);
@@ -189,6 +239,10 @@ export class IngestionService {
     }
 
     // Step 4: On success, create the review record with full pipeline evidence.
+    // The review record shares the same pipeline evidence object as the task
+    // to avoid duplicate transformation logic (P0-03). Raw Candidate evidence
+    // is stored under `validation.rawCandidate` so the Feishu JSON evidence
+    // column is reused without adding new Base fields (P0-02).
     const newReview: NewReviewRecord = {
       ingestion_id: task.ingestion_id,
       status: 'pending_review',
@@ -202,6 +256,7 @@ export class IngestionService {
         warnings: pipelineResult.warnings,
         errors: pipelineResult.errors,
         qualityReport: pipelineResult.qualityReport,
+        rawCandidate,
       },
       updated_at: now,
     };
@@ -211,11 +266,13 @@ export class IngestionService {
       ...task,
       status: 'pending_review',
       candidate: canonicalCandidate,
+      raw_candidate: rawCandidate,
       workflow_run_id: req.workflow_run_id,
       review_record_id: review.review_record_id,
       normalized_fields: pipelineResult.standardizedRecord,
-      warnings: mapperWarnings,
+      warnings: sanitizedMapperWarnings,
       errors: pipelineErrorsAsTaskErrors,
+      pipeline_evidence: pipelineEvidence,
       updated_at: now,
     };
     await this.repository.save(updated);

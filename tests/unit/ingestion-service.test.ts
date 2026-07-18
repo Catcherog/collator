@@ -403,4 +403,196 @@ describe('IngestionService', () => {
     expect(replay.status).toBe('pending_review');
     expect(reviewRepository.size()).toBe(1);
   });
+
+  // ---------------------------------------------------------------------
+  // TASK-002 P0 regression tests
+  // ---------------------------------------------------------------------
+
+  describe('P0-02: original Candidate evidence retained as raw_candidate', () => {
+    it('persists an untouched deep copy of the original Candidate on the task', async () => {
+      const created = await service.createIngestion(makeRequest());
+      const originalCandidate = makeCandidate({ unknown_field: 'should be retained verbatim' });
+      const req = { candidate: originalCandidate };
+
+      await service.receiveCandidate(created.ingestion_id, req);
+
+      const task = await service.getIngestion(created.ingestion_id);
+      expect(task.raw_candidate).toBeDefined();
+      // Byte-for-byte / deep-equal preservation of the original Candidate.
+      expect(task.raw_candidate).toEqual(originalCandidate);
+      // The canonical candidate has mapped fields only.
+      expect(task.candidate?.fields['客户姓名']).toBe('张三');
+      expect(task.candidate?.fields['unknown_field']).toBeUndefined();
+      // Raw candidate keeps the original English + unknown keys.
+      expect(task.raw_candidate?.fields['customer_name']).toBe('张三');
+      expect(task.raw_candidate?.fields['unknown_field']).toBe('should be retained verbatim');
+    });
+
+    it('keeps unknown fields out of canonical Pipeline input and normalized_fields', async () => {
+      const created = await service.createIngestion(makeRequest());
+      await service.receiveCandidate(created.ingestion_id, {
+        candidate: makeCandidate({ unknown_field: 'dropped', another_unknown: 42 }),
+      });
+
+      const task = await service.getIngestion(created.ingestion_id);
+      expect(task.normalized_fields).toBeDefined();
+      expect(task.normalized_fields!['unknown_field']).toBeUndefined();
+      expect(task.normalized_fields!['another_unknown']).toBeUndefined();
+      expect(task.normalized_fields!['客户姓名']).toBe('张三');
+    });
+
+    it('retains raw evidence on the review record and survives replay across a new service instance', async () => {
+      const created = await service.createIngestion(makeRequest());
+      const originalCandidate = makeCandidate({ secret_field: 'secret_value' });
+      const req = { candidate: originalCandidate };
+
+      const first = await service.receiveCandidate(created.ingestion_id, req);
+
+      const review = await reviewRepository.findByIngestionId(created.ingestion_id);
+      expect(review).not.toBeNull();
+      const validation = review!.validation as Record<string, unknown>;
+      const rawCandidate = validation['rawCandidate'] as {
+        fields: Record<string, unknown>;
+      };
+      expect(rawCandidate).toBeDefined();
+      expect(rawCandidate.fields['secret_field']).toBe('secret_value');
+      expect(rawCandidate.fields['customer_name']).toBe('张三');
+
+      // New service instance simulates process restart.
+      const newService = new IngestionService(repository, reviewRepository);
+      const replay = await newService.receiveCandidate(created.ingestion_id, req);
+      expect(replay.review_record_id).toBe(first.review_record_id);
+
+      // Raw evidence still intact after replay.
+      const reviewAfterReplay = await reviewRepository.findByIngestionId(created.ingestion_id);
+      const validationAfter = reviewAfterReplay!.validation as Record<string, unknown>;
+      const rawAfter = validationAfter['rawCandidate'] as { fields: Record<string, unknown> };
+      expect(rawAfter.fields['secret_field']).toBe('secret_value');
+    });
+
+    it('sanitizes PII/path leakage in mapper warning field and message before persistence', async () => {
+      const created = await service.createIngestion(makeRequest());
+      // Two attacker-controlled unknown keys: one smuggles a phone number,
+      // the other smuggles an absolute filesystem path.
+      await service.receiveCandidate(created.ingestion_id, {
+        candidate: makeCandidate({
+          'phone_13800138000_field': 'dropped',
+          '/etc/passwd': 'also_dropped',
+        }),
+      });
+
+      const task = await service.getIngestion(created.ingestion_id);
+      // Phone-bearing key → warning.field and warning.message have the
+      // phone number redacted.
+      const phoneWarning = task.warnings.find((w) => w.field.includes('phone_'));
+      expect(phoneWarning).toBeDefined();
+      expect(phoneWarning!.field).not.toContain('13800138000');
+      expect(phoneWarning!.field).toContain('138****8000');
+      expect(phoneWarning!.message).not.toContain('13800138000');
+      expect(phoneWarning!.message).toContain('138****8000');
+      // Path-bearing key → warning.field and warning.message have the
+      // absolute path replaced with <PATH>.
+      const pathWarning = task.warnings.find((w) => w.field.includes('PATH') || w.field === '<PATH>');
+      expect(pathWarning).toBeDefined();
+      expect(pathWarning!.field).not.toContain('/etc/passwd');
+      expect(pathWarning!.message).not.toContain('/etc/passwd');
+      expect(pathWarning!.message).toContain('<PATH>');
+    });
+  });
+
+  describe('P0-03: full Pipeline evidence persisted on the task', () => {
+    it('persists pipelineVersion/stages/validation/corrections/warnings/errors/qualityReport on success', async () => {
+      const created = await service.createIngestion(makeRequest());
+      await service.receiveCandidate(created.ingestion_id, { candidate: makeCandidate() });
+
+      const task = await service.getIngestion(created.ingestion_id);
+      expect(task.pipeline_evidence).toBeDefined();
+      const evidence = task.pipeline_evidence as Record<string, unknown>;
+      expect(evidence['pipelineVersion']).toBeDefined();
+      expect(evidence['stages']).toBeDefined();
+      expect(evidence['validation']).toBeDefined();
+      expect(evidence['corrections']).toBeDefined();
+      expect(evidence['warnings']).toBeDefined();
+      expect(evidence['errors']).toBeDefined();
+      expect(evidence['qualityReport']).toBeDefined();
+      expect(evidence['success']).toBe(true);
+    });
+
+    it('persists full Pipeline evidence on the validation_failed path', async () => {
+      const failureResult: PipelineResult = {
+        standardizedRecord: {},
+        validation: null,
+        errors: [
+          {
+            stage: 'format_clean',
+            module: 'cleaner-adapter',
+            code: 'PIPELINE_STAGE_FAILED',
+            message: 'simulated failure',
+          },
+        ],
+        warnings: ['a pipeline warning'],
+        corrections: [{ field: 'foo', original: 'a', corrected: 'b', reason: 'test' }],
+        qualityReport: null,
+        stages: [
+          { name: 'format_clean', status: 'failed', module: 'cleaner-adapter' },
+          { name: 'enum_map_clean', status: 'skipped' },
+          { name: 'validate', status: 'skipped' },
+          { name: 'quality_assessment', status: 'skipped' },
+        ],
+        pipelineVersion: '2c.1.0',
+        success: false,
+      };
+      vi.mocked(runCleaningPipeline).mockImplementationOnce(() => failureResult);
+
+      const created = await service.createIngestion(makeRequest());
+      await service.receiveCandidate(created.ingestion_id, { candidate: makeCandidate() });
+
+      const task = await service.getIngestion(created.ingestion_id);
+      expect(task.status).toBe('validation_failed');
+      expect(task.pipeline_evidence).toBeDefined();
+      const evidence = task.pipeline_evidence as Record<string, unknown>;
+      expect(evidence['pipelineVersion']).toBe('2c.1.0');
+      expect(evidence['success']).toBe(false);
+      expect(evidence['errors']).toEqual(failureResult.errors);
+      expect(evidence['warnings']).toEqual(['a pipeline warning']);
+      expect(evidence['corrections']).toEqual(failureResult.corrections);
+      expect(evidence['stages']).toEqual(failureResult.stages);
+      expect(evidence['qualityReport']).toBeNull();
+    });
+
+    it('keeps mapper warnings distinguishable from Pipeline warnings on the task', async () => {
+      const created = await service.createIngestion(makeRequest());
+      await service.receiveCandidate(created.ingestion_id, {
+        candidate: makeCandidate({ unknown_field: 'dropped' }),
+      });
+
+      const task = await service.getIngestion(created.ingestion_id);
+      // Mapper warning lives on task.warnings.
+      const mapperWarning = task.warnings.find(
+        (w) => w.code === 'UNMAPPED_CANDIDATE_FIELD'
+      );
+      expect(mapperWarning).toBeDefined();
+      // Pipeline warnings live inside pipeline_evidence.warnings (string array).
+      const evidence = task.pipeline_evidence as Record<string, unknown>;
+      const pipelineWarnings = evidence['warnings'] as unknown[];
+      expect(Array.isArray(pipelineWarnings)).toBe(true);
+      // Pipeline warnings are strings; mapper warnings are {field, code, message}.
+      for (const w of pipelineWarnings) {
+        expect(typeof w).toBe('string');
+      }
+    });
+
+    it('task Pipeline evidence is durable across a new service instance', async () => {
+      const created = await service.createIngestion(makeRequest());
+      await service.receiveCandidate(created.ingestion_id, { candidate: makeCandidate() });
+
+      const newService = new IngestionService(repository, reviewRepository);
+      const task = await newService.getIngestion(created.ingestion_id);
+      expect(task.pipeline_evidence).toBeDefined();
+      const evidence = task.pipeline_evidence as Record<string, unknown>;
+      expect(evidence['pipelineVersion']).toBeDefined();
+      expect(evidence['stages']).toBeDefined();
+      expect(evidence['success']).toBe(true);
+    });
+  });
 });

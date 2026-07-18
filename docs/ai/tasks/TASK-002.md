@@ -2,7 +2,7 @@
 
 ## Status
 
-DONE — AWAITING_GPT_REVIEW
+P0 FIX APPLIED — AWAITING GPT RE-REVIEW
 
 ## Stage
 
@@ -156,5 +156,26 @@ Gate A + Gate C-Core 回归（2026-07-18，Phase 3B / TASK-002 最终验证）�
 
 ### 下一步
 
-- 等待 GPT 复审 TASK-002。
-- 通过后由用户授权启动 TASK-003（写入日志 + 业务主表写入）。
+- 等待 GPT 基于 P0 修复 commit 复审；通过前不得启动 TASK-003。
+- GPT 复审判定 `MVP_PASS` 或 `MVP_PASS_WITH_DEBT` 后启动 TASK-003（写入日志仓库 + 业务主表写入）。
+
+## Review History
+
+### 2026-07-18 — GPT Review of Commit `94f0199`
+
+- Verdict: `MVP_FAIL`
+- P0-01: 嵌套 Candidate PII 绕过 GET 响应浅层脱敏。
+- P0-02: 原始 Candidate 与未知字段证据被映射结果覆盖后丢失。
+- P0-03: 完整 Pipeline 证据未持久化到任务，失败路径证据丢失。
+- Fix packet: `docs/ai/reviews/TASK-002_GPT_REVIEW.md`
+- TASK-003: `NOT STARTED — BLOCKED BY TASK-002 P0 FIX`
+
+### 2026-07-18 — Trae P0 Fix Applied
+
+- 基线：Commit `94f0199`
+- 范围：仅修复 3 个 P0 + 直接回归测试，未处理 P1/P2（按修复包指示）。
+- **P0-01 修复**：`src/server/security/redaction.ts` 重写 `redactPhone`（修复 +86 前缀，分离捕获组对号码 mask）；新增 `redactValueDeep`（递归遍历对象/数组返回新副本）；重写 `redactObject` 调用 `redactValueDeep`；新增 `sanitizeWarningText`（mapper warning field/message 中 phone + 绝对路径脱敏，PATH_PATTERN 仅匹配 `/...` 或 `C:\...`，避免误匹配 `style_preferences` 等字段名）。新增 `tests/unit/security/redaction.test.ts`（11 tests）；`tests/integration/ingestions.test.ts` 新增 1 个 HTTP 端到端集成测试（POST 嵌套 phone candidate → GET 响应不含原 phone、含 `138****8000`；repository 仍保留 `raw_candidate`；review.validation.rawCandidate 保留原始证据；GET 不修改存储）。
+- **P0-02 修复**：`src/server/domain/ingestion.ts` 新增 `raw_candidate?: CandidateRecord` 字段；`src/server/services/ingestion-service.ts` 新增 `deepClone` helper，在 `doReceiveCandidate` 入口 `rawCandidate = deepClone(req.candidate)` 保留原始证据；mapper warnings 经 `sanitizeMapperWarnings` sanitize；成功路径将 `rawCandidate` 嵌入 `review.validation.rawCandidate`（复用飞书 JSON 列，不新增 Base 字段）；失败路径同样保留 `raw_candidate` 到 task。`tests/unit/ingestion-service.test.ts` 新增 4 个测试覆盖 raw_candidate 深拷贝、未知字段不进入 normalized_fields、跨服务实例持久化、mapper warning sanitization。
+- **P0-03 修复**：`src/server/domain/ingestion.ts` 新增 `pipeline_evidence?: Record<string, unknown>` 字段；`src/server/services/ingestion-service.ts` 新增 `buildPipelineEvidence` helper（结构化包含 `pipelineVersion`/`stages`/`validation`/`corrections`/`warnings`/`errors`/`qualityReport`/`success`），成功与失败路径均把 `pipeline_evidence` 写入 task；mapper warnings 与 Pipeline warnings 严格区分（mapper 在 `task.warnings` 是 `{field, code, message}`，Pipeline 在 `pipeline_evidence.warnings` 是 `string[]`）。`tests/unit/ingestion-service.test.ts` 新增 4 个测试覆盖成功路径持久化、失败路径持久化、mapper/Pipeline warnings 区分、跨新服务实例持久化。
+- **Gate A + Gate C-Core 回归**：全部命令退出码 0；测试 260 passed（28 test files，新增 24 个测试：11 redaction + 13 ingestion-service）；集成测试 32 passed（3 test files，新增 1 个 HTTP 集成测试）；All files Lines 85.28% / Branch 81.95% / Funcs 88.53%；关键模块 Lines 全部 ≥80%（redaction.ts 100%, ingestion-service 96.88%, mapping 100%, repository-factory 100%, feishu-review-repository 86.66%, feishu-task-repository 91.2%, feishu-client 95.62%, cleaning-pipeline 100%）；Gate C-Core PASS（50/50 case，4 项核心指标 100%）；`git diff origin/main -- src/data-cleaning` 无输出。
+- TASK-003：`NOT STARTED — BLOCKED BY TASK-002 GPT RE-REVIEW`

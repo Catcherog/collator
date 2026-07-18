@@ -84,6 +84,14 @@
 | 2026-07-18 | `git grep -n -F -- <FEISHU_INGESTION_TABLE_ID>` (Phase 3B Step 2) | 1 | - | - | 无匹配 |
 | 2026-07-18 | `git grep -n -F -- <FEISHU_REVIEW_TABLE_ID>` (Phase 3B Step 2) | 1 | - | - | 无匹配 |
 | 2026-07-18 | `git grep -n -F -- <FEISHU_WRITE_LOG_TABLE_ID>` (Phase 3B Step 2) | 1 | - | - | 无匹配 |
+| 2026-07-18 | `npm run typecheck` (Phase 3B / TASK-002 P0 修复后) | 0 | - | - | TypeScript 无错误（含 redaction.ts 重构 + ingestion-service.ts 新 helper） |
+| 2026-07-18 | `npm run lint` (Phase 3B / TASK-002 P0 修复后) | 0 | - | - | ESLint 无错误（含新增 redaction.test.ts 与 ingestion-service 新 describe 块） |
+| 2026-07-18 | `npm run test` (Phase 3B / TASK-002 P0 修复后) | 0 | 260 | 0 | 28 test files passed（新增 11 redaction + 13 ingestion-service 单元测试） |
+| 2026-07-18 | `npm run test:integration` (Phase 3B / TASK-002 P0 修复后) | 0 | 32 | 0 | 3 test files passed（新增 1 个 P0-01 HTTP 端到端集成测试） |
+| 2026-07-18 | `npm run test:coverage` (Phase 3B / TASK-002 P0 修复后) | 0 | 260 | 0 | All files Lines 85.28% / Branch 81.95% / Funcs 88.53%；关键模块 Lines 全部 ≥80%（redaction.ts 100%, ingestion-service 96.88%, mapping 100%, repository-factory 100%, feishu-review-repository 86.66%, feishu-task-repository 91.2%, feishu-client 95.62%, cleaning-pipeline 100%） |
+| 2026-07-18 | `npm run build` (Phase 3B / TASK-002 P0 修复后) | 0 | - | - | `dist/` 构建成功（tsc -p tsconfig.json） |
+| 2026-07-18 | `npm run evaluate` (Phase 3B / TASK-002 P0 修复后) | 0 | 50 | 0 | Gate C-Core PASS，50/50 case，4 项核心指标 100%（field_accuracy 132/132, required_field_recall 91/91, enum_precision 33/33, error_interception_rate 1/1） |
+| 2026-07-18 | `git diff origin/main -- src/data-cleaning` (Phase 3B / TASK-002 P0 修复后) | 0 | - | - | 无输出（LEGACY_DIFF_EMPTY，Legacy 源码零修改） |
 
 ## API 合同验证
 
@@ -407,3 +415,122 @@ GPT 基于 Commit `0be872d` 复审 TASK-001 时发现 2 个 P0，本次提交进
 - **TASK-002 GPT 复审**：本任务实现已完成，等待 GPT 基于 TASK-002 最终 commit 复审。
 
 > 整体状态：PHASE_3B_TASK_002_DONE_AWAITING_GPT_REVIEW
+
+## Phase 3B / TASK-002 GPT 复审（Commit `94f0199`）
+
+- 日期：2026-07-18
+- 审查范围：`26fb515..94f0199`
+- 结论：`MVP_FAIL`
+- 完整修复包：`docs/ai/reviews/TASK-002_GPT_REVIEW.md`
+
+### 本轮独立验证
+
+| 命令/检查 | 结果 | 证据 |
+|---|---|---|
+| `npm run typecheck` | PASS | 退出码 0 |
+| `npm run lint` | PASS | 退出码 0 |
+| `npm run test` | PASS | 236 tests / 27 files |
+| `npm run test:integration` | PASS | 31 tests / 3 files |
+| `npm run build` | PASS | 退出码 0 |
+| `npm run evaluate` | PASS | 50/50；4 项核心指标 100% |
+| `git diff origin/main -- src/data-cleaning` | PASS | 无输出 |
+| 嵌套 Candidate 脱敏复现 | FAIL | 顶层 content 已脱敏，但序列化响应仍包含嵌套原手机号 |
+
+### P0
+
+1. `P0-01`：GET 任务响应只做浅层脱敏，嵌套 Candidate PII 可原样返回。
+2. `P0-02`：映射后覆盖原 Candidate，未知字段与原始审核证据不可恢复。
+3. `P0-03`：完整 Pipeline 证据未写入任务；`validation_failed` 路径丢失大部分证据。
+
+### P1
+
+- `DEBT-007`：飞书审核记录幂等只覆盖单服务实例，多副本部署前需数据层唯一性或原子 claim。
+- Review 状态与 reviewer/decision/corrections 的持久化同步由已接受的 TASK-003 状态流处理，不提前扩大 TASK-002 P0 修复范围。
+
+> 整体状态：PHASE_3B_TASK_002_P0_FIX_REQUIRED；TASK-003_NOT_STARTED
+
+## Phase 3B / TASK-002 P0 修复结论（2026-07-18）
+
+GPT 基于 Commit `94f0199` 复审 TASK-002 时发现 3 个 P0，Trae 按修复包 `docs/ai/reviews/TASK-002_GPT_REVIEW.md` 完成最小修复：
+
+### P0-01：嵌套 Candidate PII 绕过 GET 响应浅层脱敏
+
+- **问题**：GET `/v1/ingestions/:id` 响应只对顶层 `content` 字段脱敏，嵌套在 `candidate.fields` / `candidate.evidence` 中的手机号以原样返回；mapper warning field/message 也可能携带攻击者控制的 PII。
+- **修复**：
+  - `src/server/security/redaction.ts` 重写 `redactPhone`：分离捕获组对号码 mask，修复 +86 前缀处理（原 `861****8000` → 现 `138****8000`）
+  - 新增 `redactValueDeep`：递归遍历对象/数组返回新副本，不修改原对象
+  - 重写 `redactObject` 调用 `redactValueDeep`
+  - 新增 `sanitizeWarningText`：对 mapper warning field/message 中手机号 + 绝对路径脱敏；PATH_PATTERN 仅匹配 `/...` 或 `C:\...`，避免误匹配 `style_preferences` 等字段名
+- **测试**：`tests/unit/security/redaction.test.ts`（11 tests）：redactPhone 含 +86、redactContent、redactObject 递归、sanitizeWarningText phone/path/Windows path/正常字段名保留
+- **HTTP 集成测试**：`tests/integration/ingestions.test.ts` 新增 "P0-01: GET response redacts nested Candidate PII (phone in fields and evidence) without mutating stored task" — POST 嵌套 phone candidate → GET 响应不含原 phone、含 `138****8000`；repository 仍保留 `raw_candidate`；review.validation.rawCandidate 保留原始证据；GET 不修改存储
+
+### P0-02：原始 Candidate 证据被映射结果覆盖后丢失
+
+- **问题**：`doReceiveCandidate` 入口对 `req.candidate` 直接 mutate（`delete candidate.fields[key]`），未知字段与原始审核证据不可恢复，违反"不修改传入对象"约束。
+- **修复**：
+  - `src/server/domain/ingestion.ts` `IngestionTask` 接口新增 `raw_candidate?: CandidateRecord` 字段
+  - `src/server/services/ingestion-service.ts` 新增 `deepClone` helper，在 `doReceiveCandidate` 入口 `rawCandidate = deepClone(req.candidate)` 保留原始证据
+  - mapper warnings 经 `sanitizeMapperWarnings` sanitize
+  - 成功路径将 `rawCandidate` 嵌入 `review.validation.rawCandidate`（复用飞书审核表的「校验结果 JSON」列，不新增 Base 字段）
+  - 失败路径同样保留 `raw_candidate` 到 task
+- **测试**：`tests/unit/ingestion-service.test.ts` 新增 4 个测试：raw_candidate 深拷贝保留、未知字段不进入 normalized_fields、review.validation.rawCandidate 跨服务实例持久化、mapper warning sanitization（两个未知字段分别携带 phone 和 path）
+
+### P0-03：完整 Pipeline 证据未持久化到任务，失败路径证据丢失
+
+- **问题**：成功路径只把 Pipeline 证据写入 review record 的 `validation` 对象；`validation_failed` 路径只写入 `errors`，丢失 `stages` / `corrections` / `warnings` / `qualityReport` / `pipelineVersion`。任务无法独立回答"Pipeline 跑到哪一步、产出什么"。
+- **修复**：
+  - `src/server/domain/ingestion.ts` `IngestionTask` 接口新增 `pipeline_evidence?: Record<string, unknown>` 字段
+  - `src/server/services/ingestion-service.ts` 新增 `buildPipelineEvidence` helper：结构化包含 `pipelineVersion` / `stages` / `validation` / `corrections` / `warnings` / `errors` / `qualityReport` / `success`
+  - 成功与失败路径均把 `pipeline_evidence` 写入 task
+  - mapper warnings 与 Pipeline warnings 严格区分：mapper warnings 在 `task.warnings` 是 `{field, code, message}`；Pipeline warnings 在 `pipeline_evidence.warnings` 是 `string[]`
+- **测试**：`tests/unit/ingestion-service.test.ts` 新增 4 个测试：成功路径持久化完整 pipeline_evidence、失败路径同样持久化、mapper warnings 与 Pipeline warnings 区分、跨新服务实例持久化
+
+### P0 修复后 Gate A + Gate C-Core 复跑结论
+
+- **代码基线：PASSED**（`typecheck` / `lint` / `test` (260) / `test:integration` (32) / `test:coverage` (85.28%) / `build` / `evaluate` (50/50) / `git diff origin/main -- src/data-cleaning` 全部退出码 0）
+- **测试：PASSED**（260 passed / 28 test files，新增 24 个测试：11 redaction + 13 ingestion-service；新增 1 个 HTTP 集成测试）
+- **覆盖率：GATE_A_PASSED**（redaction.ts 100%, ingestion-service 96.88%；所有关键模块 Lines ≥80%）
+- **Legacy 源码保护：PASSED**（`git diff origin/main -- src/data-cleaning` 无输出，LEGACY_DIFF_EMPTY）
+- **Gate C-Core 回归：PASSED**（50/50 case；4 项核心指标 100%；未回归）
+- **HTTP P0-01 端到端验证：PASSED**（响应不含原 phone、含 `138****8000`；repository 仍保留 `raw_candidate`；review.validation.rawCandidate 保留原始证据；GET 不修改存储）
+
+### Phase 3B / TASK-002 P0 修复后覆盖率基线
+
+| 范围 | Statements | Branches | Functions | Lines |
+|---|---:|---:|---:|---:|
+| All files | 85.28% | 81.95% | 88.53% | 85.28% |
+| server/security/redaction.ts | 100% | 100% | 100% | 100% |
+| server/services/ingestion-service.ts | 96.88% | 86.05% | 100% | 96.88% |
+| server/mapping/customer-candidate-mapper.ts | 100% | 100% | 100% | 100% |
+| server/repositories/repository-factory.ts | 100% | 100% | 100% | 100% |
+| server/repositories/feishu-review-repository.ts | 86.66% | 63.63% | 100% | 86.66% |
+| server/repositories/in-memory-review-repository.ts | 85.71% | 83.33% | 85.71% | 85.71% |
+| server/repositories/feishu-task-repository.ts | 91.2% | 88.88% | 100% | 91.2% |
+| server/feishu/feishu-client.ts | 95.62% | 79.06% | 100% | 95.62% |
+| server/cleaning/pipeline/cleaning-pipeline.ts | 100% | 95.65% | 100% | 100% |
+
+### P0 修复验收清单对照
+
+| 验收项 | 状态 | 证据 |
+|---|---|---|
+| P0-01 嵌套 Candidate PII 在 GET 响应中被脱敏 | PASSED | `tests/unit/security/redaction.test.ts` 11 tests PASS；`tests/integration/ingestions.test.ts` "P0-01: GET response redacts nested Candidate PII" PASS |
+| P0-01 GET 响应脱敏不修改 repository 存储 | PASSED | `tests/integration/ingestions.test.ts` 断言 `storedTaskAgain.raw_candidate.fields['unknown_field']` 仍为 `13800138000` |
+| P0-01 mapper warning 中 phone/path 被脱敏 | PASSED | `tests/unit/ingestion-service.test.ts` "sanitizes mapper warnings containing phone and path" PASS |
+| P0-02 原始 Candidate 深拷贝保留在 task.raw_candidate | PASSED | `tests/unit/ingestion-service.test.ts` "preserves raw candidate as deep clone on the task" PASS |
+| P0-02 未知字段不进入 normalized_fields | PASSED | `tests/unit/ingestion-service.test.ts` "keeps unknown fields out of normalized_fields" PASS（已存在，仍 PASS） |
+| P0-02 review.validation.rawCandidate 跨服务实例持久化 | PASSED | `tests/unit/ingestion-service.test.ts` "persists rawCandidate in review.validation across service instances" PASS |
+| P0-03 成功路径持久化完整 pipeline_evidence | PASSED | `tests/unit/ingestion-service.test.ts` "persists complete pipeline_evidence on success" PASS |
+| P0-03 失败路径持久化完整 pipeline_evidence | PASSED | `tests/unit/ingestion-service.test.ts` "persists pipeline_evidence on validation_failed path" PASS |
+| P0-03 mapper warnings 与 Pipeline warnings 严格区分 | PASSED | `tests/unit/ingestion-service.test.ts` "distinguishes mapper warnings from pipeline warnings" PASS |
+| P0-03 pipeline_evidence 跨新服务实例持久化 | PASSED | `tests/unit/ingestion-service.test.ts` "persists pipeline_evidence across new service instance" PASS |
+| Gate A 全套命令退出码 0 | PASSED | typecheck / lint / test (260) / test:integration (32) / test:coverage (85.28%) / build / evaluate (50/50) |
+| Legacy 源码保护 | PASSED | `git diff origin/main -- src/data-cleaning` 无输出 |
+| Gate C-Core 回归 | PASSED | 50/50 case；4 项核心指标 100%；未回归 |
+
+### 阻塞项
+
+- **GPT 复审 P0 修复 commit**：3 个 P0 已修复，等待 GPT 复审判定 `MVP_PASS` 或 `MVP_PASS_WITH_DEBT`；通过前不得启动 TASK-003。
+- **Gate C-LLM**：DEBT-001（Dify 凭据未配置），不在 TASK-002 解决范围。
+- **Gate D 飞书集成**：需待 TASK-003（写入日志仓库 + 业务主表写入）完成才能整体通过。
+
+> 整体状态：PHASE_3B_TASK_002_P0_FIX_APPLIED_AWAITING_GPT_REVIEW

@@ -324,6 +324,56 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
 
     expect(response.statusCode).toBe(401);
   });
+
+  it('P0-01: GET response redacts nested Candidate PII (phone in fields and evidence) without mutating stored task', async () => {
+    const { app, repository, reviewRepository } = await setup();
+    const ingestionId = await createTask(app);
+    // Candidate carries a phone number in fields and evidence. The unknown
+    // field key is intentionally benign so the response-wide "no original
+    // phone number" assertion is meaningful (PII lives in values, not keys).
+    const payload = makeCandidatePayload({
+      unknown_field: '13800138000',
+    });
+    (payload.candidate as { evidence: Record<string, string> }).evidence = {
+      contact: '电话13800138000',
+      budget: '预算3000元左右',
+    };
+
+    const callbackResponse = await postCandidate(app, ingestionId, payload);
+    expect(callbackResponse.statusCode).toBe(200);
+
+    const getResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/ingestions/${ingestionId}`,
+    });
+    expect(getResponse.statusCode).toBe(200);
+
+    const serialized = getResponse.body;
+    // The original phone number must not appear anywhere in the response.
+    expect(serialized).not.toContain('13800138000');
+    // Sanitized forms are present instead.
+    expect(serialized).toContain('138****8000');
+
+    // Repository storage still retains the original evidence (P0-02 + P0-01
+    // "Do not remove raw evidence from repository storage").
+    const storedTask = await repository.findById(ingestionId);
+    expect(storedTask).not.toBeNull();
+    expect(storedTask!.raw_candidate).toBeDefined();
+    expect(storedTask!.raw_candidate!.fields['unknown_field']).toBe('13800138000');
+    expect(storedTask!.raw_candidate!.evidence['contact']).toBe('电话13800138000');
+
+    // Review record retains raw Candidate under validation.rawCandidate.
+    const review = await reviewRepository.findByIngestionId(ingestionId);
+    expect(review).not.toBeNull();
+    const validation = review!.validation as Record<string, unknown>;
+    const rawCandidate = validation['rawCandidate'] as { fields: Record<string, unknown>; evidence: Record<string, string> };
+    expect(rawCandidate.fields['unknown_field']).toBe('13800138000');
+    expect(rawCandidate.evidence['contact']).toBe('电话13800138000');
+
+    // The sanitized GET response did not mutate the stored task.
+    const storedTaskAgain = await repository.findById(ingestionId);
+    expect(storedTaskAgain!.raw_candidate!.fields['unknown_field']).toBe('13800138000');
+  });
 });
 
 describe('POST /v1/ingestions/:id/approve and /reject', () => {
