@@ -2,7 +2,7 @@
 
 ## Status
 
-P0-01C + P0-04 FIX APPLIED — AWAITING GPT RE-REVIEW OF NEW COMMIT
+DONE — AWAITING_GPT_RE_REVIEW (Redaction Invariant Closure: P0-01D + P0-04B fix applied)
 
 ## Stage
 
@@ -255,4 +255,41 @@ Gate A + Gate C-Core 回归（2026-07-18，Phase 3B / TASK-002 最终验证）�
   - `npm run evaluate` exit 0（Gate C-Core 50/50 PASS，4 项核心指标 100%）
   - `git diff origin/main -- src/data-cleaning` 无输出（Legacy 源码零修改）
   - `git diff --check` exit 0
+- TASK-003：`NOT STARTED — BLOCKED BY TASK-002 GPT RE-REVIEW OF NEW COMMIT`
+
+### 2026-07-18 — GPT Re-review of Commit `976fa6c`
+
+- Verdict: `MVP_FAIL`.
+- Accepted: P0-01C 的 contact-parent 四类冲突子键复现已修复；确定性失败 `ingestion_id` 可逐字节保留；P0-02/P0-03 保持 accepted。
+- P0-01D: 本次额外加入的 content-parent 对称优先级会压过更敏感的嵌套 contact key。签名 callback 写入 `fields.content.contact = "wechat_secret_01"` 后 callback 200 / GET 200，GET 仍包含原始微信 ID。
+- P0-04B: `STRUCTURAL_ID_PATTERN` 对 default mode 中任意 `<alpha>_<alphanumeric>` 值全局放行。签名 callback 写入未知字段 `note_13900139000` 与 evidence `proof_13700137000` 后 callback 200 / GET 200，两处手机号均原样返回。
+- Fresh gates: `typecheck`、`lint`、`test` (301/301)、`test:integration` (37/37)、`test:coverage` (Lines 85.6%)、`build`、`evaluate` (50/50)、Legacy diff、`git diff --check` 均通过；说明现有回归缺少上述反例。
+- Fix packet: `docs/ai/reviews/TASK-002_GPT_REVIEW.md`, section “2026-07-18 — GPT Re-review of Commit `976fa6c`”.
+- TASK-003: `NOT STARTED — BLOCKED BY TASK-002 P0 FIX`.
+
+### 2026-07-18 — Trae Redaction Invariant Closure Fix Applied
+
+- 基线：Commit `976fa6c`（GPT re-review `MVP_FAIL`，P0-01D + P0-04B 阻塞）
+- 范围：按用户批准的 `docs/ai/plans/TASK-002_REDACTION_INVARIANT_CLOSURE_EXECUTION_PLAN.md` 单批次连续完成 P0-01D + P0-04B 及其直接反例；不修改 P0-02/P0-03，不启动 TASK-003，不做无关重构。
+- **两个安全不变量**：
+  - Invariant A（Monotonic Redaction Sensitivity）：`contact > content > default`。inherited contact 不得被任何子键降级；inherited content 下嵌套 contact/联系方式/wechat/微信 key 升级为 contact mode。
+  - Invariant B（Context-Aware Structural ID Preservation）：结构化 ID 逐字节保留要求同时满足（a）当前 key 属于 7 个可信响应合同 ID 字段之一（`ingestion_id`/`idempotency_key`/`review_record_id`/`source_record_id`/`workflow_run_id`/`reviewer_id`/`business_record_id`），（b）value 形态匹配 `STRUCTURAL_ID_PATTERN`。Candidate `fields`/`evidence` 中的 `<prefix>_<phone>` 不再被 value-only 规则放行。
+- **代码修改**（`src/server/security/redaction.ts`）：新增 `TRUSTED_STRUCTURAL_ID_KEYS` Set + `isTrustedStructuralIdKey(lower)` helper；新增 `resolveRedactionMode(parentMode, lowerKey)` 集中化单调解析；新增 `redactStringValue(value, mode, trustedStructuralIdContext)` 分支处理；重写 `redactValueDeep(value, sensitiveKeys, mode, trustedStructuralIdContext)` —— 字符串走 `redactStringValue`，数组传播 mode + trusted 上下文，对象先用 `fieldSibling` 计算 `fieldMode`，`original`/`corrected` 继承 `fieldMode` 且强制 `trusted=false`，每个 key 用 `resolveRedactionMode` 计算 `valueMode` 并按 `(valueMode === 'default' && isTrustedStructuralIdKey(lower))` 重置 `childTrustedIdContext`；可信上下文不通过任意嵌套对象 key 传播。
+- **Targeted TDD red → green 证据**：
+  - Red（Task 1）：`npx vitest run tests/unit/security/redaction.test.ts` → 5 failed | 50 passed（4 个 P0-01D case + 1 个 P0-04B case 全部按预期失败）。
+  - Green（Task 2 单元）：`npx vitest run tests/unit/security/redaction.test.ts` → 55/55 passed。
+  - Green（Task 3 集成）：`npx vitest run tests/integration/ingestions.test.ts` → 22/22 passed。
+  - Green（Task 3 联合 targeted）：`npx vitest run tests/unit/security/redaction.test.ts tests/integration/ingestions.test.ts` → 77/77 passed (2 test files)。
+- **单元测试新增**（`tests/unit/security/redaction.test.ts`）：重命名原 `parent content mode wins over nested phone/contact keys` → `parent content mode remains active for ordinary nested phone keys`；新增 P0-01D table-driven 矩阵 4 case（`content.contact` / `content.wechat through array` / `原始文本.联系方式` / multi-depth content to 微信）；移除合成 `related_ids` 测试；新增 P0-04B 测试（3 个 unknown/evidence 字段 `note_13900139000` / `proof_13700137000` / `trace_13600136000` 期望分别掩码为 `note_139****9000` / `proof_137****7000` / `trace_136****6000`，同时保留 `ingestion_id` 等可信 ID 逐字节不变）。
+- **HTTP 回归测试新增**（`tests/integration/ingestions.test.ts`）：2 个 HTTP 回归（P0-01D `content: { contact: 'wechat_secret_01' }` → GET 含 `we************01`、不含原 ID；P0-04B `unknown_field='note_13900139000'` + `evidence.unknown_field='proof_13700137000'` → GET 含 `note_139****9000` / `proof_137****7000`、不含原号码）；两者均断言 repository/review 原始证据不变、GET 不修改存储。
+- **最终 Gate A + Gate C-Core 一次性全套验证**：全部退出码 0。
+  - `npm run typecheck` exit 0
+  - `npm run lint` exit 0
+  - `npm run audit:legacy` exit 0（62 modules）
+  - `npm run test:coverage` exit 0（307/307 passed，28 test files；All files Lines 85.77% / Branches 82.35% / Funcs 88.88%；`server/security/redaction.ts` Lines 100% / Branch 90.62% / Funcs 100%）
+  - `npm run build` exit 0
+  - `npm run evaluate` exit 0（Gate C-Core 50/50 PASS，4 项核心指标 100%）
+  - `git diff origin/main -- src/data-cleaning` 无输出（Legacy 源码零修改）
+  - `git diff --check` exit 0
+- **HTTP 安全复现**：`content.contact = "wechat_secret_01"` 在 GET 响应中被逐层升级为 contact mode，脱敏为 `we************01`；未知字段 `note_13900139000` / `proof_13700137000` 被掩码为 `note_139****9000` / `proof_137****7000`；可信合同 ID（`ingestion_id` 等）仍逐字节保留；repository/review 原始证据保持不变。
 - TASK-003：`NOT STARTED — BLOCKED BY TASK-002 GPT RE-REVIEW OF NEW COMMIT`

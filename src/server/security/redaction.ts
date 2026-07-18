@@ -115,25 +115,40 @@ export function sanitizeWarningText(value: string): string {
 /**
  * Redaction mode propagated through recursion.
  *
+ * Sensitivity is monotonic — `contact > content > default` — and once a
+ * mode is selected it can never be downgraded by a nested key:
+ *
  * - `default`: apply key-based sensitive handling (phone for `phone`/
  *   `mobile`, contact for `wechat`/`微信`/`联系方式`/`contact`, content
- *   for `content`/`原始文本`).
+ *   for `content`/`原始文本`). Structural IDs are preserved only when
+ *   the current key is a trusted contract ID field (see
+ *   `TRUSTED_STRUCTURAL_ID_KEYS`).
  * - `contact`: every nested string beneath a contact/wechat key must use
  *   `redactContactValue` so WeChat IDs inside arrays or nested objects
  *   are masked instead of falling back to `redactPhone` (TASK-002
  *   P0-01B). Parent contact mode is authoritative for all descendant
  *   strings; nested sensitive child keys (`content`/`phone`/`mobile`/
- *   `原始文本`) must not downgrade it (TASK-002 P0-01C).
+ *   `原始文本`) must not downgrade it (TASK-002 P0-01C). A nested
+ *   contact key beneath a content parent must also upgrade to contact
+ *   (TASK-002 P0-01D).
  * - `content`: every nested string beneath a raw-text key uses
- *   `redactContent`. Parent content mode is similarly authoritative.
+ *   `redactContent`. Parent content mode is similarly authoritative for
+ *   ordinary descendants, but a nested contact key upgrades the mode to
+ *   `contact` (P0-01D).
  */
 type RedactionMode = 'default' | 'contact' | 'content';
 
 /**
- * Matches structural identifier values that must pass through response
- * redaction unchanged. Default phone-number scanning must not mutate IDs
+ * Matches structural identifier values that may be preserved at the
+ * response boundary. Default phone-number scanning must not mutate IDs
  * like `ing_2e042890392546c19181507170127599` even though they contain
  * an 11-digit substring matching `1[3-9]\d{9}` (TASK-002 P0-04).
+ *
+ * Value-shape recognition is necessary but NOT sufficient. Preservation
+ * additionally requires the current key to be a trusted contract ID
+ * field (see `TRUSTED_STRUCTURAL_ID_KEYS`). Attacker-controlled unknown
+ * Candidate/evidence strings must continue through `redactPhone` even
+ * when they happen to match this pattern (TASK-002 P0-04B).
  *
  * Covered shapes:
  * - Prefixed opaque IDs: `<alpha>_<alphanumeric>` (e.g. `ing_<hex>`,
@@ -153,6 +168,27 @@ function isStructuralId(value: string): boolean {
   return STRUCTURAL_ID_PATTERN.test(value);
 }
 
+/**
+ * Trusted response-contract ID field names. Structural-ID preservation
+ * at the response boundary applies only when the current key is in this
+ * set AND the value matches `STRUCTURAL_ID_PATTERN`. Candidate `fields`
+ * and `evidence` are attacker-controlled (`z.record(z.unknown())`), so
+ * arbitrary `*_id` keys there must NOT be trusted (TASK-002 P0-04B).
+ */
+const TRUSTED_STRUCTURAL_ID_KEYS = new Set([
+  'ingestion_id',
+  'idempotency_key',
+  'review_record_id',
+  'source_record_id',
+  'workflow_run_id',
+  'reviewer_id',
+  'business_record_id',
+]);
+
+function isTrustedStructuralIdKey(lower: string): boolean {
+  return TRUSTED_STRUCTURAL_ID_KEYS.has(lower);
+}
+
 function isContactKey(lower: string): boolean {
   return (
     lower.includes('wechat') ||
@@ -167,31 +203,62 @@ function isContentKey(lower: string): boolean {
 }
 
 /**
+ * Centralized redaction-mode resolution. Sensitivity is monotonic:
+ * `contact > content > default`. Inherited contact can never be
+ * downgraded; inherited content can be upgraded to contact by a nested
+ * contact key; otherwise the parent mode is preserved. In default mode
+ * a contact/content child key upgrades the mode accordingly (P0-01D).
+ */
+function resolveRedactionMode(
+  parentMode: RedactionMode,
+  lowerKey: string
+): RedactionMode {
+  if (parentMode === 'contact' || isContactKey(lowerKey)) {
+    return 'contact';
+  }
+  if (parentMode === 'content' || isContentKey(lowerKey)) {
+    return 'content';
+  }
+  return 'default';
+}
+
+/**
+ * Centralized string-value redaction. Contact/content modes always
+ * apply their PII policy regardless of trusted-ID context. Only default
+ * mode may preserve structural IDs, and only when the caller has
+ * established a trusted key context (P0-04 / P0-04B).
+ */
+function redactStringValue(
+  value: string,
+  mode: RedactionMode,
+  trustedStructuralIdContext: boolean
+): string {
+  if (mode === 'contact') {
+    return redactContactValue(value);
+  }
+  if (mode === 'content') {
+    return redactContent(value);
+  }
+  if (trustedStructuralIdContext && isStructuralId(value)) {
+    return value;
+  }
+  return redactPhone(value);
+}
+
+/**
  * Recursively redact a value at any nesting level without mutating input.
  *
  * - Plain objects and arrays are traversed element-wise (returning fresh
  *   copies so the stored task is never mutated).
- * - Once a contact/wechat (or raw-text) key is encountered, the
- *   corresponding redaction mode is propagated to ALL descendants so
- *   arrays and nested objects beneath that key receive the same
- *   contact/content redaction instead of falling back to `redactPhone`
- *   (TASK-002 P0-01B). The inherited parent mode is authoritative for
- *   every descendant string; nested sensitive child keys (`content`/
- *   `phone`/`mobile`/`原始文本`) must not downgrade it (TASK-002 P0-01C).
- * - String values under a raw-text key (`content` / `原始文本`) are
- *   redacted with `redactContent`.
- * - String values under a WeChat/contact key (`wechat` / `微信` /
- *   `联系方式` / `contact`) are redacted with `redactContactValue`,
- *   which masks both phone numbers and non-phone WeChat IDs.
- * - String values under other sensitive keys (e.g. `phone` / `mobile`)
- *   are redacted with `redactPhone`.
- * - Structural identifier strings (ingestion_id, UUIDs, SHA-256 hashes,
- *   `<prefix>_<alphanumeric>` IDs) pass through unchanged in default mode
- *   so phone-number scanning does not mutate IDs that happen to contain
- *   an 11-digit substring (TASK-002 P0-04).
- * - All other string values pass through `redactPhone` so a phone number
- *   embedded under a non-sensitive key (e.g. `evidence.budget`) is still
- *   masked at the response boundary.
+ * - Redaction mode is resolved through `resolveRedactionMode()` and is
+ *   monotonic: `contact > content > default`. Inherited contact/content
+ *   modes are authoritative for descendant strings; a nested contact key
+ *   upgrades an inherited content mode to contact (P0-01C / P0-01D).
+ * - Structural-ID preservation requires both a trusted contract ID key
+ *   (`TRUSTED_STRUCTURAL_ID_KEYS`) and a matching value shape
+ *   (`STRUCTURAL_ID_PATTERN`). Trusted context propagates through
+ *   arrays but NOT through arbitrary nested object keys, since each
+ *   object key starts a fresh key-context evaluation (P0-04 / P0-04B).
  * - Pipeline evidence objects that carry a `field` sibling (e.g. entries
  *   inside `corrections[]`) propagate the field-indicated mode to their
  *   `original` and `corrected` values so contact PII copied into Pipeline
@@ -200,26 +267,19 @@ function isContentKey(lower: string): boolean {
 function redactValueDeep(
   value: unknown,
   sensitiveKeys: string[],
-  mode: RedactionMode = 'default'
+  mode: RedactionMode = 'default',
+  trustedStructuralIdContext: boolean = false
 ): unknown {
   if (typeof value === 'string') {
-    if (mode === 'contact') {
-      return redactContactValue(value);
-    }
-    if (mode === 'content') {
-      return redactContent(value);
-    }
-    // Default mode: preserve structural identifiers (ingestion_id, UUIDs,
-    // hashes) byte-for-byte. Phone-number scanning must not mutate IDs
-    // that happen to contain an 11-digit substring matching the phone
-    // pattern (TASK-002 P0-04).
-    if (isStructuralId(value)) {
-      return value;
-    }
-    return redactPhone(value);
+    return redactStringValue(value, mode, trustedStructuralIdContext);
   }
   if (Array.isArray(value)) {
-    return value.map((v) => redactValueDeep(v, sensitiveKeys, mode));
+    // Arrays propagate both the inherited mode and the trusted-ID context
+    // to every element. Object elements start their own key-based context
+    // inside the object branch below.
+    return value.map((v) =>
+      redactValueDeep(v, sensitiveKeys, mode, trustedStructuralIdContext)
+    );
   }
   if (value !== null && typeof value === 'object') {
     const source = value as Record<string, unknown>;
@@ -227,70 +287,47 @@ function redactValueDeep(
 
     // If this object is a Pipeline evidence entry with a `field` sibling
     // (e.g. an element of `corrections[]`), derive a mode from that field
-    // name and apply it to `original`/`corrected` values. This masks
-    // contact PII that the Pipeline copied into correction evidence.
+    // name using the same monotonic resolver and apply it to
+    // `original`/`corrected` values. This masks contact PII that the
+    // Pipeline copied into correction evidence.
     const fieldSibling = source['field'];
-    let fieldMode: RedactionMode = 'default';
-    if (typeof fieldSibling === 'string') {
-      const fieldLower = fieldSibling.toLowerCase();
-      if (isContactKey(fieldLower)) {
-        fieldMode = 'contact';
-      } else if (isContentKey(fieldLower)) {
-        fieldMode = 'content';
-      }
-    }
+    const fieldMode =
+      typeof fieldSibling === 'string'
+        ? resolveRedactionMode(mode, fieldSibling.toLowerCase())
+        : mode;
 
     for (const key of Object.keys(source)) {
       const lower = key.toLowerCase();
       const v = source[key];
-      const contactKey = isContactKey(lower);
-      const contentKey = isContentKey(lower);
 
       // `original`/`corrected` inside a Pipeline evidence entry inherit
       // the mode indicated by the sibling `field` property. Without this,
       // a WeChat ID copied into `corrections[].original` would leak
-      // through the GET response (TASK-002 P0-01 residual).
+      // through the GET response (TASK-002 P0-01 residual). Pipeline
+      // evidence is never a trusted ID context.
       if (
-        fieldMode !== 'default' &&
+        typeof fieldSibling === 'string' &&
         (lower === 'original' || lower === 'corrected')
       ) {
-        result[key] = redactValueDeep(v, sensitiveKeys, fieldMode);
+        result[key] = redactValueDeep(v, sensitiveKeys, fieldMode, false);
         continue;
       }
 
-      if (typeof v === 'string') {
-        // Parent mode is authoritative for descendant strings. Nested
-        // sensitive child keys (content/phone/mobile/原始文本) must not
-        // downgrade an inherited contact/content mode (TASK-002 P0-01C).
-        if (mode === 'contact') {
-          result[key] = redactContactValue(v);
-        } else if (mode === 'content') {
-          result[key] = redactContent(v);
-        } else if (contentKey) {
-          result[key] = redactContent(v);
-        } else if (contactKey) {
-          result[key] = redactContactValue(v);
-        } else if (isStructuralId(v)) {
-          // Preserve structural identifiers in default mode (P0-04).
-          result[key] = v;
-        } else {
-          // Default mode, non-sensitive key, non-ID string: still apply
-          // redactPhone to catch phone numbers embedded under non-
-          // sensitive keys at the response boundary.
-          result[key] = redactPhone(v);
-        }
-      } else {
-        // Non-string value (array/object). Propagate the appropriate mode
-        // so descendants of a contact/content key keep using contact/
-        // content redaction at any depth.
-        let childMode: RedactionMode = mode;
-        if (contactKey) {
-          childMode = 'contact';
-        } else if (contentKey) {
-          childMode = 'content';
-        }
-        result[key] = redactValueDeep(v, sensitiveKeys, childMode);
-      }
+      // Single centralized decision: resolve the child mode (monotonic)
+      // and compute a fresh trusted-ID context that applies ONLY when
+      // this child key itself is a trusted contract ID field and the
+      // resolved mode is default. Trusted context does NOT propagate
+      // through arbitrary nested object keys.
+      const valueMode = resolveRedactionMode(mode, lower);
+      const childTrustedIdContext =
+        valueMode === 'default' && isTrustedStructuralIdKey(lower);
+
+      result[key] = redactValueDeep(
+        v,
+        sensitiveKeys,
+        valueMode,
+        childTrustedIdContext
+      );
     }
     return result;
   }

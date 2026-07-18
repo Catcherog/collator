@@ -402,11 +402,11 @@ describe('redactObject (P0-01C: parent contact/content mode overrides nested sen
     expect(contact.phone).toBe('138****8000');
   });
 
-  it('parent content mode wins over nested phone/contact keys', () => {
-    // Symmetric coverage: content mode must also be authoritative for
-    // descendant strings, so a phone-keyed child under a raw-text parent
-    // uses redactContent (phone masking + truncation) rather than plain
-    // redactPhone.
+  it('parent content mode remains active for ordinary nested phone keys', () => {
+    // Content mode stays authoritative for ordinary `phone` children
+    // (redactContent = phone masking + truncation). This case intentionally
+    // only contains `phone`; nested `contact` upgrade coverage lives in
+    // the P0-01D matrix below.
     const longRaw = `电话13800138000${'y'.repeat(220)}`;
     const input = { 原始文本: { phone: longRaw } };
     const result = redactObject(input) as Record<string, unknown>;
@@ -428,6 +428,42 @@ describe('redactObject (P0-01C: parent contact/content mode overrides nested sen
     expect(contact.phone).toBe('wechat_alt_02');
     const cn = input.联系方式 as Record<string, unknown>;
     expect(cn.原始文本).toBe('wechat_inner_03');
+  });
+});
+
+describe('redactObject (P0-01D: nested contact semantics upgrade beneath content parent)', () => {
+  // Inherited content mode must not downgrade a nested contact/WeChat key.
+  // Contact sensitivity is monotonic: contact > content > default. Any
+  // descendant string beneath a content parent that hits a nested contact
+  // key (contact / 联系方式 / wechat / 微信) must upgrade to contact mode
+  // so non-phone WeChat IDs are masked instead of leaking through
+  // redactContent (which only masks phone numbers).
+  it.each([
+    {
+      name: 'content.contact',
+      input: { content: { contact: 'wechat_secret_01' } },
+    },
+    {
+      name: 'content.wechat through an array',
+      input: { content: [{ wechat: 'wechat_secret_01' }] },
+    },
+    {
+      name: '原始文本.联系方式',
+      input: { 原始文本: { 联系方式: 'wechat_secret_01' } },
+    },
+    {
+      name: 'multi-depth content to 微信',
+      input: { content: { nested: { 微信: 'wechat_secret_01' } } },
+    },
+  ])('upgrades nested contact semantics under $name', ({ input }) => {
+    const before = structuredClone(input);
+    const result = redactObject(input);
+    const serialized = JSON.stringify(result);
+
+    expect(serialized).not.toContain('wechat_secret_01');
+    expect(serialized).toContain('we************01');
+    expect(input).toEqual(before);
+    expect(redactObject(input)).toEqual(result);
   });
 });
 
@@ -489,21 +525,45 @@ describe('redactObject (P0-04: structural identifiers preserved at response boun
     expect(result.budget).toBe('138****8000');
   });
 
-  it('preserves structural IDs inside arrays in default mode', () => {
-    // Array elements in default mode must also skip redactPhone for IDs.
-    const failingId = 'ing_2e042890392546c19181507170127599';
-    const input = { related_ids: [failingId, 'rec_001'] };
-    const result = redactObject(input) as Record<string, unknown>;
-    const arr = result.related_ids as string[];
-    expect(arr[0]).toBe(failingId);
-    expect(arr[1]).toBe('rec_001');
-  });
-
   it('does not mutate input when preserving structural IDs', () => {
     const failingId = 'ing_2e042890392546c19181507170127599';
     const input = { ingestion_id: failingId, notes: '13800138000' };
     redactObject(input);
     expect(input.ingestion_id).toBe(failingId);
     expect(input.notes).toBe('13800138000');
+  });
+});
+
+describe('redactObject (P0-04B: untrusted fields/evidence cannot bypass phone redaction via ID-shaped values)', () => {
+  // Value shape alone is not proof of a structural ID. Preservation
+  // additionally requires that the current key is a trusted contract ID
+  // field. Attacker-controlled unknown Candidate/evidence strings must
+  // continue through redactPhone even when they match `<alpha>_<alphanumeric>`.
+  it('does not treat structural-looking values in untrusted fields as trusted IDs', () => {
+    const input = {
+      raw_candidate: {
+        fields: {
+          unknown_field: 'note_13900139000',
+          nested: ['proof_13700137000'],
+        },
+        evidence: {
+          unknown_field: 'trace_13600136000',
+        },
+      },
+    };
+    const before = structuredClone(input);
+    const result = redactObject(input) as typeof input;
+
+    expect(result.raw_candidate.fields.unknown_field).toBe(
+      'note_139****9000'
+    );
+    expect(result.raw_candidate.fields.nested[0]).toBe(
+      'proof_137****7000'
+    );
+    expect(result.raw_candidate.evidence.unknown_field).toBe(
+      'trace_136****6000'
+    );
+    expect(input).toEqual(before);
+    expect(redactObject(input)).toEqual(result);
   });
 });

@@ -2,23 +2,23 @@
 
 ## Current Stage
 
-Phase 3B（TASK-002 P0-01C + P0-04 修复已应用，等待 GPT 基于 new commit 复核；不可启动 TASK-003）
+Phase 3B（TASK-002 Redaction Invariant Closure fix applied；等待 GPT 基于 new commit 复核；不可启动 TASK-003）
 
-- 状态：`P0-01C + P0-04 FIX APPLIED — AWAITING GPT RE-REVIEW` — Commit `69ce7d5` GPT 复核为 `MVP_FAIL`（P0-01C 父级 contact mode 被嵌套敏感子键降级 + P0-04 结构化 ID 被默认手机号扫描误改）；Trae 已按 fix packet 完成最小修复：父级 contact/content mode 对所有后代字符串保持最高优先级，新增 `isStructuralId()` 在 default mode 下短路 `redactPhone` 扫描；补 18 个单元测试 + 2 个 HTTP 回归（P0-01C 签名 callback + GET / P0-04 确定性失败 ID 逐字节保留）；Gate A + Gate C-Core 全套通过；新 commit 待 push 后交 GPT 复核。
+- 状态：`DONE — AWAITING_GPT_RE_REVIEW` — Trae 按用户批准的单批次执行计划 `docs/ai/plans/TASK-002_REDACTION_INVARIANT_CLOSURE_EXECUTION_PLAN.md` 完成 P0-01D（redaction mode 单调敏感度）+ P0-04B（context-aware structural ID 保留）+ 直接反例；targeted TDD red→green 已记录；最终 Gate A + Gate C-Core 一次性全套通过；新 commit 待 push 后交 GPT 复核。P0-02/P0-03 保持 accepted。TASK-003 保持阻塞。
 - Planning Review：APPROVED_WITH_REQUIRED_CHANGES（Phase 2 Planning Correction 已完成）
 - 当前分支：phase/3-feishu-integration
 - 验收基线 Commit：`0ef131c`（Phase 3 preparation commit）
-- 上一次 Commit：`69ce7d5`（TASK-002 P0-01 contact context residual fix；GPT re-review verdict: `MVP_FAIL`，P0-01C + P0-04 阻塞）
-- 当前 Commit：待提交（P0-01C + P0-04 fix applied，尚未 commit）
+- 上一次 Commit：`976fa6c`（TASK-002 P0-01C + P0-04 fix；GPT re-review verdict: `MVP_FAIL`，P0-01D + P0-04B 阻塞）
+- 当前 Commit：待 push（Redaction Invariant Closure: P0-01D + P0-04B fix；等待 GPT re-review）
 - 当前版本：v1.0
 
 ## Current Milestone
 
-Phase 3 飞书集成 / TASK-002 P0-01 联系方式上下文递归脱敏残项
+Phase 3 飞书集成 / TASK-002 Redaction Invariant Closure（P0-01D + P0-04B）修复完成，等待 GPT re-review
 
 ## In Progress
 
-- P0-01C + P0-04 最小修复已完成并验证通过（Gate A + Gate C-Core 全套退出码 0），新 commit 待 push 后交 GPT 基于 new commit 复核。复核通过前 TASK-003 保持阻塞。原 P0-01A（混合 phone+WeChat fail-closed）与 P0-01B（contact 数组上下文）具体复现已通过；P0-02/P0-03 保持 accepted。
+- Trae 已完成 Redaction Invariant Closure 单批次执行（P0-01D + P0-04B）：targeted TDD red（5 failed | 50 passed）→ green（单元 55/55、集成 22/22、联合 77/77）→ 最终 Gate A + Gate C-Core 一次性全套通过（typecheck/lint/audit:legacy/test:coverage 307 passed/build/evaluate 50/50/Legacy diff empty/git diff --check exit 0）。`server/security/redaction.ts` 实现 Invariant A（`contact > content > default` 单调敏感度，inherited content 下嵌套 contact key 升级）+ Invariant B（7 个可信响应合同 ID 字段集合 + value 形态匹配双条件）。新 commit 待 push 后交 GPT 基于 new commit 复核。TASK-003 保持阻塞。P0-02/P0-03 保持 accepted。
 
 ## Recently Completed
 
@@ -35,10 +35,11 @@ Phase 3 飞书集成 / TASK-002 P0-01 联系方式上下文递归脱敏残项
 - **Phase 3B / TASK-002 P0-01 残项修复**：针对 GPT 基于 Commit `9dc7817` re-review 提出的 P0-01 残项（非手机号微信 ID 仍从 GET 响应泄露）进行最小修复。**P0-01 残项修复**：`src/server/security/redaction.ts` 新增 `redactWechatId`（保留首尾各 2 字符，中间字符替换为 `*`；长度 ≤ 4 时全掩码，绝不返回原秘密）+ 私有 `redactContactValue` helper（先 `redactPhone`，未匹配则 fallback 到 `redactWechatId`，确保同一 contact 字段中手机号与微信 ID 都被脱敏）；`redactValueDeep` 改为三分支：`content`/`原始文本` → `redactContent`，`wechat`/`微信`/`联系方式`/`contact` → `redactContactValue`，其他敏感 key → `redactPhone`；将 `contact` 加入 `redactObject` 默认 sensitiveKeys 列表（修复 GPT 复审证据中 `evidence.contact` 仍泄露的根因——原列表只有中文 `联系方式`，缺英文 `contact`）。新增 `tests/unit/security/redaction.test.ts` 6 个 `redactWechatId` 单测（length 16/11/5/4/3/2/1/0 全覆盖）+ 4 个 `redactObject` 递归测试（nested wechat/微信/联系方式/contact、数组、短 ID、phone 优先级）；新增 `tests/integration/ingestions.test.ts` 1 个 HTTP 集成回归测试（POST candidate with `contact: 'wechat_secret_01'` → GET 响应不含原 ID、含 `we************01`；repository `raw_candidate.fields.contact` 仍为原值；`candidate.fields.联系方式` 仍为原值；`review.validation.rawCandidate.fields.contact` 仍为原值；GET 不修改存储）。P0-01 残项修复后 Gate A + Gate C-Core 全套命令退出码 0；测试 271 passed（28 test files，新增 11 个测试：6 redactWechatId + 4 redactObject 递归 + 1 HTTP 集成）；集成测试 33 passed（3 test files，新增 1 个 HTTP 集成回归）；All files Lines 85.44% / Branches 82.13% / Funcs 88.63%；关键模块 Lines 全部 ≥80%（redaction.ts 100% / Branch 90.47%, ingestion-service 96.88%, mapping 100%, repository-factory 100%, feishu-review-repository 86.66%, feishu-task-repository 91.2%, feishu-client 95.62%, cleaning-pipeline 100%）；Gate C-Core PASS（50/50 case，4 项核心指标 100%）；`git diff origin/main -- src/data-cleaning` 无输出；`git diff --check` 退出码 0；`npm run audit:legacy` 退出码 0（62 modules）。等待 GPT 对新 commit 复核。
 - **Phase 3B / TASK-002 P0-01 Contact Context Residual Fix**（针对 GPT 基于 Commit `09f12fa` re-review 的两条同源泄露路径）：`src/server/security/redaction.ts` 重写 `redactContactValue` 为 fail-closed 实现——剥离手机号/标签/分隔符后若残留内容非空则整体掩码，禁止保留任何未脱敏联系方式 token（P0-01A）；新增 `RedactionMode` 类型（`default`/`contact`/`content`）+ `isContactKey`/`isContentKey` helper，`redactValueDeep` 接受 `mode` 参数并在数组与嵌套对象递归中传播，contact/wechat/微信/联系方式 键下任意深度的字符串元素都使用 contact 脱敏（P0-01B）；新增 Pipeline 证据 `corrections[].original/corrected` 通过 sibling `field` 推断脱敏模式的逻辑——field 为 contact/content 键时，original/corrected 继承对应模式，避免 Pipeline 复制到证据副本中的联系方式 PII 从 GET 响应泄露。新增 `tests/unit/security/redaction.test.ts` 8 个测试（P0-01A 混合字符串 fail-closed、纯手机号格式保留、纯微信 ID 首尾 2 字符规则保留；P0-01B contact 数组、contact 嵌套对象/数组上下文传播、`联系方式` 嵌套、输入不变性、纯手机号数组仍用 phone mask）；新增 `tests/integration/ingestions.test.ts` 2 个 HTTP 回归测试（P0-01A `电话13800138000 微信wechat_secret_01` 混合字符串 fail-closed 不泄露；P0-01B `fields.contact = ["wechat_secret_01"]` 数组元素脱敏；两者均断言 repository/review 原始证据不变、GET 不修改存储）。Gate A + Gate C-Core 全套验证通过：`npm run typecheck` exit 0；`npm run lint` exit 0；`npm run test` 281/281 passed（28 test files，新增 10 个测试：8 单元 + 2 HTTP 集成）；`npm run test:integration` 35/35 passed（3 test files，新增 2 个 HTTP 回归）；`npm run test:coverage` All files Lines 85.49% / Branches 81.99% / Funcs 88.73%；关键模块 Lines 全部 ≥80%（redaction.ts 100% / Branch 90.47%, ingestion-service 96.88%, mapping 100%, repository-factory 100%, feishu-review-repository 86.66%, feishu-task-repository 91.2%, feishu-client 95.62%, cleaning-pipeline 100%）；`npm run build` exit 0；`npm run evaluate` Gate C-Core 50/50 PASS，4 项核心指标 100%；`npm run audit:legacy` exit 0（62 modules）；`git diff origin/main -- src/data-cleaning` 无输出；`git diff --check` exit 0。等待 GPT 对新 commit 复核。
 - **Phase 3B / TASK-002 P0-01C + P0-04 Fix**（针对 GPT 基于 Commit `69ce7d5` re-review 的两个 P0）：`src/server/security/redaction.ts` `redactValueDeep` 直接字符串分支重构——父 `mode === 'contact'` 时一律 `redactContactValue(v)`，父 `mode === 'content'` 时一律 `redactContent(v)`，嵌套 `content`/`phone`/`mobile`/`原始文本`/`联系方式` 子键不再降级继承的 contact/content 模式（P0-01C）；新增 `STRUCTURAL_ID_PATTERN` 正则常量 + `isStructuralId(value)` 函数（覆盖 `<alpha>_<alphanumeric>` 前缀 ID、32 字符 hex、64 字符 hex、规范 UUID），`redactValueDeep` 顶层与对象内字符串分支在 default mode 下优先 `isStructuralId(v)` 短路 `redactPhone` 扫描，避免 `ing_2e042890392546c19181507170127599` 中的 11 位数字片段被误掩码（P0-04）；自由文本（含空格/CJK/多下划线 token）不匹配，嵌入非敏感自由文本字段中的手机号仍在响应边界被掩码。移除 `isSensitiveKey` 函数（P0-01C 重构后不再使用，TS6133）。新增 `tests/unit/security/redaction.test.ts` 18 个测试（P0-01C 9 个：父 contact/content mode 覆盖 nested 敏感子键、数组传播、真实 phone 仍掩码、输入非变异；P0-04 9 个：失败 ID 逐字节保留、32/64 字符 hex、UUID、前缀 ID、free-text 中 phone 仍掩码、纯 phone 仍掩码、数组中 ID 保留、输入非变异）；新增 `tests/integration/ingestions.test.ts` 2 个 HTTP 回归（P0-01C `wechat: { content: 'wechat_secret_01' }` 签名 callback + GET，断言 repository/review 原始证据不变；P0-04 `repository.save()` 注入确定性失败 ID + GET，断言响应逐字节不变、content 中 phone 仍掩码、repository 存储 ID/content 不变）。Gate A + Gate C-Core 全套验证通过：`npm ci` exit 0；`npm run audit:legacy` exit 0（62 modules）；`npm run typecheck` exit 0；`npm run lint` exit 0；`npm run test` 301/301 passed（28 test files，新增 20 个测试：18 单元 + 2 HTTP 集成）；`npm run test:integration` 37/37 passed（3 test files，新增 2 个 HTTP 回归）；`npm run test:coverage` All files Lines 85.6% / Branches 82.26% / Funcs 88.73%；redaction.ts Lines 97.43% / Branches 88.73% / Funcs 100%；`npm run build` exit 0；`npm run evaluate` Gate C-Core 50/50 PASS，4 项核心指标 100%；`git diff origin/main -- src/data-cleaning` 无输出；`git diff --check` exit 0。等待 GPT 对新 commit 复核。
+- **Phase 3B / TASK-002 Redaction Invariant Closure Fix**（针对 GPT 基于 Commit `976fa6c` re-review 的 P0-01D + P0-04B；用户批准单批次执行）：`src/server/security/redaction.ts` 实现 Invariant A（Monotonic Redaction Sensitivity：`contact > content > default`，inherited content 下嵌套 contact/联系方式/wechat/微信 key 升级为 contact mode，inherited contact 不得被任何子键降级）+ Invariant B（Context-Aware Structural ID Preservation：结构化 ID 逐字节保留要求同时满足当前 key 属于 7 个可信响应合同 ID 字段之一 `ingestion_id`/`idempotency_key`/`review_record_id`/`source_record_id`/`workflow_run_id`/`reviewer_id`/`business_record_id` 且 value 形态匹配 `STRUCTURAL_ID_PATTERN`，Candidate `fields`/`evidence` 中的 `<prefix>_<phone>` 不再被 value-only 规则放行）。新增 `TRUSTED_STRUCTURAL_ID_KEYS` Set + `isTrustedStructuralIdKey(lower)` helper；新增 `resolveRedactionMode(parentMode, lowerKey)` 集中化单调解析；新增 `redactStringValue(value, mode, trustedStructuralIdContext)` 分支处理；重写 `redactValueDeep(value, sensitiveKeys, mode, trustedStructuralIdContext)`——字符串走 `redactStringValue`，数组传播 mode + trusted 上下文，对象先用 `fieldSibling` 计算 `fieldMode`，`original`/`corrected` 继承 `fieldMode` 且强制 `trusted=false`，每个 key 用 `resolveRedactionMode` 计算 `valueMode` 并按 `(valueMode === 'default' && isTrustedStructuralIdKey(lower))` 重置 `childTrustedIdContext`；可信上下文不通过任意嵌套对象 key 传播。Targeted TDD red→green 证据：red（`npx vitest run tests/unit/security/redaction.test.ts` → 5 failed | 50 passed，4 个 P0-01D case + 1 个 P0-04B case 全部按预期失败）；green 单元（55/55 passed）；green 集成（22/22 passed）；green 联合 targeted（77/77 passed, 2 test files）。新增 `tests/unit/security/redaction.test.ts` P0-01D table-driven 4 case（`content.contact`/`content.wechat through array`/`原始文本.联系方式`/multi-depth content to 微信）+ P0-04B 3 case（`note_13900139000`/`proof_13700137000`/`trace_13600136000` 期望分别掩码为 `note_139****9000`/`proof_137****7000`/`trace_136****6000`，同时保留 `ingestion_id` 等可信 ID 逐字节不变）+ 原测试重命名（`parent content mode wins over nested phone/contact keys` → `parent content mode remains active for ordinary nested phone keys`）+ 移除合成 `related_ids` 测试。新增 `tests/integration/ingestions.test.ts` 2 个 HTTP 回归（P0-01D `content: { contact: 'wechat_secret_01' }` → GET 含 `we************01`、不含原 ID；P0-04B `unknown_field='note_13900139000'` + `evidence.unknown_field='proof_13700137000'` → GET 含 `note_139****9000`/`proof_137****7000`、不含原号码；两者均断言 repository/review 原始证据不变、GET 不修改存储）。最终 Gate A + Gate C-Core 一次性全套验证：`npm run typecheck` exit 0；`npm run lint` exit 0；`npm run audit:legacy` exit 0（62 modules）；`npm run test:coverage` exit 0（307/307 passed，28 test files；All files Lines 85.77% / Branches 82.35% / Funcs 88.88%；`server/security/redaction.ts` Lines 100% / Branch 90.62% / Funcs 100%）；`npm run build` exit 0；`npm run evaluate` exit 0（Gate C-Core 50/50 PASS，4 项核心指标 100%）；`git diff origin/main -- src/data-cleaning` 无输出；`git diff --check` exit 0。新 commit 待 push 后交 GPT 基于 new commit 复核。
 
 ## Next Priorities
 
-1. **等待 GPT 基于 new commit 复核**：P0-01C + P0-04 最小修复已完成并通过 Gate A + Gate C-Core 全套验证，新 commit 待 push 后交 GPT 复核。复核通过前 TASK-003 保持阻塞。
+1. **Push 新 commit 到 `origin/phase/3-feishu-integration`**：Redaction Invariant Closure fix 已完成本地全套验证，push 后交 GPT 基于 new commit 复核。复核通过前 TASK-003 保持阻塞。
 2. 配置 Dify 环境与凭据（DEBT-001），解锁 Gate C-LLM 真实 LLM 联调。
 3. 启动 TASK-003（写入日志仓库 + 业务主表写入），完成后整体通过 Gate D 飞书集成验收。
 4. 后续按 Phase 推进流程进入 Phase 5（部署）、Phase 6（展示证据）。
@@ -76,13 +77,14 @@ Phase 3 飞书集成 / TASK-002 P0-01 联系方式上下文递归脱敏残项
 
 - ~~TASK-001 P0-01~~：RESOLVED（2026-07-17）— `FeishuClient.callWithRetry` 现在识别飞书业务错误码 `code=99991663`（即使在 HTTP 200 路径上），触发单次 token 刷新 + 重试；新增 3 个单元测试覆盖重试成功、不二次重试、非 token 错误不触发刷新。
 - ~~TASK-001 P0-02~~：RESOLVED（2026-07-18，Commit `1217942`）— `docs/ACCEPTANCE_REPORT.md:291` 已改为 `<FEISHU_INGESTION_TABLE_ID>`；GPT 对目标两文件及整个提交树运行三个运行表真实 ID 的 `git grep`，均为 0 匹配。
-- ~~TASK-002 P0-01C~~：FIX APPLIED（2026-07-18，待 GPT 复核）— `redactValueDeep()` 直接字符串分支重构：父 `mode === 'contact'` 时一律 `redactContactValue(v)`，父 `mode === 'content'` 时一律 `redactContent(v)`；嵌套 `content`/`phone`/`mobile`/`原始文本`/`联系方式` 子键不再降级继承的 contact/content 模式。构建产物 4 种 contact 嵌套敏感子键复现均返回 `leaked: false`。9 个单元测试 + 1 个 HTTP 回归测试覆盖。
-- ~~TASK-002 P0-04~~：FIX APPLIED（2026-07-18，待 GPT 复核）— 新增 `STRUCTURAL_ID_PATTERN` + `isStructuralId()` 在 default mode 下短路 `redactPhone` 扫描；失败 ID `ing_2e042890392546c19181507170127599` 逐字节保留；`content` 中手机号仍被掩码。9 个单元测试 + 1 个 HTTP 回归测试覆盖。
+- ~~TASK-002 P0-01C~~：ACCEPTED（2026-07-18，Commit `976fa6c` GPT re-review）— contact parent 对 nested `content`/`phone`/`mobile`/`原始文本` 保持权威，原四类复现已修复。
+- **TASK-002 P0-01D**：FIX_APPLIED_AWAITING_RE_REVIEW（2026-07-18，Redaction Invariant Closure fix）— `resolveRedactionMode` 实现单调敏感度 `contact > content > default`，inherited content 下嵌套 contact/联系方式/wechat/微信 key 升级为 contact mode；targeted TDD red→green + HTTP 回归证明 `content: { contact: 'wechat_secret_01' }` 在 GET 响应中被脱敏为 `we************01`。等待 GPT 基于 new commit 复核。
+- **TASK-002 P0-04B**：FIX_APPLIED_AWAITING_RE_REVIEW（2026-07-18，Redaction Invariant Closure fix）— `TRUSTED_STRUCTURAL_ID_KEYS` Set + `isTrustedStructuralIdKey(lower)` + `trustedStructuralIdContext` 双条件保留；Candidate `fields`/`evidence` 中的 `<prefix>_<phone>` 不再被 value-only 规则放行；targeted TDD red→green + HTTP 回归证明 `note_13900139000`/`proof_13700137000` 被掩码为 `note_139****9000`/`proof_137****7000`，可信合同 ID 仍逐字节保留。等待 GPT 基于 new commit 复核。
 - ~~TASK-002 P0-02~~：RESOLVED（2026-07-18，P0 修复 commit）— `IngestionTask.raw_candidate` 深拷贝原始 Candidate；`review.validation.rawCandidate` 复用飞书 JSON 列保留原始证据；mapper warning sanitization 切断 PII 通过 warning 字段泄露路径。
 - ~~TASK-002 P0-03~~：RESOLVED（2026-07-18，P0 修复 commit）— `IngestionTask.pipeline_evidence` 持久化完整 Pipeline 证据（pipelineVersion/stages/validation/corrections/warnings/errors/qualityReport/success）；成功与失败路径均写入；mapper warnings 与 Pipeline warnings 严格区分。
 - 未配置 Dify 环境与凭据（`DIFY_BASE_URL`、`DIFY_WORKFLOW_API_KEY`、`DIFY_WORKFLOW_ID`）— 见 DEBT-001。阻塞 Gate C-LLM 真实 LLM 联调。
 - 飞书测试 Base 凭据与表结构 **部分已配置**（TASK-001 + TASK-002）：`FEISHU_APP_ID` / `FEISHU_BASE_APP_TOKEN` / `FEISHU_INGESTION_TABLE_ID` / `FEISHU_REVIEW_TABLE_ID` / `FEISHU_WRITE_LOG_TABLE_ID` / `FEISHU_CUSTOMER_TABLE_ID` 已写入 `.env`；`FEISHU_APP_SECRET` 占位为 `replace_me`，生产部署时需通过环境变量或密钥管理器注入，不写入文件。Gate D 飞书集成验收仍需 TASK-003（写入日志仓库 + 业务主表写入）完成。
-- **TASK-002 GPT 复核**：Commit `69ce7d5` 结论 `MVP_FAIL`（P0-01C + P0-04）；Trae 已完成最小修复并通过 Gate A + Gate C-Core 全套验证，新 commit 待 push 后交 GPT 基于 new commit 复核。复核通过前不得启动 TASK-003。
+- **TASK-002 GPT 复核**：Commit `976fa6c` 结论 `MVP_FAIL`（P0-01D + P0-04B）。Trae 已按 Redaction Invariant Closure 单批次执行计划完成修复 + 直接反例 + 最终 Gate A + Gate C-Core；新 commit 待 push 后交 GPT 基于 new commit 复核。复核通过前不得启动 TASK-003。
 
 > 注：Dify/飞书凭据属于外部环境阻塞；TASK-002 的 GPT 复审属于当前流程阻塞，必须通过后才能合并或启动 TASK-003。它们不改变已通过的 Phase 2F Gate C-Core 确定性数据质量结果。
 
@@ -95,7 +97,7 @@ Phase 3 飞书集成 / TASK-002 P0-01 联系方式上下文递归脱敏残项
 
 ## Last Updated
 
-2026-07-18（Trae P0-01C + P0-04 fix applied，Gate A + Gate C-Core 全套通过，待 push + GPT re-review of new commit）
+2026-07-18（Trae Redaction Invariant Closure fix applied for P0-01D + P0-04B; targeted TDD red→green recorded; final Gate A + Gate C-Core all exit 0; new commit awaiting push + GPT re-review; TASK-003 blocked）
 
 ---
 
@@ -149,18 +151,19 @@ Phase 3 飞书集成 / TASK-002 P0-01 联系方式上下文递归脱敏残项
 
 | Gate | 名称 | 状态 | 证据 |
 |---|---|---|---|
-| A | 代码基线 | PASSED (pending GPT re-review) | P0-01C + P0-04 fix applied：`npm ci` / `audit:legacy` (62) / `typecheck` / `lint` / `test` (301/301) / `test:integration` (37/37) / `test:coverage` (Lines 85.6%, Branches 82.26%, Funcs 88.73%) / `build` / `evaluate` (50/50, 4 metrics 100%) / `git diff origin/main -- src/data-cleaning` 无输出 / `git diff --check` exit 0；待 GPT 基于 new commit 复核。 |
+| A | 代码基线 | PASSED | Trae Redaction Invariant Closure fix 后最终验证：`typecheck` / `lint` / `audit:legacy` (62 modules) / `test:coverage` (307/307 passed, Lines 85.77%, Branches 82.35%, Funcs 88.88%, redaction.ts Lines 100%) / `build` / `evaluate` (50/50, 4 metrics 100%) / Legacy diff empty / `git diff --check` exit 0。 |
 | B | API 合同 | PASSED | `docs/API_CONTRACT.md`（含 §6 Candidate 字段映射章节）+ 14 项集成测试覆盖全部 V1 接口 |
-| C-Core | 数据质量（确定性） | PASSED | Phase 2F + Phase 3B P0-01C + P0-04 fix 后回归：50/50 case 通过，4 项核心指标 100%（field_accuracy 132/132, required_field_recall 91/91, enum_precision 33/33, error_interception_rate 1/1） |
+| C-Core | 数据质量（确定性） | PASSED | Phase 2F + Phase 3B Redaction Invariant Closure fix 后回归：50/50 case 通过，4 项核心指标 100%（field_accuracy 132/132, required_field_recall 91/91, enum_precision 33/33, error_interception_rate 1/1） |
 | C-LLM | 数据质量（LLM 语义） | BLOCKED_EXTERNAL_ENV | 未配置 Dify 凭据（见 DEBT-001）|
-| D | 飞书集成 | IN_PROGRESS | TASK-001 已完成；TASK-002 P0-01C + P0-04 fix applied 待 GPT 复核；待 TASK-003（写入日志仓库 + 业务主表写入）|
-| E | 安全隐私 | PASSED (pending GPT re-review) | P0-01A/P0-01B/P0-01C 具体复现均通过；父级 contact/content mode 对所有后代字符串保持最高优先级；结构化 ID 逐字节保留；`content` 中手机号仍被掩码。待 GPT 基于 new commit 复核。 |
+| D | 飞书集成 | IN_PROGRESS | TASK-001 已完成；TASK-002 Redaction Invariant Closure fix 已应用，等待 GPT 基于 new commit 复核；TASK-003 未启动。|
+| E | 安全隐私 | FIX_APPLIED_AWAITING_RE_REVIEW | Trae 已按 Redaction Invariant Closure 单批次修复 P0-01D + P0-04B；targeted TDD red→green + 2 个 HTTP 回归证明 `content.contact` 微信 ID 与未知字段 `<prefix>_<phone>` 不再泄露，可信合同 ID 仍逐字节保留。等待 GPT 基于 new commit 复核。 |
 | F | 部署运行 | NOT_STARTED | 无 Dockerfile（Phase 5/6） |
 | G | 展示证据 | NOT_STARTED | 无运行证据（待 Docker/部署后补充） |
 
 ## 附录：最近一次执行
 
-- 日期：2026-07-18（Trae P0-01C + P0-04 fix applied，Gate A + Gate C-Core 全套验证）
-- 基线：Commit `69ce7d5`（GPT re-review `MVP_FAIL`，P0-01C + P0-04 阻塞）
-- 命令：`npm ci` / `npm run audit:legacy` / `npm run typecheck` / `npm run lint` / `npm run test` / `npm run test:integration` / `npm run test:coverage` / `npm run build` / `npm run evaluate` / `git diff origin/main -- src/data-cleaning` / `git diff --check`
-- 结果：全部退出码 0。`npm ci` up to date in 3s；`audit:legacy` 62 modules；`typecheck` 无错误（含 `isSensitiveKey` 移除后无 TS6133）；`lint` 无错误；`test` 301/301 passed（28 test files，新增 20 个测试：18 单元 + 2 HTTP 集成）；`test:integration` 37/37 passed（3 test files，新增 2 个 HTTP 回归）；`test:coverage` All files Lines 85.6% / Branches 82.26% / Funcs 88.73%；redaction.ts Lines 97.43% / Branches 88.73% / Funcs 100%；`build` 成功；`evaluate` Gate C-Core 50/50 PASS，4 项核心指标 100%；`git diff origin/main -- src/data-cleaning` 无输出；`git diff --check` exit 0。新 commit 待 push 后交 GPT 基于 new commit 复核。
+- 日期：2026-07-18（Trae Redaction Invariant Closure fix applied for P0-01D + P0-04B，最终 Gate A + Gate C-Core 一次性全套验证）
+- 基线：Commit `976fa6c`（GPT re-review `MVP_FAIL`，P0-01D + P0-04B 阻塞）
+- 执行计划：`docs/ai/plans/TASK-002_REDACTION_INVARIANT_CLOSURE_EXECUTION_PLAN.md`（用户批准单批次）
+- 命令：`npm run typecheck` / `npm run lint` / `npm run audit:legacy` / `npm run test:coverage` / `npm run build` / `npm run evaluate` / `git diff origin/main -- src/data-cleaning` / `git diff --check`
+- 结果：全部退出码 0。`typecheck` 无错误；`lint` 无错误；`audit:legacy` 62 modules（SAFE 4 / UNSAFE 57 / BLOCKED 1，预期）；`test:coverage` 307/307 passed（28 test files；All files Lines 85.77% / Branches 82.35% / Funcs 88.88%；`server/security/redaction.ts` Lines 100% / Branch 90.62% / Funcs 100%）；`build` 成功；`evaluate` Gate C-Core 50/50 PASS，4 项核心指标 100%（field_accuracy 132/132, required_field_recall 91/91, enum_precision 33/33, error_interception_rate 1/1）；`git diff origin/main -- src/data-cleaning` 无输出；`git diff --check` exit 0。Targeted TDD red→green 证据：red 5 failed | 50 passed（4 个 P0-01D case + 1 个 P0-04B case）；green 单元 55/55、集成 22/22、联合 77/77。新 commit 待 push 后交 GPT 基于 new commit 复核。

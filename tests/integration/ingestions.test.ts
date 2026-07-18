@@ -608,6 +608,93 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
     expect(storedTask!.ingestion_id).toBe(deterministicId);
     expect(storedTask!.content).toBe(phoneInContent);
   });
+
+  it('P0-01D: GET upgrades nested contact semantics beneath content without mutating evidence', async () => {
+    const { app, repository, reviewRepository } = await setup();
+    const ingestionId = await createTask(app);
+    // `fields.content` is an unknown Candidate field (kept verbatim in
+    // raw_candidate, dropped from canonical normalized_fields). The
+    // nested `contact` key beneath a content parent must upgrade to
+    // contact redaction so the non-phone WeChat ID is masked instead of
+    // leaking through redactContent (phone-only). `contact: '13800138000'`
+    // stays a valid phone so the Pipeline succeeds and a review record
+    // is created.
+    const nested = { contact: 'wechat_secret_01' };
+    const payload = makeCandidatePayload({ content: nested });
+
+    const callback = await postCandidate(app, ingestionId, payload);
+    expect(callback.statusCode).toBe(200);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/ingestions/${ingestionId}`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain('wechat_secret_01');
+    expect(response.body).toContain('we************01');
+
+    const stored = await repository.findById(ingestionId);
+    expect(stored!.raw_candidate!.fields['content']).toEqual(nested);
+
+    const review = await reviewRepository.findByIngestionId(ingestionId);
+    const validation = review!.validation as Record<string, unknown>;
+    const rawCandidate = validation['rawCandidate'] as {
+      fields: Record<string, unknown>;
+    };
+    expect(rawCandidate.fields['content']).toEqual(nested);
+
+    const storedAgain = await repository.findById(ingestionId);
+    expect(storedAgain!.raw_candidate!.fields['content']).toEqual(nested);
+  });
+
+  it('P0-04B: GET redacts wrapped phones in unknown fields and evidence without mutating evidence', async () => {
+    const { app, repository, reviewRepository } = await setup();
+    const ingestionId = await createTask(app);
+    // Attacker-controlled unknown Candidate/evidence strings that match
+    // `<alpha>_<alphanumeric>` must NOT be treated as trusted structural
+    // IDs. The wrapped phone numbers must continue through redactPhone.
+    const wrappedField = 'note_13900139000';
+    const wrappedEvidence = 'proof_13700137000';
+    const payload = makeCandidatePayload({
+      unknown_field: wrappedField,
+    });
+    (payload.candidate as {
+      evidence: Record<string, string>;
+    }).evidence = {
+      unknown_field: wrappedEvidence,
+    };
+
+    const callback = await postCandidate(app, ingestionId, payload);
+    expect(callback.statusCode).toBe(200);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/ingestions/${ingestionId}`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain('13900139000');
+    expect(response.body).not.toContain('13700137000');
+    expect(response.body).toContain('note_139****9000');
+    expect(response.body).toContain('proof_137****7000');
+
+    const stored = await repository.findById(ingestionId);
+    expect(stored!.raw_candidate!.fields['unknown_field']).toBe(wrappedField);
+    expect(stored!.raw_candidate!.evidence['unknown_field']).toBe(
+      wrappedEvidence
+    );
+
+    const review = await reviewRepository.findByIngestionId(ingestionId);
+    const validation = review!.validation as Record<string, unknown>;
+    const rawCandidate = validation['rawCandidate'] as {
+      fields: Record<string, unknown>;
+      evidence: Record<string, string>;
+    };
+    expect(rawCandidate.fields['unknown_field']).toBe(wrappedField);
+    expect(rawCandidate.evidence['unknown_field']).toBe(wrappedEvidence);
+
+    const storedAgain = await repository.findById(ingestionId);
+    expect(storedAgain!.raw_candidate).toEqual(stored!.raw_candidate);
+  });
 });
 
 describe('POST /v1/ingestions/:id/approve and /reject', () => {
