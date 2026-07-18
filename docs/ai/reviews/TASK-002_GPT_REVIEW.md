@@ -196,3 +196,85 @@ Do not change P0-02/P0-03, do not start TASK-003, and do not perform unrelated r
 ### Stop condition
 
 Trae must commit and push only this P0-01 residual fix and direct tests, then request GPT re-review. TASK-003 remains `NOT STARTED — BLOCKED BY TASK-002`.
+
+---
+
+## 2026-07-18 Re-review — Commit `09f12fa`
+
+### Verdict
+
+`MVP_FAIL`
+
+The single-value case from the `9dc7817` review is fixed: `contact: "wechat_secret_01"` is masked and stored evidence is unchanged. P0-02 and P0-03 remain accepted. P0-01 is still open because two valid Candidate shapes leak the same WeChat ID through GET.
+
+### P0-01A: Mixed phone and WeChat string leaks the WeChat ID
+
+**Evidence**
+
+`redactContactValue()` returns immediately when `redactPhone()` changes the value. For:
+
+```text
+电话13800138000 微信wechat_secret_01
+```
+
+the built code returns:
+
+```text
+电话138****8000 微信wechat_secret_01
+```
+
+The phone is masked but the WeChat ID remains. A signed Candidate callback and subsequent GET both returned 200 and the HTTP response contained `wechat_secret_01` (`secretLeaked: true`).
+
+### P0-01B: Contact arrays lose their sensitive-key context
+
+**Evidence**
+
+`redactValueDeep()` applies contact-specific handling only when the direct property value is a string. When `fields.contact` or `fields.联系方式` is an array, recursion processes each element as a generic string and calls only `redactPhone()`.
+
+A signed Candidate with:
+
+```json
+{"contact":["wechat_secret_01"]}
+```
+
+completed the callback with HTTP 200; GET returned HTTP 200 and still contained `wechat_secret_01` (`secretLeaked: true`). `CandidateRecord.fields` intentionally accepts unknown JSON values, so this is a reachable response path.
+
+### Impact
+
+Both findings are direct variants of original P0-01: attacker-controlled Candidate data crosses an unauthenticated GET response boundary without the promised WeChat redaction. They are not new product scope.
+
+### Minimal fix packet
+
+1. Propagate a redaction mode/context through recursion. Once a property key is classified as contact/WeChat-sensitive, every nested string beneath that value—including array elements and nested objects—must use contact redaction.
+2. Make contact-string handling fail closed. It must not stop after masking a phone if any remaining contact content can expose a WeChat ID. For mixed or ambiguous free text, masking the whole contact value or returning a fixed redacted placeholder is acceptable; returning any unmasked residual contact token is not.
+3. Preserve existing behavior for a pure phone value and the accepted first/last-two rule for a pure WeChat ID where safely distinguishable.
+4. Keep repository and review evidence unchanged; redaction remains response/log-boundary only.
+5. Add unit tests for:
+   - a contact string containing both phone and WeChat ID;
+   - `contact` / `联系方式` arrays of strings;
+   - nested objects/arrays beneath a contact key;
+   - non-mutation of the input.
+6. Add HTTP regressions for both reproduced payloads and assert repository/review evidence retains the originals.
+
+Do not modify P0-02/P0-03, do not start TASK-003, and do not perform unrelated refactoring.
+
+### Fresh verification evidence
+
+| Command / check | Result |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0 |
+| `npm run build` | exit 0 |
+| targeted redaction + ingestion tests | exit 0; 41/41 passed |
+| `npm run test` | exit 0; 271/271 passed, 28 files |
+| `npm run test:integration` | exit 0; 33/33 passed, 3 files |
+| `npm run test:coverage` | exit 0; Lines 85.44%, Branches 82.13%, Functions 88.63% |
+| `npm run evaluate` | exit 0; Gate C-Core 50/50, all four metrics 100% |
+| `git diff origin/main -- src/data-cleaning` | exit 0; no output |
+| `git diff --check` | exit 0 |
+| mixed contact HTTP reproduction | failed security expectation; `secretLeaked: true` |
+| contact-array HTTP reproduction | failed security expectation; `secretLeaked: true` |
+
+### Stop condition
+
+Trae must commit and push only the two P0-01 direct fixes and regression tests, then request GPT re-review. TASK-003 remains blocked.

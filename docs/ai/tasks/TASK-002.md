@@ -2,7 +2,7 @@
 
 ## Status
 
-P0 FIX PARTIALLY ACCEPTED — P0-01 WECHAT REDACTION REMAINS
+P0 FIX PARTIALLY ACCEPTED — P0-01 CONTACT CONTEXT LEAK REMAINS
 
 ## Stage
 
@@ -204,3 +204,14 @@ Gate A + Gate C-Core 回归（2026-07-18，Phase 3B / TASK-002 最终验证）�
 - **Gate A + Gate C-Core 回归**：全部命令退出码 0；测试 271 passed（28 test files，新增 11 个测试：6 redactWechatId + 4 redactObject 递归 + 1 HTTP 集成）；集成测试 33 passed（3 test files，新增 1 个 HTTP 集成回归）；All files Lines 85.44% / Branches 82.13% / Funcs 88.63%；关键模块 Lines 全部 ≥80%（redaction.ts 100% / Branch 90.47%, ingestion-service 96.88%, mapping 100%, repository-factory 100%, feishu-review-repository 86.66%, feishu-task-repository 91.2%, feishu-client 95.62%, cleaning-pipeline 100%）；Gate C-Core PASS（50/50 case，4 项核心指标 100%）；`git diff origin/main -- src/data-cleaning` 无输出；`git diff --check` 退出码 0；`npm run audit:legacy` 退出码 0（62 modules）。
 - **HTTP 安全复现**：`wechat_secret_01` 在 GET 响应中被脱敏为 `we************01`，repository/review 原始证据保持不变。
 - TASK-003：`NOT STARTED — BLOCKED BY TASK-002 GPT RE-REVIEW OF NEW COMMIT`
+
+### 2026-07-18 — GPT Re-review of Commit `09f12fa`
+
+- Verdict: `MVP_FAIL`
+- P0-02/P0-03: 保持 `ACCEPTED`，本提交未修改相关实现。
+- P0-01: 单一字符串微信 ID 修复通过；仍有两条同源泄露路径：
+  - `contact: "电话13800138000 微信wechat_secret_01"` → callback 200 / GET 200 / `secretLeaked: true`。
+  - `fields.contact: ["wechat_secret_01"]` → callback 200 / GET 200 / `secretLeaked: true`。
+- 根因：`redactContactValue()` 检测到手机号后提前返回，未继续处理同值中的微信 ID；`redactValueDeep()` 遍历数组时未继承父 `contact`/`联系方式` 敏感上下文。
+- Fix packet: `docs/ai/reviews/TASK-002_GPT_REVIEW.md` 的 “2026-07-18 Re-review — Commit `09f12fa`”。
+- TASK-003: `NOT STARTED — BLOCKED BY TASK-002 P0-01`

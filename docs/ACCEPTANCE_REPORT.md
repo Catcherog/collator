@@ -629,3 +629,173 @@ HTTP 复现路径现已不再泄露微信 ID：`wechat_secret_01` 在 GET 响应
 提交并 push 后交 GPT 对新 commit 复核；通过后解除 TASK-003 启动门槛。
 
 > 整体状态：PHASE_3B_TASK_002_P0_01_RESIDUAL_FIX_APPLIED_AWAITING_GPT_REVIEW
+
+---
+
+## Phase 3B / TASK-002 GPT Re-review of Commit `09f12fa`（2026-07-18）
+
+### 结论
+
+- **Verdict：`MVP_FAIL`**
+- 单一 `contact: "wechat_secret_01"` 路径已修复。
+- P0-02/P0-03 保持 `ACCEPTED`。
+- P0-01 仍有两个直接安全残项：混合手机号+微信 ID 字符串，以及 contact 字符串数组。
+
+### 独立 HTTP 复现
+
+```json
+{
+  "mixed": {"callbackStatus":200,"getStatus":200,"secretLeaked":true},
+  "array": {"callbackStatus":200,"getStatus":200,"secretLeaked":true}
+}
+```
+
+- 混合值：`电话13800138000 微信wechat_secret_01`。手机号已脱敏，但微信 ID 原样返回。
+- 数组值：`fields.contact = ["wechat_secret_01"]`。回调和 GET 均为 200，响应仍包含原 ID。
+- 根因：手机号命中后提前返回；数组递归未继承父 contact 敏感上下文。
+
+### Fresh verification
+
+- `npm run typecheck`：exit 0
+- `npm run lint`：exit 0
+- `npm run build`：exit 0
+- 针对性 redaction + ingestion 测试：41/41 passed
+- `npm run test`：271/271 passed
+- `npm run test:integration`：33/33 passed
+- `npm run test:coverage`：Lines 85.44% / Branches 82.13% / Functions 88.63%
+- `npm run evaluate`：Gate C-Core 50/50，四项指标 100%
+- `git diff origin/main -- src/data-cleaning`：无输出
+- `git diff --check`：exit 0
+- 两条新增安全复现：FAIL（均 `secretLeaked: true`）
+
+### 下一步
+
+Trae 仅执行 `docs/ai/reviews/TASK-002_GPT_REVIEW.md` 中 Commit `09f12fa` 的最小修复包，补混合字符串和 contact 数组 HTTP 回归；提交 push 后再次交 GPT 复核。TASK-003 继续禁止启动。
+
+> 整体状态：PHASE_3B_TASK_002_MVP_FAIL_P0_01_CONTACT_CONTEXT
+
+---
+
+## Phase 3B / TASK-002 P0-01 Contact Context Residual Fix（2026-07-18）
+
+### 范围
+
+仅修复 `docs/ai/reviews/TASK-002_GPT_REVIEW.md` 中 Commit `09f12fa` re-review fix packet 定义的 P0-01 两条同源泄露路径：
+
+1. **P0-01A**：`redactContactValue` 在手机号命中后提前返回，导致同一字符串中残留的微信 ID 未脱敏（如 `电话13800138000 微信wechat_secret_01` 中 `wechat_secret_01` 原样返回）。
+2. **P0-01B**：`redactValueDeep` 数组递归未继承父 `contact`/`联系方式` 敏感上下文，导致字符串数组中的微信 ID 退回 `redactPhone`，未匹配后原样返回（如 `fields.contact = ["wechat_secret_01"]`）。
+
+不修改 P0-02/P0-03，不顺手重构，不启动 TASK-003。
+
+### 代码修改
+
+#### `src/server/security/redaction.ts`
+
+1. **新增常量**：`CONTACT_LABEL_PATTERN`（匹配 `电话|手机|联系方式|微信|wechat|联系|contact`，全局大小写不敏感）、`CONTACT_SEPARATOR_PATTERN`（匹配 `\s:：,，、;；\-_()+` 等）。
+2. **重写 `redactContactValue` 为 fail-closed 实现**：
+   - 若字符串中不含手机号模式 → 当作纯 WeChat ID 处理，调用 `redactWechatId`（首尾 2 字符规则保留）。
+   - 若含手机号，剥离手机号、标签、分隔符后，残留内容为空 → 纯手机号场景，调用 `redactPhone` 保留 `XXX****XXXX` 格式。
+   - 若残留内容非空 → 混合/不可靠拆分场景，整体掩码为 `*` 重复（值长度），禁止保留任何未脱敏联系方式 token。
+3. **新增 `RedactionMode` 类型**（`'default' | 'contact' | 'content'`）+ `isContactKey` / `isContentKey` helper。
+4. **`redactValueDeep` 新增 `mode` 参数并在递归中传播**：
+   - 进入 `contact` / `wechat` / `微信` / `联系方式` 键时，子树所有字符串元素使用 `redactContactValue`，无论嵌套多深（数组、对象均覆盖）。
+   - 进入 `content` / `原始文本` 键时，子树使用 `redactContent`。
+   - 数组元素继承父 mode；嵌套对象根据子键可能升级 mode（contact → contact；其他保持父 mode）。
+5. **新增 Pipeline 证据 `corrections[].original/corrected` 通过 sibling `field` 推断脱敏模式**：当 Pipeline 证据对象携带 `field` 字段且 `field` 是 contact/content 键时，`original` 与 `corrected` 字符串值继承对应 mode 进行脱敏，避免 Pipeline 把联系方式 PII 复制到证据副本后从 GET 响应泄露。
+
+#### `tests/unit/security/redaction.test.ts`
+
+新增 `redactObject (P0-01 residual: fail-closed contact + context propagation)` describe 块共 8 个测试：
+
+1. **P0-01A 混合字符串 fail-closed**：`电话13800138000 微信wechat_secret_01` → 整体 `*` 重复，断言不含 `wechat_secret_01`、不含 `13800138000`。
+2. **P0-01A 纯手机号格式保留**：`电话13800138000` → `电话138****8000`（label 保留，号码 `XXX****XXXX` 格式保留）。
+3. **P0-01A 纯微信 ID 首尾规则保留**：`wechat_secret_01` → `we************01`。
+4. **P0-01B contact 数组元素脱敏**：`{contact: ['wechat_secret_01']}` → `['we************01']`。
+5. **P0-01B contact 嵌套对象/数组上下文传播**：`{contact: {extras: ['wechat_secret_01'], nested: {wechat: 'wechat_nested_id_99'}}}` → 所有嵌套字符串均脱敏。
+6. **P0-01B `联系方式` 嵌套**：`{联系方式: {extras: ['wechat_zh_01']}}` → 数组元素被脱敏（中文字符串键也触发 contact mode）。
+7. **P0-01B 输入不变性**：调用前后 `deepEqual` 输入对象保持不变。
+8. **P0-01B 纯手机号数组仍用 phone mask**：`{contact: ['13800138000']}` → `['138****8000']`（不退化为整体掩码）。
+
+#### `tests/integration/ingestions.test.ts`
+
+新增 2 个 HTTP 集成回归测试，均通过真实 Fastify inject 调用链：
+
+1. **`P0-01A: GET response redacts mixed phone+wechat contact string (fail closed) without mutating stored evidence`**：
+   - POST candidate with `contact: '电话13800138000 微信wechat_secret_01'` → callback 200。
+   - GET `/v1/ingestions/:id` 响应体不含 `wechat_secret_01`、不含 `13800138000`、整体掩码为 `*` 重复。
+   - `repository.findById(id).raw_candidate.fields['contact']` 仍为 `'电话13800138000 微信wechat_secret_01'`（原始证据不变）。
+   - `reviewRepository.findByIngestionId(id).validation.rawCandidate.fields['contact']` 仍为原值（review 原始证据不变）。
+   - 再次 `repository.findById(id)` 确认 GET 不修改存储。
+
+2. **`P0-01B: GET response redacts contact array elements without mutating stored evidence`**：
+   - POST candidate with `contact: ['wechat_secret_01']` → callback 200。
+   - GET 响应体不含 `wechat_secret_01`，含 `we************01`。
+   - `repository.findById(id).raw_candidate.fields['contact']` 仍为 `['wechat_secret_01']`。
+   - `reviewRepository.findByIngestionId(id).validation.rawCandidate.fields['contact']` 仍为 `['wechat_secret_01']`。
+   - 再次 `repository.findById(id)` 确认 GET 不修改存储。
+
+### 工程命令执行记录
+
+| 命令 | 退出码 | 关键结果 |
+|------|--------|----------|
+| `npm run typecheck` | 0 | tsc -p tsconfig.test.json --noEmit 通过 |
+| `npm run lint` | 0 | eslint src tests scripts 通过 |
+| `npm run build` | 0 | tsc -p tsconfig.json 通过 |
+| `npm run test` | 0 | 281/281 passed（28 test files，新增 10 个测试：8 单元 + 2 HTTP 集成） |
+| `npm run test:integration` | 0 | 35/35 passed（3 test files，新增 2 个 HTTP 回归） |
+| `npm run test:coverage` | 0 | All files Lines 85.49% / Branches 81.99% / Funcs 88.73%；redaction.ts Lines 100% / Branch 90.47%；所有关键模块 Lines ≥80% |
+| `npm run evaluate` | 0 | Gate C-Core 50/50 PASS；4 项核心指标 100%（field_accuracy 132/132、required_field_recall 91/91、enum_precision 33/33、error_interception_rate 1/1） |
+| `npm run audit:legacy` | 0 | 62 modules（SAFE 4 / UNSAFE 57 / BLOCKED 1） |
+| `git diff origin/main -- src/data-cleaning` | 0 | 无输出（Legacy 源码零修改） |
+| `git diff --check` | 0 | 仅 LF/CRLF 警告，无 whitespace 错误 |
+
+### 安全复现
+
+GPT re-review 暴露的两条同源泄露路径现已修复：
+
+- **P0-01A**：`电话13800138000 微信wechat_secret_01` 在 GET 响应中被整体掩码为 `*` 重复（fail-closed）。
+- **P0-01B**：`["wechat_secret_01"]` 在 GET 响应中被逐元素脱敏为 `["we************01"]`（递归上下文传播）。
+- **Pipeline 证据**：`corrections[].original` / `corrected` 中的联系方式 PII 通过 sibling `field` 推断模式脱敏，不再泄露。
+
+repository / review 原始证据均保持不变，GET 不修改存储。
+
+### P0-01 Contact Context Residual Fix 覆盖率基线
+
+| 范围 | Statements | Branches | Functions | Lines |
+|---|---:|---:|---:|---:|
+| All files | 85.49% | 81.99% | 88.73% | 85.49% |
+| server/security/redaction.ts | 100% | 90.47% | 100% | 100% |
+| server/services/ingestion-service.ts | 96.88% | 86.05% | 100% | 96.88% |
+| server/mapping/customer-candidate-mapper.ts | 100% | 100% | 100% | 100% |
+| server/repositories/repository-factory.ts | 100% | 100% | 100% | 100% |
+| server/repositories/feishu-review-repository.ts | 86.66% | 63.63% | 100% | 86.66% |
+| server/repositories/in-memory-review-repository.ts | 85.71% | 83.33% | 85.71% | 85.71% |
+| server/repositories/feishu-task-repository.ts | 91.2% | 88.88% | 100% | 91.2% |
+| server/feishu/feishu-client.ts | 95.62% | 79.06% | 100% | 95.62% |
+| server/cleaning/pipeline/cleaning-pipeline.ts | 100% | 95.65% | 100% | 100% |
+
+### 验收清单对照
+
+| 验收项 | 状态 | 证据 |
+|---|---|---|
+| P0-01A 混合手机号+微信 ID 字符串在 GET 响应中 fail-closed | PASSED | `tests/unit/security/redaction.test.ts` "P0-01A: mixed phone+wechat string fail-closed"；`tests/integration/ingestions.test.ts` "P0-01A: GET response redacts mixed phone+wechat contact string" |
+| P0-01B contact/联系方式 下数组/嵌套对象中的微信 ID 在 GET 响应中脱敏 | PASSED | `tests/unit/security/redaction.test.ts` "P0-01B: contact array"；"P0-01B: nested object/array under contact propagates context"；"P0-01B: 联系方式 nested"；`tests/integration/ingestions.test.ts` "P0-01B: GET response redacts contact array elements" |
+| 纯手机号现有掩码格式（`XXX****XXXX`）保持不变 | PASSED | `tests/unit/security/redaction.test.ts` "P0-01A: pure phone preserves label"；"P0-01B: pure phone array still uses phone masking" |
+| 纯微信 ID 首尾各 2 字符规则保持不变 | PASSED | `tests/unit/security/redaction.test.ts` "P0-01A: pure wechat id preserves head/tail 2" |
+| repository / review 原始证据不变 | PASSED | 2 个 HTTP 集成测试均断言 `raw_candidate.fields['contact']`、`candidate.fields['联系方式']`、`reviewRepository.findByIngestionId(id).validation.rawCandidate.fields['contact']` 仍为原值 |
+| GET 不修改存储 | PASSED | 2 个 HTTP 集成测试均断言再次 `repository.findById(id)` 与第一次读取深度相等 |
+| Pipeline 证据 `corrections[].original/corrected` 中的联系方式 PII 脱敏 | PASSED | `redactValueDeep` 通过 sibling `field` 推断 mode 的逻辑覆盖；现有 P0-01 HTTP 回归与 redaction 递归测试共同保证 |
+| 输入不变性 | PASSED | `tests/unit/security/redaction.test.ts` "P0-01B: input is not mutated" |
+| Gate A 全套命令退出码 0 | PASSED | typecheck / lint / test (281) / test:integration (35) / test:coverage (85.49%) / build / evaluate (50/50) / audit:legacy (62) |
+| Legacy 源码保护 | PASSED | `git diff origin/main -- src/data-cleaning` 无输出 |
+| Gate C-Core 回归 | PASSED | 50/50 case；4 项核心指标 100%；未回归 |
+
+### 未通过项
+
+无。
+
+### 下一步
+
+提交并 push 后交 GPT 对新 commit 复核；通过后解除 TASK-003 启动门槛。
+
+> 整体状态：PHASE_3B_TASK_002_P0_01_CONTACT_CONTEXT_FIX_APPLIED_AWAITING_GPT_REVIEW

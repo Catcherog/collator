@@ -420,6 +420,92 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
     const storedTaskAgain = await repository.findById(ingestionId);
     expect(storedTaskAgain!.raw_candidate!.fields['contact']).toBe('wechat_secret_01');
   });
+
+  it('P0-01A: GET response redacts mixed phone+wechat contact string (fail closed) without mutating stored evidence', async () => {
+    const { app, repository, reviewRepository } = await setup();
+    const ingestionId = await createTask(app);
+    // Mixed phone + WeChat ID in a single contact string. redactContactValue
+    // must fail closed: no residual `wechat_secret_01` may cross the GET
+    // response boundary, and the pure-phone mask format does not apply.
+    const mixedContact = '电话13800138000 微信wechat_secret_01';
+    const payload = makeCandidatePayload({
+      contact: mixedContact,
+    });
+
+    const callbackResponse = await postCandidate(app, ingestionId, payload);
+    expect(callbackResponse.statusCode).toBe(200);
+
+    const getResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/ingestions/${ingestionId}`,
+    });
+    expect(getResponse.statusCode).toBe(200);
+
+    const serialized = getResponse.body;
+    // Neither the WeChat ID nor the raw phone may leak through the response.
+    expect(serialized).not.toContain('wechat_secret_01');
+    expect(serialized).not.toContain('13800138000');
+
+    // Repository storage retains the original mixed contact string under
+    // both the raw English key and the canonical Chinese key.
+    const storedTask = await repository.findById(ingestionId);
+    expect(storedTask).not.toBeNull();
+    expect(storedTask!.raw_candidate!.fields['contact']).toBe(mixedContact);
+    expect(storedTask!.candidate!.fields['联系方式']).toBe(mixedContact);
+
+    // Review record retains raw Candidate under validation.rawCandidate.
+    const review = await reviewRepository.findByIngestionId(ingestionId);
+    expect(review).not.toBeNull();
+    const validation = review!.validation as Record<string, unknown>;
+    const rawCandidate = validation['rawCandidate'] as { fields: Record<string, unknown> };
+    expect(rawCandidate.fields['contact']).toBe(mixedContact);
+
+    // The sanitized GET response did not mutate the stored task.
+    const storedTaskAgain = await repository.findById(ingestionId);
+    expect(storedTaskAgain!.raw_candidate!.fields['contact']).toBe(mixedContact);
+  });
+
+  it('P0-01B: GET response redacts contact array elements without mutating stored evidence', async () => {
+    const { app, repository, reviewRepository } = await setup();
+    const ingestionId = await createTask(app);
+    // `fields.contact` as an array of strings. Recursion must propagate
+    // contact context to each element so non-phone WeChat IDs are masked
+    // instead of falling back to redactPhone (which would leave them intact).
+    const contactArray = ['wechat_secret_01'];
+    const payload = makeCandidatePayload({
+      contact: contactArray,
+    });
+
+    const callbackResponse = await postCandidate(app, ingestionId, payload);
+    expect(callbackResponse.statusCode).toBe(200);
+
+    const getResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/ingestions/${ingestionId}`,
+    });
+    expect(getResponse.statusCode).toBe(200);
+
+    const serialized = getResponse.body;
+    expect(serialized).not.toContain('wechat_secret_01');
+    // The masked form (first/last 2 chars, middle replaced with *) is present.
+    expect(serialized).toContain('we************01');
+
+    // Repository storage retains the original array under the raw English key.
+    const storedTask = await repository.findById(ingestionId);
+    expect(storedTask).not.toBeNull();
+    expect(storedTask!.raw_candidate!.fields['contact']).toEqual(contactArray);
+
+    // Review record retains raw Candidate under validation.rawCandidate.
+    const review = await reviewRepository.findByIngestionId(ingestionId);
+    expect(review).not.toBeNull();
+    const validation = review!.validation as Record<string, unknown>;
+    const rawCandidate = validation['rawCandidate'] as { fields: Record<string, unknown> };
+    expect(rawCandidate.fields['contact']).toEqual(contactArray);
+
+    // The sanitized GET response did not mutate the stored task.
+    const storedTaskAgain = await repository.findById(ingestionId);
+    expect(storedTaskAgain!.raw_candidate!.fields['contact']).toEqual(contactArray);
+  });
 });
 
 describe('POST /v1/ingestions/:id/approve and /reject', () => {
