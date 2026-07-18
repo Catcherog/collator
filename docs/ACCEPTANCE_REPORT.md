@@ -622,7 +622,8 @@ HTTP 复现路径现已不再泄露微信 ID：`wechat_secret_01` 在 GET 响应
 
 ### 未通过项
 
-无。
+- GPT re-review Commit `69ce7d5` found P0-01C: nested sensitive-key names can override inherited contact mode and leak a non-phone WeChat ID.
+- Fresh `test:integration` exposed P0-04: response-wide phone scanning can mutate `ingestion_id`; first run 34/35, fixed input reproduces deterministically.
 
 ### 下一步
 
@@ -796,6 +797,80 @@ repository / review 原始证据均保持不变，GET 不修改存储。
 
 ### 下一步
 
-提交并 push 后交 GPT 对新 commit 复核；通过后解除 TASK-003 启动门槛。
+仅修复 P0-01C/P0-04 及直接回归，提交并 push 新 commit 后交 GPT 复核；通过前不得启动 TASK-003。
 
-> 整体状态：PHASE_3B_TASK_002_P0_01_CONTACT_CONTEXT_FIX_APPLIED_AWAITING_GPT_REVIEW
+> 整体状态：PHASE_3B_TASK_002_MVP_FAIL_P0_01C_P0_04_PENDING
+
+---
+
+## GPT Independent Re-review — Commit `69ce7d5`（2026-07-18）
+
+- Verdict: `MVP_FAIL`.
+- Original P0-01A/P0-01B exact reproductions: accepted.
+- P0-01C: built `redactObject()` returned `leaked: true` for `contact.content`, `contact.phone`, `contact.mobile`, and `联系方式.原始文本` carrying `wechat_secret_01`.
+- P0-04: fresh integration run failed 34/35 because GET mutated `ingestion_id`; later random-data rerun passed, while the captured fixed ID remains deterministically mutated.
+- Engineering checks: `npm ci` retry, typecheck, lint, unit test 281/281, coverage 281/281 (Lines 85.49%), build, evaluate 50/50, audit 62, Legacy diff and diff-check otherwise passed.
+- Full evidence and minimum fix packet: `docs/ai/reviews/TASK-002_GPT_REVIEW.md`.
+
+---
+
+## Trae P0-01C + P0-04 Fix Applied（2026-07-18）
+
+- 基线：Commit `69ce7d5`（GPT re-review `MVP_FAIL`，P0-01C + P0-04 阻塞）
+- 范围：仅修复 GPT fix packet 定义的 P0-01C（父级 contact mode 优先级）与 P0-04（结构化 ID 逐字节保留）及其直接回归。不修改 P0-02/P0-03，不启动 TASK-003，不做无关重构。
+
+### 工程命令执行记录
+
+| 日期 | 命令 | 退出码 | 通过 | 失败 | 关键输出 |
+|---|---|---:|---:|---:|---|
+| 2026-07-18 | `npm ci` | 0 | - | - | up to date in 3s |
+| 2026-07-18 | `npm run audit:legacy` | 0 | 62 | 0 | SAFE 4, UNSAFE 57, BLOCKED 1 预期 |
+| 2026-07-18 | `npm run typecheck` | 0 | - | - | TypeScript 无错误（含 `isSensitiveKey` 移除后无 TS6133） |
+| 2026-07-18 | `npm run lint` | 0 | - | - | ESLint 无错误 |
+| 2026-07-18 | `npm run test` | 0 | 301 | 0 | 28 test files；新增 20 个测试：18 单元 + 2 HTTP 集成 |
+| 2026-07-18 | `npm run test:integration` | 0 | 37 | 0 | 3 test files；新增 2 个 HTTP 回归 |
+| 2026-07-18 | `npm run test:coverage` | 0 | - | - | All files Lines 85.6% / Branches 82.26% / Funcs 88.73%；redaction.ts Lines 97.43% / Branches 88.73% / Funcs 100% |
+| 2026-07-18 | `npm run build` | 0 | - | - | `dist/` 构建成功 |
+| 2026-07-18 | `npm run evaluate` | 0 | 50 | 0 | Gate C-Core PASS；4 项核心指标 100% |
+| 2026-07-18 | `git diff origin/main -- src/data-cleaning` | 0 | - | - | 无输出（Legacy 源码零修改） |
+| 2026-07-18 | `git diff --check` | 0 | - | - | 无空白错误 |
+
+### 数据质量指标与门槛对比（Gate C-Core）
+
+| 指标 | 通过/总数 | 实际值 | 门槛 | 结果 |
+|---|---|---|---|---|
+| field_accuracy | 132/132 | 100.00% | 90.00% | PASS |
+| required_field_recall | 91/91 | 100.00% | 95.00% | PASS |
+| enum_precision | 33/33 | 100.00% | 95.00% | PASS |
+| error_interception_rate | 1/1 | 100.00% | 95.00% | PASS |
+| persistence_check | 0/0 | N/A | N/A | PASS |
+
+### P0-01C + P0-04 直接回归测试
+
+| 检查项 | 结果 | 证据 |
+|---|---|---|
+| 父 contact mode 覆盖 nested `content`/`phone`/`mobile`/`原始文本`/`联系方式` 子键 | PASSED | `tests/unit/security/redaction.test.ts` P0-01C 测试组 9 个测试 |
+| 父 content mode 对称覆盖 | PASSED | `tests/unit/security/redaction.test.ts` "P0-01C: parent content mode wins over nested contact key" |
+| 真实 phone 仍被掩码（parent contact mode 下） | PASSED | `tests/unit/security/redaction.test.ts` "P0-01C: real phone under contact parent still masked" |
+| 失败 ID `ing_2e042890392546c19181507170127599` 逐字节保留 | PASSED | `tests/unit/security/redaction.test.ts` "P0-04: failing ingestion_id preserved byte-for-byte"；HTTP 回归断言 `"ingestion_id":"ing_2e042890392546c19181507170127599"` |
+| 32 字符 hex / 64 字符 hex / canonical UUID / 前缀 ID 保留 | PASSED | `tests/unit/security/redaction.test.ts` P0-04 测试组 |
+| free-text 中 phone 仍掩码 | PASSED | `tests/unit/security/redaction.test.ts` "P0-04: phone in free-text still masked" |
+| 纯 phone 仍掩码 | PASSED | `tests/unit/security/redaction.test.ts` "P0-04: pure phone still masked" |
+| P0-01C HTTP 回归：`wechat: { content: 'wechat_secret_01' }` | PASSED | `tests/integration/ingestions.test.ts` "P0-01C: GET response redacts nested sensitive child key under contact parent"；GET 不含 `wechat_secret_01`、含 `we************01` |
+| P0-04 HTTP 回归：确定性失败 ID + GET | PASSED | `tests/integration/ingestions.test.ts` "P0-04: GET response preserves structural ingestion_id byte-for-byte"；GET 含原 ID、不含 mutated form；`content` 中 phone 仍掩码 |
+| repository / review 原始证据不变 | PASSED | 2 个 HTTP 集成测试均断言 `repository.raw_candidate.fields.wechat`、`review.validation.rawCandidate.fields.wechat`、`repository.ingestion_id`、`repository.content` 仍为原值 |
+| GET 不修改存储 | PASSED | 2 个 HTTP 集成测试均断言再次 `repository.findById(id)` 与第一次读取深度相等 |
+| 输入不变性 | PASSED | `tests/unit/security/redaction.test.ts` P0-01C + P0-04 "input is not mutated" |
+| Gate A 全套命令退出码 0 | PASSED | `npm ci` / audit:legacy (62) / typecheck / lint / test (301) / test:integration (37) / test:coverage (85.6%) / build / evaluate (50/50) |
+| Legacy 源码保护 | PASSED | `git diff origin/main -- src/data-cleaning` 无输出 |
+| Gate C-Core 回归 | PASSED | 50/50 case；4 项核心指标 100%；未回归 |
+
+### 未通过项
+
+无。
+
+### 下一步
+
+新 commit 待 push 到 `origin/phase/3-feishu-integration` 后交 GPT 基于 new commit 复核。复核通过前不得启动 TASK-003。
+
+> 整体状态：PHASE_3B_TASK_002_P0_01C_P0_04_FIX_APPLIED_AWAITING_GPT_RE_REVIEW

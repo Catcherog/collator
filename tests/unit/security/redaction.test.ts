@@ -335,3 +335,175 @@ describe('sanitizeWarningText', () => {
     );
   });
 });
+
+describe('redactObject (P0-01C: parent contact/content mode overrides nested sensitive child keys)', () => {
+  it('parent contact mode wins over nested content key', () => {
+    // `contact.content` would normally use redactContent (phone-only),
+    // leaking a non-phone WeChat ID. Parent contact mode must be
+    // authoritative so the WeChat ID is masked via redactContactValue.
+    const input = { contact: { content: 'wechat_secret_01' } };
+    const result = redactObject(input) as Record<string, unknown>;
+    const contact = result.contact as Record<string, unknown>;
+    expect(contact.content).toBe('we************01');
+    expect(contact.content).not.toBe('wechat_secret_01');
+  });
+
+  it('parent contact mode wins over nested phone key', () => {
+    const input = { contact: { phone: 'wechat_secret_01' } };
+    const result = redactObject(input) as Record<string, unknown>;
+    const contact = result.contact as Record<string, unknown>;
+    expect(contact.phone).toBe('we************01');
+    expect(contact.phone).not.toBe('wechat_secret_01');
+  });
+
+  it('parent contact mode wins over nested mobile key', () => {
+    const input = { contact: { mobile: 'wechat_secret_01' } };
+    const result = redactObject(input) as Record<string, unknown>;
+    const contact = result.contact as Record<string, unknown>;
+    expect(contact.mobile).toBe('we************01');
+  });
+
+  it('parent contact mode wins over nested 原始文本 key under 联系方式', () => {
+    const input = { 联系方式: { 原始文本: 'wechat_secret_01' } };
+    const result = redactObject(input) as Record<string, unknown>;
+    const contact = result.联系方式 as Record<string, unknown>;
+    expect(contact.原始文本).toBe('we************01');
+  });
+
+  it('parent contact mode wins over nested content key under 联系方式', () => {
+    const input = { 联系方式: { content: 'wechat_secret_01' } };
+    const result = redactObject(input) as Record<string, unknown>;
+    const contact = result.联系方式 as Record<string, unknown>;
+    expect(contact.content).toBe('we************01');
+  });
+
+  it('parent contact mode propagates through arrays of nested sensitive keys', () => {
+    // Array element under contact key contains an object whose key would
+    // normally select content/phone mode. Parent contact mode must still
+    // win for every descendant string.
+    const input = {
+      contact: [
+        { content: 'wechat_secret_01' },
+        { phone: 'wechat_alt_02' },
+      ],
+    };
+    const result = redactObject(input) as Record<string, unknown>;
+    const arr = result.contact as Array<Record<string, unknown>>;
+    expect(arr[0].content).toBe('we************01');
+    expect(arr[1].phone).toBe('we*********02'); // length 13 → 9 middle stars
+  });
+
+  it('parent contact mode still masks a real phone under a nested phone key', () => {
+    // A genuine phone number under a nested phone key must still be
+    // masked; contact redaction masks phones via redactPhone internally.
+    const input = { contact: { phone: '13800138000' } };
+    const result = redactObject(input) as Record<string, unknown>;
+    const contact = result.contact as Record<string, unknown>;
+    expect(contact.phone).toBe('138****8000');
+  });
+
+  it('parent content mode wins over nested phone/contact keys', () => {
+    // Symmetric coverage: content mode must also be authoritative for
+    // descendant strings, so a phone-keyed child under a raw-text parent
+    // uses redactContent (phone masking + truncation) rather than plain
+    // redactPhone.
+    const longRaw = `电话13800138000${'y'.repeat(220)}`;
+    const input = { 原始文本: { phone: longRaw } };
+    const result = redactObject(input) as Record<string, unknown>;
+    const content = result.原始文本 as Record<string, unknown>;
+    const masked = content.phone as string;
+    expect(masked).not.toContain('13800138000');
+    expect(masked).toContain('138****8000');
+    expect(masked.endsWith('... [truncated]')).toBe(true);
+  });
+
+  it('does not mutate input when parent mode overrides nested sensitive keys', () => {
+    const input = {
+      contact: { content: 'wechat_secret_01', phone: 'wechat_alt_02' },
+      联系方式: { 原始文本: 'wechat_inner_03' },
+    };
+    redactObject(input);
+    const contact = input.contact as Record<string, unknown>;
+    expect(contact.content).toBe('wechat_secret_01');
+    expect(contact.phone).toBe('wechat_alt_02');
+    const cn = input.联系方式 as Record<string, unknown>;
+    expect(cn.原始文本).toBe('wechat_inner_03');
+  });
+});
+
+describe('redactObject (P0-04: structural identifiers preserved at response boundary)', () => {
+  it('preserves the exact failing ingestion_id byte-for-byte', () => {
+    // This ID triggered P0-04: the 11-digit substring `19181507170`
+    // matches the phone pattern and was masked to `191****7170`.
+    const failingId = 'ing_2e042890392546c19181507170127599';
+    const input = { ingestion_id: failingId };
+    const result = redactObject(input) as Record<string, unknown>;
+    expect(result.ingestion_id).toBe(failingId);
+  });
+
+  it('preserves a 32-char hex UUID without dashes', () => {
+    const hex32 = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6';
+    const input = { review_record_id: hex32 };
+    const result = redactObject(input) as Record<string, unknown>;
+    expect(result.review_record_id).toBe(hex32);
+  });
+
+  it('preserves a canonical UUID with dashes', () => {
+    const uuid = 'a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6';
+    const input = { review_record_id: uuid };
+    const result = redactObject(input) as Record<string, unknown>;
+    expect(result.review_record_id).toBe(uuid);
+  });
+
+  it('preserves a 64-char SHA-256 idempotency key', () => {
+    const sha256 =
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+    const input = { idempotency_key: sha256 };
+    const result = redactObject(input) as Record<string, unknown>;
+    expect(result.idempotency_key).toBe(sha256);
+  });
+
+  it('preserves prefixed opaque IDs (rec_001, reviewer_1, etc.)', () => {
+    const input = {
+      source_record_id: 'rec_001',
+      reviewer_id: 'reviewer_1',
+      workflow_run_id: 'run_001',
+    };
+    const result = redactObject(input);
+    expect(result.source_record_id).toBe('rec_001');
+    expect(result.reviewer_id).toBe('reviewer_1');
+    expect(result.workflow_run_id).toBe('run_001');
+  });
+
+  it('still masks a phone number embedded in free-text under a non-sensitive key', () => {
+    // Free-text with spaces must NOT be treated as a structural ID;
+    // embedded phone numbers must still be masked.
+    const input = { notes: 'call me at 13800138000 tomorrow' };
+    const result = redactObject(input) as Record<string, unknown>;
+    expect(result.notes).toBe('call me at 138****8000 tomorrow');
+  });
+
+  it('still masks a pure phone number under a non-sensitive key', () => {
+    const input = { budget: '13800138000' };
+    const result = redactObject(input) as Record<string, unknown>;
+    expect(result.budget).toBe('138****8000');
+  });
+
+  it('preserves structural IDs inside arrays in default mode', () => {
+    // Array elements in default mode must also skip redactPhone for IDs.
+    const failingId = 'ing_2e042890392546c19181507170127599';
+    const input = { related_ids: [failingId, 'rec_001'] };
+    const result = redactObject(input) as Record<string, unknown>;
+    const arr = result.related_ids as string[];
+    expect(arr[0]).toBe(failingId);
+    expect(arr[1]).toBe('rec_001');
+  });
+
+  it('does not mutate input when preserving structural IDs', () => {
+    const failingId = 'ing_2e042890392546c19181507170127599';
+    const input = { ingestion_id: failingId, notes: '13800138000' };
+    redactObject(input);
+    expect(input.ingestion_id).toBe(failingId);
+    expect(input.notes).toBe('13800138000');
+  });
+});

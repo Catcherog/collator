@@ -112,10 +112,6 @@ export function sanitizeWarningText(value: string): string {
   return sanitized;
 }
 
-function isSensitiveKey(lower: string, sensitiveKeys: string[]): boolean {
-  return sensitiveKeys.some((sk) => lower.includes(sk.toLowerCase()));
-}
-
 /**
  * Redaction mode propagated through recursion.
  *
@@ -125,11 +121,37 @@ function isSensitiveKey(lower: string, sensitiveKeys: string[]): boolean {
  * - `contact`: every nested string beneath a contact/wechat key must use
  *   `redactContactValue` so WeChat IDs inside arrays or nested objects
  *   are masked instead of falling back to `redactPhone` (TASK-002
- *   P0-01B).
+ *   P0-01B). Parent contact mode is authoritative for all descendant
+ *   strings; nested sensitive child keys (`content`/`phone`/`mobile`/
+ *   `原始文本`) must not downgrade it (TASK-002 P0-01C).
  * - `content`: every nested string beneath a raw-text key uses
- *   `redactContent`.
+ *   `redactContent`. Parent content mode is similarly authoritative.
  */
 type RedactionMode = 'default' | 'contact' | 'content';
+
+/**
+ * Matches structural identifier values that must pass through response
+ * redaction unchanged. Default phone-number scanning must not mutate IDs
+ * like `ing_2e042890392546c19181507170127599` even though they contain
+ * an 11-digit substring matching `1[3-9]\d{9}` (TASK-002 P0-04).
+ *
+ * Covered shapes:
+ * - Prefixed opaque IDs: `<alpha>_<alphanumeric>` (e.g. `ing_<hex>`,
+ *   `rec_001`, `reviewer_1`).
+ * - 32-char hex (UUID without dashes, e.g. ingestion_id body).
+ * - 64-char hex (SHA-256 idempotency key).
+ * - Canonical UUID with dashes (memory-mode review_record_id).
+ *
+ * Free-text strings (containing spaces, CJK characters, or multiple
+ * underscore-separated tokens) do not match, so embedded phone numbers
+ * in non-sensitive free-text fields are still masked at the response
+ * boundary.
+ */
+const STRUCTURAL_ID_PATTERN = /^(?:[a-zA-Z]+_[a-zA-Z0-9]+|[a-f0-9]{32}|[a-f0-9]{64}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/;
+
+function isStructuralId(value: string): boolean {
+  return STRUCTURAL_ID_PATTERN.test(value);
+}
 
 function isContactKey(lower: string): boolean {
   return (
@@ -153,7 +175,9 @@ function isContentKey(lower: string): boolean {
  *   corresponding redaction mode is propagated to ALL descendants so
  *   arrays and nested objects beneath that key receive the same
  *   contact/content redaction instead of falling back to `redactPhone`
- *   (TASK-002 P0-01B).
+ *   (TASK-002 P0-01B). The inherited parent mode is authoritative for
+ *   every descendant string; nested sensitive child keys (`content`/
+ *   `phone`/`mobile`/`原始文本`) must not downgrade it (TASK-002 P0-01C).
  * - String values under a raw-text key (`content` / `原始文本`) are
  *   redacted with `redactContent`.
  * - String values under a WeChat/contact key (`wechat` / `微信` /
@@ -161,6 +185,10 @@ function isContentKey(lower: string): boolean {
  *   which masks both phone numbers and non-phone WeChat IDs.
  * - String values under other sensitive keys (e.g. `phone` / `mobile`)
  *   are redacted with `redactPhone`.
+ * - Structural identifier strings (ingestion_id, UUIDs, SHA-256 hashes,
+ *   `<prefix>_<alphanumeric>` IDs) pass through unchanged in default mode
+ *   so phone-number scanning does not mutate IDs that happen to contain
+ *   an 11-digit substring (TASK-002 P0-04).
  * - All other string values pass through `redactPhone` so a phone number
  *   embedded under a non-sensitive key (e.g. `evidence.budget`) is still
  *   masked at the response boundary.
@@ -180,6 +208,13 @@ function redactValueDeep(
     }
     if (mode === 'content') {
       return redactContent(value);
+    }
+    // Default mode: preserve structural identifiers (ingestion_id, UUIDs,
+    // hashes) byte-for-byte. Phone-number scanning must not mutate IDs
+    // that happen to contain an 11-digit substring matching the phone
+    // pattern (TASK-002 P0-04).
+    if (isStructuralId(value)) {
+      return value;
     }
     return redactPhone(value);
   }
@@ -223,22 +258,31 @@ function redactValueDeep(
         continue;
       }
 
-      if (typeof v === 'string' && isSensitiveKey(lower, sensitiveKeys)) {
-        // Direct string value under a sensitive key. Mode is determined
-        // by the key itself (the direct-value branch does not inherit
-        // parent mode, matching pre-fix behavior for top-level sensitive
-        // strings).
-        if (contentKey) {
+      if (typeof v === 'string') {
+        // Parent mode is authoritative for descendant strings. Nested
+        // sensitive child keys (content/phone/mobile/原始文本) must not
+        // downgrade an inherited contact/content mode (TASK-002 P0-01C).
+        if (mode === 'contact') {
+          result[key] = redactContactValue(v);
+        } else if (mode === 'content') {
+          result[key] = redactContent(v);
+        } else if (contentKey) {
           result[key] = redactContent(v);
         } else if (contactKey) {
           result[key] = redactContactValue(v);
+        } else if (isStructuralId(v)) {
+          // Preserve structural identifiers in default mode (P0-04).
+          result[key] = v;
         } else {
+          // Default mode, non-sensitive key, non-ID string: still apply
+          // redactPhone to catch phone numbers embedded under non-
+          // sensitive keys at the response boundary.
           result[key] = redactPhone(v);
         }
       } else {
-        // Non-string value (array/object) or non-sensitive key. Propagate
-        // the appropriate mode so descendants of a contact/content key
-        // keep using contact/content redaction at any depth.
+        // Non-string value (array/object). Propagate the appropriate mode
+        // so descendants of a contact/content key keep using contact/
+        // content redaction at any depth.
         let childMode: RedactionMode = mode;
         if (contactKey) {
           childMode = 'contact';

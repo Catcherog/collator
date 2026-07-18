@@ -4,6 +4,7 @@ import { InMemoryTaskRepository } from '../../src/server/repositories/in-memory-
 import { InMemoryReviewRepository } from '../../src/server/repositories/in-memory-review-repository.js';
 import { generateSignatureHeaders } from '../../src/server/security/signature.js';
 import type { FastifyInstance } from 'fastify';
+import type { IngestionTask } from '../../src/server/domain/ingestion.js';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
 
@@ -505,6 +506,107 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
     // The sanitized GET response did not mutate the stored task.
     const storedTaskAgain = await repository.findById(ingestionId);
     expect(storedTaskAgain!.raw_candidate!.fields['contact']).toEqual(contactArray);
+  });
+
+  it('P0-01C: GET response redacts nested sensitive child key under contact parent (parent mode wins) without mutating stored evidence', async () => {
+    const { app, repository, reviewRepository } = await setup();
+    const ingestionId = await createTask(app);
+    // Candidate carries a nested object under the `wechat` contact key
+    // whose child key (`content`) would normally select content redaction
+    // (phone-only). Parent contact mode must be authoritative so the
+    // non-phone WeChat ID is masked via redactContactValue instead of
+    // leaking through redactContent. `contact` stays a valid phone so the
+    // Pipeline succeeds and a review record is created.
+    const nestedWechat = { content: 'wechat_secret_01' };
+    const payload = makeCandidatePayload({
+      wechat: nestedWechat,
+    });
+
+    const callbackResponse = await postCandidate(app, ingestionId, payload);
+    expect(callbackResponse.statusCode).toBe(200);
+
+    const getResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/ingestions/${ingestionId}`,
+    });
+    expect(getResponse.statusCode).toBe(200);
+
+    const serialized = getResponse.body;
+    // The original WeChat ID must not appear anywhere in the response.
+    expect(serialized).not.toContain('wechat_secret_01');
+    // The masked form (first/last 2 chars, middle replaced with *) is present.
+    expect(serialized).toContain('we************01');
+
+    // Repository storage retains the original nested object under the raw
+    // English key (`wechat` is an unknown Candidate field, so it is kept
+    // verbatim in raw_candidate and dropped from canonical mappedFields).
+    const storedTask = await repository.findById(ingestionId);
+    expect(storedTask).not.toBeNull();
+    expect(storedTask!.raw_candidate!.fields['wechat']).toEqual(nestedWechat);
+
+    // Review record retains raw Candidate under validation.rawCandidate.
+    const review = await reviewRepository.findByIngestionId(ingestionId);
+    expect(review).not.toBeNull();
+    const validation = review!.validation as Record<string, unknown>;
+    const rawCandidate = validation['rawCandidate'] as { fields: Record<string, unknown> };
+    expect(rawCandidate.fields['wechat']).toEqual(nestedWechat);
+
+    // The sanitized GET response did not mutate the stored task.
+    const storedTaskAgain = await repository.findById(ingestionId);
+    expect(storedTaskAgain!.raw_candidate!.fields['wechat']).toEqual(nestedWechat);
+  });
+
+  it('P0-04: GET response preserves structural ingestion_id byte-for-byte while retaining PII redaction', async () => {
+    const { app, repository } = await setup();
+    // Deterministic ID that previously failed: it contains an 11-digit
+    // substring `19181507170` matching `1[3-9]\d{9}`, so the default
+    // redactPhone() branch mutated it to `ing_2e0428903925****7170127599`.
+    // isStructuralId() now preserves it byte-for-byte (TASK-002 P0-04).
+    const deterministicId = 'ing_2e042890392546c19181507170127599';
+    const phoneInContent = '你好我的手机是13800138000';
+    const now = new Date().toISOString();
+    const task: IngestionTask = {
+      ingestion_id: deterministicId,
+      idempotency_key: 'idem_p0_04',
+      status: 'received',
+      source_system: 'feishu_form',
+      source_record_id: 'rec_001',
+      source_type: 'chat_text',
+      target_domain: 'customer_consultation',
+      content: phoneInContent,
+      submitted_at: now,
+      timezone: 'Asia/Shanghai',
+      submitted_by: 'operator_1',
+      dry_run: true,
+      attempt_count: 0,
+      warnings: [],
+      errors: [],
+      duplicate_candidates: [],
+      created_at: now,
+      updated_at: now,
+    };
+    await repository.save(task);
+
+    const getResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/ingestions/${deterministicId}`,
+    });
+    expect(getResponse.statusCode).toBe(200);
+
+    const serialized = getResponse.body;
+    // The structural ingestion_id must be present byte-for-byte.
+    expect(serialized).toContain(`"ingestion_id":"${deterministicId}"`);
+    // The mutated form observed in the GPT re-review must NOT appear.
+    expect(serialized).not.toContain('ing_2e0428903925****7170127599');
+    // PII redaction is retained: the phone number in `content` is masked.
+    expect(serialized).not.toContain('13800138000');
+    expect(serialized).toContain('138****8000');
+
+    // Repository storage retains the original ID and content unchanged.
+    const storedTask = await repository.findById(deterministicId);
+    expect(storedTask).not.toBeNull();
+    expect(storedTask!.ingestion_id).toBe(deterministicId);
+    expect(storedTask!.content).toBe(phoneInContent);
   });
 });
 

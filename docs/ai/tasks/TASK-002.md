@@ -2,7 +2,7 @@
 
 ## Status
 
-P0 FIX PARTIALLY ACCEPTED — P0-01 CONTACT CONTEXT LEAK REMAINS
+P0-01C + P0-04 FIX APPLIED — AWAITING GPT RE-REVIEW OF NEW COMMIT
 
 ## Stage
 
@@ -189,6 +189,15 @@ Gate A + Gate C-Core 回归（2026-07-18，Phase 3B / TASK-002 最终验证）�
 - Fix packet: `docs/ai/reviews/TASK-002_GPT_REVIEW.md` 的 “2026-07-18 Re-review — Commit `9dc7817`”。
 - TASK-003: `NOT STARTED — BLOCKED BY TASK-002 P0-01`
 
+### 2026-07-18 — GPT Re-review of Commit `69ce7d5`
+
+- Verdict: `MVP_FAIL`.
+- Accepted: the exact mixed phone+WeChat and direct contact-array reproductions are fixed; pure phone/pure WeChat rules remain; P0-02/P0-03 remain accepted.
+- P0-01C: inherited contact mode is overridden by nested sensitive child keys. Built reproductions for `contact.content`, `contact.phone`, `contact.mobile`, and `联系方式.原始文本` all leaked `wechat_secret_01`.
+- P0-04: default redaction can mutate structural IDs. Fresh `test:integration` failed 34/35 when GET changed a generated `ingestion_id`; the fixed failing ID reproduces deterministically against the built redactor.
+- Fix packet: `docs/ai/reviews/TASK-002_GPT_REVIEW.md`, section “2026-07-18 Re-review — Commit `69ce7d5`”.
+- TASK-003: `NOT STARTED — BLOCKED BY TASK-002 P0 FIX`.
+
 ### 2026-07-18 — Trae P0-01 Residual Fix Applied
 
 - 基线：Commit `9dc7817`（GPT re-review MVP_FAIL，仅 P0-01 残项阻塞）
@@ -215,3 +224,35 @@ Gate A + Gate C-Core 回归（2026-07-18，Phase 3B / TASK-002 最终验证）�
 - 根因：`redactContactValue()` 检测到手机号后提前返回，未继续处理同值中的微信 ID；`redactValueDeep()` 遍历数组时未继承父 `contact`/`联系方式` 敏感上下文。
 - Fix packet: `docs/ai/reviews/TASK-002_GPT_REVIEW.md` 的 “2026-07-18 Re-review — Commit `09f12fa`”。
 - TASK-003: `NOT STARTED — BLOCKED BY TASK-002 P0-01`
+
+### 2026-07-18 — Trae P0-01C + P0-04 Fix Applied
+
+- 基线：Commit `69ce7d5`（GPT re-review MVP_FAIL，P0-01C 与 P0-04 阻塞）
+- 范围：仅修复 `docs/ai/reviews/TASK-002_GPT_REVIEW.md` 中 2026-07-18 Re-review — Commit `69ce7d5` fix packet 定义的 P0-01C（父级 contact mode 优先级）与 P0-04（结构化 ID 逐字节保留）；不修改 P0-02/P0-03，不启动 TASK-003，不做无关重构。
+- **P0-01C 修复**（父级 contact mode 对所有后代字符串保持最高优先级）：
+  - `src/server/security/redaction.ts` `redactValueDeep` 直接字符串分支重构：父 `mode === 'contact'` 时一律 `redactContactValue(v)`，父 `mode === 'content'` 时一律 `redactContent(v)`，嵌套 `content`/`phone`/`mobile`/`原始文本` 子键不再降级继承的 contact/content 模式。
+  - `RedactionMode` 与 `redactValueDeep` 文档注释同步更新，明确“Parent contact/content mode is authoritative for all descendant strings; nested sensitive child keys must not downgrade it (TASK-002 P0-01C)”。
+- **P0-04 修复**（GET 响应中的结构化 ID 逐字节保持不变）：
+  - `src/server/security/redaction.ts` 新增 `STRUCTURAL_ID_PATTERN` 正则常量 + `isStructuralId(value)` 函数，覆盖 4 种结构化 ID 形态：`<alpha>_<alphanumeric>` 前缀不透明 ID（`ing_<hex>`、`rec_001`、`reviewer_1`）、32 字符 hex（ingestion_id 主体）、64 字符 hex（SHA-256 幂等键）、规范 UUID（含连字符）。
+  - `redactValueDeep` 顶层字符串分支与对象内字符串分支在 default mode 下优先调用 `isStructuralId(v)`，匹配则原样返回，短路 `redactPhone` 扫描，避免 `ing_2e042890392546c19181507170127599` 中的 11 位数字片段 `19181507170` 被误掩码。
+  - 自由文本（含空格/CJK/多个下划线分隔 token）不匹配 `STRUCTURAL_ID_PATTERN`，因此嵌入在非敏感自由文本字段中的手机号仍在响应边界被掩码。
+- **清理**：移除 `isSensitiveKey` 函数（P0-01C 重构后不再使用；TypeScript `noUnusedLocals` 报错 TS6133）。
+- **单元测试**（`tests/unit/security/redaction.test.ts` 新增 18 个测试，总计 51 个）：
+  - P0-01C（9 个）：父 contact mode 覆盖 nested `content`/`phone`/`mobile`/`原始文本`/`联系方式` 子键、数组传播、真实 phone 仍被掩码、父 content mode 对称覆盖、输入非变异。
+  - P0-04（9 个）：失败 ID `ing_2e042890392546c19181507170127599` 逐字节保留、32 字符 hex、canonical UUID、SHA-256、`rec_001`/`reviewer_1`/`run_001` 前缀 ID、free-text 中 phone 仍掩码、纯 phone 仍掩码、数组中 ID 保留、输入非变异。
+- **HTTP 回归测试**（`tests/integration/ingestions.test.ts` 新增 2 个测试，总计 20 个）：
+  - P0-01C：`wechat: { content: 'wechat_secret_01' }` 经签名 callback 入库 → GET 响应不含 `wechat_secret_01`、含 `we************01`；`repository.raw_candidate.fields.wechat` 与 `review.validation.rawCandidate.fields.wechat` 保持原值；GET 不修改存储。
+  - P0-04：通过 `repository.save()` 注入 `ingestion_id: 'ing_2e042890392546c19181507170127599'` 的任务 → GET 响应含 `"ingestion_id":"ing_2e042890392546c19181507170127599"` 逐字节不变、不含 `ing_2e0428903925****7170127599`；`content` 中的手机号 `13800138000` 仍被掩码为 `138****8000`；repository 存储 ID 与 content 保持原值。
+- **Gate A + Gate C-Core 回归**：全部命令退出码 0。
+  - `npm ci` exit 0（up to date in 3s）
+  - `npm run audit:legacy` exit 0（62 modules）
+  - `npm run typecheck` exit 0
+  - `npm run lint` exit 0
+  - `npm run test` exit 0（301 passed，28 test files，新增 20 个测试：18 单元 + 2 HTTP 集成）
+  - `npm run test:integration` exit 0（37 passed，3 test files，新增 2 个 HTTP 回归）
+  - `npm run test:coverage` exit 0（All files Lines 85.6% / Branches 82.26% / Funcs 88.73%；redaction.ts Lines 97.43% / Branches 88.73% / Funcs 100%）
+  - `npm run build` exit 0
+  - `npm run evaluate` exit 0（Gate C-Core 50/50 PASS，4 项核心指标 100%）
+  - `git diff origin/main -- src/data-cleaning` 无输出（Legacy 源码零修改）
+  - `git diff --check` exit 0
+- TASK-003：`NOT STARTED — BLOCKED BY TASK-002 GPT RE-REVIEW OF NEW COMMIT`
