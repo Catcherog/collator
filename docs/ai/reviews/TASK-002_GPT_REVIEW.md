@@ -1,4 +1,17 @@
-# TASK-002 GPT Review — Commit `94f0199`
+# TASK-002 GPT Review — Current Verdict and History
+
+## Current Review Status
+
+- Current reviewed commit: `0f0f63d`
+- Current verdict: `MVP_PASS`
+- TASK-002: `DONE — CLOSED`
+- TASK-003 review gate: released; TASK-003's own real-write and migration gates still apply.
+
+The sections below preserve the chronological review/fix history. The authoritative latest decision is “2026-07-18 — GPT Re-review of Commit `0f0f63d`”.
+
+---
+
+## Initial Review — Commit `94f0199`
 
 ## Verdict
 
@@ -429,6 +442,47 @@ Fix only P0-01C, P0-04, and their direct regressions. Do not modify P0-02/P0-03,
 ### 下一步
 
 提交新 commit 并 push 到 `origin/phase/3-feishu-integration`，交 GPT 基于 new commit 复核。复核通过前不得启动 TASK-003。
+
+---
+
+## 2026-07-18 — GPT Re-review of Commit `0f0f63d`
+
+### Verdict
+
+`MVP_PASS`
+
+P0-01D and P0-04B are accepted. P0-02 and P0-03 remain accepted. No P0 blocker or new P1 debt was found in the focused re-review, so TASK-002 is closed and the TASK-003 review gate is released.
+
+### Review baseline
+
+- Branch: `phase/3-feishu-integration`
+- Head: `0f0f63dae2ca7a92ef477717f2aa06794e5234ea`
+- Remote: `origin/phase/3-feishu-integration` resolved to the same commit.
+- Scope: commit `976fa6c..0f0f63d`, limited to P0-01D, P0-04B, and direct regressions.
+
+### Accepted findings
+
+- **P0-01D — ACCEPTED**: `resolveRedactionMode()` enforces `contact > content > default`; inherited contact cannot downgrade, and a nested contact/联系方式/wechat/微信 key beneath content upgrades descendants to contact mode.
+- **P0-04B — ACCEPTED**: default-mode structural IDs are preserved only when the current key is one of the seven trusted response-contract ID keys and the value matches `STRUCTURAL_ID_PATTERN`. Unknown Candidate/evidence values such as `note_13900139000` continue through phone redaction.
+- Stored `raw_candidate` and review evidence remain unchanged; redaction is applied at the response boundary.
+
+### Fresh independent verification
+
+| Check | Result |
+|---|---|
+| `npx vitest run tests/unit/security/redaction.test.ts tests/integration/ingestions.test.ts` | exit 0; 77/77 passed (55 unit + 22 integration) |
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0 |
+| `git diff --check` | exit 0 |
+| `git diff origin/main -- src/data-cleaning` | exit 0; no output |
+
+Trae's committed final Gate record additionally reports `test:coverage` 307/307, All files Lines 85.77%, `redaction.ts` Lines 100%, build exit 0, and Gate C-Core evaluate 50/50 with all four metrics at 100%. Those full-suite results were not redundantly rerun during this focused re-review.
+
+### Gate decision
+
+- Gate E: `PASSED` for TASK-002 scope.
+- TASK-002: `DONE — CLOSED`.
+- TASK-003: may start under its own accepted task scope. Real writes, migration, and production execution remain subject to TASK-003's explicit gates and user authority.
 
 ---
 

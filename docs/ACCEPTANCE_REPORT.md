@@ -1033,3 +1033,17 @@ repository / review 原始证据均保持不变，GET 不修改存储。可信�
 新 commit 待 push 到 `origin/phase/3-feishu-integration` 后交 GPT 基于 new commit 复核。复核通过前不得启动 TASK-003。P0-02/P0-03 保持 accepted。
 
 > 整体状态：PHASE_3B_TASK_002_REDACTION_INVARIANT_CLOSURE_FIX_APPLIED_AWAITING_GPT_RE_REVIEW
+
+---
+
+## Phase 3B / TASK-002 GPT Re-review — Commit `0f0f63d`（2026-07-18）
+
+- **Verdict**：`MVP_PASS`
+- **Git baseline**：本地 HEAD 与 `origin/phase/3-feishu-integration` 均为 `0f0f63dae2ca7a92ef477717f2aa06794e5234ea`。
+- **P0-01D**：ACCEPTED。`contact > content > default` 单调敏感度与 content 下 contact 语义升级成立。
+- **P0-04B**：ACCEPTED。可信合同 ID key + ID value 形态双条件成立；未知 Candidate/evidence 的 `<prefix>_<phone>` 不再放行。
+- **本次独立验证**：targeted unit + HTTP integration 77/77；typecheck、lint、`git diff --check` 均 exit 0；Legacy diff empty。
+- **全 Gate 证据引用**：commit 中已记录 test:coverage 307/307、Lines 85.77%、redaction.ts Lines 100%、build exit 0、evaluate 50/50（4 metrics 100%）；本次聚焦复核未重复运行 coverage/evaluate。
+- **结论**：Gate E 在 TASK-002 范围内 PASSED；TASK-002 关闭；TASK-003 review gate 解除，但真实写入/迁移仍受 TASK-003 自身 gate 与用户权限约束。
+
+> 整体状态：PHASE_3B_TASK_002_MVP_PASS_CLOSED

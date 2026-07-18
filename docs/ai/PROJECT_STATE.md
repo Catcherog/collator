@@ -2,23 +2,23 @@
 
 ## Current Stage
 
-Phase 3B（TASK-002 Redaction Invariant Closure fix applied；等待 GPT 基于 new commit 复核；不可启动 TASK-003）
+Phase 3B（TASK-002 Redaction Invariant Closure 已通过 GPT 复核；TASK-003 可按已接受范围启动）
 
-- 状态：`DONE — AWAITING_GPT_RE_REVIEW` — Trae 按用户批准的单批次执行计划 `docs/ai/plans/TASK-002_REDACTION_INVARIANT_CLOSURE_EXECUTION_PLAN.md` 完成 P0-01D（redaction mode 单调敏感度）+ P0-04B（context-aware structural ID 保留）+ 直接反例；targeted TDD red→green 已记录；最终 Gate A + Gate C-Core 一次性全套通过；新 commit 待 push 后交 GPT 复核。P0-02/P0-03 保持 accepted。TASK-003 保持阻塞。
+- 状态：`DONE — CLOSED (MVP_PASS)` — GPT 已基于 commit `0f0f63d` 聚焦复核并接受 P0-01D + P0-04B；P0-02/P0-03 保持 accepted。独立 targeted unit + HTTP integration 77/77、typecheck、lint、diff checks 通过；TASK-003 review gate 已解除。
 - Planning Review：APPROVED_WITH_REQUIRED_CHANGES（Phase 2 Planning Correction 已完成）
 - 当前分支：phase/3-feishu-integration
 - 验收基线 Commit：`0ef131c`（Phase 3 preparation commit）
 - 上一次 Commit：`976fa6c`（TASK-002 P0-01C + P0-04 fix；GPT re-review verdict: `MVP_FAIL`，P0-01D + P0-04B 阻塞）
-- 当前 Commit：待 push（Redaction Invariant Closure: P0-01D + P0-04B fix；等待 GPT re-review）
+- 当前 Commit：`0f0f63d`（已 push；TASK-002 GPT re-review verdict: `MVP_PASS`）
 - 当前版本：v1.0
 
 ## Current Milestone
 
-Phase 3 飞书集成 / TASK-002 Redaction Invariant Closure（P0-01D + P0-04B）修复完成，等待 GPT re-review
+Phase 3 飞书集成 / TASK-002 已关闭；准备启动 TASK-003（写入日志仓库 + 业务主表写入）
 
 ## In Progress
 
-- Trae 已完成 Redaction Invariant Closure 单批次执行（P0-01D + P0-04B）：targeted TDD red（5 failed | 50 passed）→ green（单元 55/55、集成 22/22、联合 77/77）→ 最终 Gate A + Gate C-Core 一次性全套通过（typecheck/lint/audit:legacy/test:coverage 307 passed/build/evaluate 50/50/Legacy diff empty/git diff --check exit 0）。`server/security/redaction.ts` 实现 Invariant A（`contact > content > default` 单调敏感度，inherited content 下嵌套 contact key 升级）+ Invariant B（7 个可信响应合同 ID 字段集合 + value 形态匹配双条件）。新 commit 待 push 后交 GPT 基于 new commit 复核。TASK-003 保持阻塞。P0-02/P0-03 保持 accepted。
+- TASK-002 已在 commit `0f0f63d` 获得 GPT `MVP_PASS`。P0-01D/P0-04B 与 P0-02/P0-03 全部 accepted；Gate E 在 TASK-002 范围内通过。下一执行单元为 TASK-003，必须沿用其既定范围与真实写入 gate。
 
 ## Recently Completed
 
@@ -39,10 +39,9 @@ Phase 3 飞书集成 / TASK-002 Redaction Invariant Closure（P0-01D + P0-04B）
 
 ## Next Priorities
 
-1. **Push 新 commit 到 `origin/phase/3-feishu-integration`**：Redaction Invariant Closure fix 已完成本地全套验证，push 后交 GPT 基于 new commit 复核。复核通过前 TASK-003 保持阻塞。
+1. **启动 TASK-003**：读取/确认 TASK-003 的 Objective、In Scope、写入 gate 与停止条件，按较大但有边界的执行包推进写入日志仓库 + 业务主表写入。
 2. 配置 Dify 环境与凭据（DEBT-001），解锁 Gate C-LLM 真实 LLM 联调。
-3. 启动 TASK-003（写入日志仓库 + 业务主表写入），完成后整体通过 Gate D 飞书集成验收。
-4. 后续按 Phase 推进流程进入 Phase 5（部署）、Phase 6（展示证据）。
+3. TASK-003 完成并通过 Gate D 后，按 Phase 推进流程进入 Phase 5（部署）、Phase 6（展示证据）。
 
 ## Roadmap
 
@@ -78,15 +77,15 @@ Phase 3 飞书集成 / TASK-002 Redaction Invariant Closure（P0-01D + P0-04B）
 - ~~TASK-001 P0-01~~：RESOLVED（2026-07-17）— `FeishuClient.callWithRetry` 现在识别飞书业务错误码 `code=99991663`（即使在 HTTP 200 路径上），触发单次 token 刷新 + 重试；新增 3 个单元测试覆盖重试成功、不二次重试、非 token 错误不触发刷新。
 - ~~TASK-001 P0-02~~：RESOLVED（2026-07-18，Commit `1217942`）— `docs/ACCEPTANCE_REPORT.md:291` 已改为 `<FEISHU_INGESTION_TABLE_ID>`；GPT 对目标两文件及整个提交树运行三个运行表真实 ID 的 `git grep`，均为 0 匹配。
 - ~~TASK-002 P0-01C~~：ACCEPTED（2026-07-18，Commit `976fa6c` GPT re-review）— contact parent 对 nested `content`/`phone`/`mobile`/`原始文本` 保持权威，原四类复现已修复。
-- **TASK-002 P0-01D**：FIX_APPLIED_AWAITING_RE_REVIEW（2026-07-18，Redaction Invariant Closure fix）— `resolveRedactionMode` 实现单调敏感度 `contact > content > default`，inherited content 下嵌套 contact/联系方式/wechat/微信 key 升级为 contact mode；targeted TDD red→green + HTTP 回归证明 `content: { contact: 'wechat_secret_01' }` 在 GET 响应中被脱敏为 `we************01`。等待 GPT 基于 new commit 复核。
-- **TASK-002 P0-04B**：FIX_APPLIED_AWAITING_RE_REVIEW（2026-07-18，Redaction Invariant Closure fix）— `TRUSTED_STRUCTURAL_ID_KEYS` Set + `isTrustedStructuralIdKey(lower)` + `trustedStructuralIdContext` 双条件保留；Candidate `fields`/`evidence` 中的 `<prefix>_<phone>` 不再被 value-only 规则放行；targeted TDD red→green + HTTP 回归证明 `note_13900139000`/`proof_13700137000` 被掩码为 `note_139****9000`/`proof_137****7000`，可信合同 ID 仍逐字节保留。等待 GPT 基于 new commit 复核。
+- ~~TASK-002 P0-01D~~：RESOLVED（GPT `MVP_PASS`, commit `0f0f63d`）。
+- ~~TASK-002 P0-04B~~：RESOLVED（GPT `MVP_PASS`, commit `0f0f63d`）。
 - ~~TASK-002 P0-02~~：RESOLVED（2026-07-18，P0 修复 commit）— `IngestionTask.raw_candidate` 深拷贝原始 Candidate；`review.validation.rawCandidate` 复用飞书 JSON 列保留原始证据；mapper warning sanitization 切断 PII 通过 warning 字段泄露路径。
 - ~~TASK-002 P0-03~~：RESOLVED（2026-07-18，P0 修复 commit）— `IngestionTask.pipeline_evidence` 持久化完整 Pipeline 证据（pipelineVersion/stages/validation/corrections/warnings/errors/qualityReport/success）；成功与失败路径均写入；mapper warnings 与 Pipeline warnings 严格区分。
 - 未配置 Dify 环境与凭据（`DIFY_BASE_URL`、`DIFY_WORKFLOW_API_KEY`、`DIFY_WORKFLOW_ID`）— 见 DEBT-001。阻塞 Gate C-LLM 真实 LLM 联调。
 - 飞书测试 Base 凭据与表结构 **部分已配置**（TASK-001 + TASK-002）：`FEISHU_APP_ID` / `FEISHU_BASE_APP_TOKEN` / `FEISHU_INGESTION_TABLE_ID` / `FEISHU_REVIEW_TABLE_ID` / `FEISHU_WRITE_LOG_TABLE_ID` / `FEISHU_CUSTOMER_TABLE_ID` 已写入 `.env`；`FEISHU_APP_SECRET` 占位为 `replace_me`，生产部署时需通过环境变量或密钥管理器注入，不写入文件。Gate D 飞书集成验收仍需 TASK-003（写入日志仓库 + 业务主表写入）完成。
-- **TASK-002 GPT 复核**：Commit `976fa6c` 结论 `MVP_FAIL`（P0-01D + P0-04B）。Trae 已按 Redaction Invariant Closure 单批次执行计划完成修复 + 直接反例 + 最终 Gate A + Gate C-Core；新 commit 待 push 后交 GPT 基于 new commit 复核。复核通过前不得启动 TASK-003。
+- **TASK-002 GPT 复核**：Commit `0f0f63d` 结论 `MVP_PASS`；TASK-002 已关闭，TASK-003 review gate 已解除。
 
-> 注：Dify/飞书凭据属于外部环境阻塞；TASK-002 的 GPT 复审属于当前流程阻塞，必须通过后才能合并或启动 TASK-003。它们不改变已通过的 Phase 2F Gate C-Core 确定性数据质量结果。
+> 注：Dify/飞书凭据仍属于外部环境边界；TASK-002 GPT 复审已通过。它们不改变已通过的 Phase 2F Gate C-Core 确定性数据质量结果。
 
 ## Known Risks
 
@@ -97,7 +96,7 @@ Phase 3 飞书集成 / TASK-002 Redaction Invariant Closure（P0-01D + P0-04B）
 
 ## Last Updated
 
-2026-07-18（Trae Redaction Invariant Closure fix applied for P0-01D + P0-04B; targeted TDD red→green recorded; final Gate A + Gate C-Core all exit 0; new commit awaiting push + GPT re-review; TASK-003 blocked）
+2026-07-18（GPT re-review of commit `0f0f63d`: `MVP_PASS`; TASK-002 closed; TASK-003 review gate released）
 
 ---
 
@@ -155,8 +154,8 @@ Phase 3 飞书集成 / TASK-002 Redaction Invariant Closure（P0-01D + P0-04B）
 | B | API 合同 | PASSED | `docs/API_CONTRACT.md`（含 §6 Candidate 字段映射章节）+ 14 项集成测试覆盖全部 V1 接口 |
 | C-Core | 数据质量（确定性） | PASSED | Phase 2F + Phase 3B Redaction Invariant Closure fix 后回归：50/50 case 通过，4 项核心指标 100%（field_accuracy 132/132, required_field_recall 91/91, enum_precision 33/33, error_interception_rate 1/1） |
 | C-LLM | 数据质量（LLM 语义） | BLOCKED_EXTERNAL_ENV | 未配置 Dify 凭据（见 DEBT-001）|
-| D | 飞书集成 | IN_PROGRESS | TASK-001 已完成；TASK-002 Redaction Invariant Closure fix 已应用，等待 GPT 基于 new commit 复核；TASK-003 未启动。|
-| E | 安全隐私 | FIX_APPLIED_AWAITING_RE_REVIEW | Trae 已按 Redaction Invariant Closure 单批次修复 P0-01D + P0-04B；targeted TDD red→green + 2 个 HTTP 回归证明 `content.contact` 微信 ID 与未知字段 `<prefix>_<phone>` 不再泄露，可信合同 ID 仍逐字节保留。等待 GPT 基于 new commit 复核。 |
+| D | 飞书集成 | IN_PROGRESS | TASK-001/TASK-002 已完成；TASK-003 可按已接受范围启动。|
+| E | 安全隐私 | PASSED | Commit `0f0f63d` GPT re-review `MVP_PASS`；P0-01D/P0-04B accepted，P0-02/P0-03 保持 accepted。 |
 | F | 部署运行 | NOT_STARTED | 无 Dockerfile（Phase 5/6） |
 | G | 展示证据 | NOT_STARTED | 无运行证据（待 Docker/部署后补充） |
 

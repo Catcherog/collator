@@ -2,7 +2,7 @@
 
 ## Status
 
-DONE — AWAITING_GPT_RE_REVIEW (Redaction Invariant Closure: P0-01D + P0-04B fix applied)
+DONE — CLOSED (`MVP_PASS` at commit `0f0f63d`)
 
 ## Stage
 
@@ -156,8 +156,8 @@ Gate A + Gate C-Core 回归（2026-07-18，Phase 3B / TASK-002 最终验证）�
 
 ### 下一步
 
-- 等待 GPT 基于 P0 修复 commit 复审；通过前不得启动 TASK-003。
-- GPT 复审判定 `MVP_PASS` 或 `MVP_PASS_WITH_DEBT` 后启动 TASK-003（写入日志仓库 + 业务主表写入）。
+- TASK-002 已在 commit `0f0f63d` 获得 `MVP_PASS` 并关闭。
+- 启动 TASK-003（写入日志仓库 + 业务主表写入）前，先确认其独立任务范围、真实写入 gate 与停止条件。
 
 ## Review History
 
@@ -213,6 +213,16 @@ Gate A + Gate C-Core 回归（2026-07-18，Phase 3B / TASK-002 最终验证）�
 - **Gate A + Gate C-Core 回归**：全部命令退出码 0；测试 271 passed（28 test files，新增 11 个测试：6 redactWechatId + 4 redactObject 递归 + 1 HTTP 集成）；集成测试 33 passed（3 test files，新增 1 个 HTTP 集成回归）；All files Lines 85.44% / Branches 82.13% / Funcs 88.63%；关键模块 Lines 全部 ≥80%（redaction.ts 100% / Branch 90.47%, ingestion-service 96.88%, mapping 100%, repository-factory 100%, feishu-review-repository 86.66%, feishu-task-repository 91.2%, feishu-client 95.62%, cleaning-pipeline 100%）；Gate C-Core PASS（50/50 case，4 项核心指标 100%）；`git diff origin/main -- src/data-cleaning` 无输出；`git diff --check` 退出码 0；`npm run audit:legacy` 退出码 0（62 modules）。
 - **HTTP 安全复现**：`wechat_secret_01` 在 GET 响应中被脱敏为 `we************01`，repository/review 原始证据保持不变。
 - TASK-003：`NOT STARTED — BLOCKED BY TASK-002 GPT RE-REVIEW OF NEW COMMIT`
+
+### 2026-07-18 — GPT Re-review of Commit `0f0f63d`
+
+- Verdict: `MVP_PASS`.
+- P0-01D: ACCEPTED — `contact > content > default` is monotonic; nested contact semantics beneath content upgrade to contact mode without mutating stored evidence.
+- P0-04B: ACCEPTED — structural-ID preservation requires both a trusted contract ID key and a matching ID value shape; attacker-controlled Candidate/evidence values no longer bypass phone redaction.
+- Fresh independent verification: targeted unit + HTTP integration `77/77` passed; `npm run typecheck` exit 0; `npm run lint` exit 0; `git diff --check` exit 0; Legacy diff empty.
+- Trae-recorded final Gate evidence remains: `test:coverage` 307/307, Lines 85.77%, `redaction.ts` Lines 100%, build exit 0, evaluate 50/50 with four metrics at 100%.
+- P0-02/P0-03 remain accepted. No new P0 or P1 was found in the focused re-review.
+- TASK-002 review gate is closed. TASK-003 may start under its own accepted scope; this verdict does not authorize real production writes or migration outside TASK-003 gates.
 
 ### 2026-07-18 — GPT Re-review of Commit `09f12fa`
 
