@@ -9,6 +9,40 @@ export function redactPhone(value: string): string {
   });
 }
 
+/**
+ * Redact a WeChat ID while preserving its first and last two characters.
+ * Middle characters are replaced with `*`. IDs of length 4 or less must
+ * never be returned as-is; they are fully masked.
+ *
+ * Rule source: `docs/PHASE2_DATA_CONTRACTS.md` §5.
+ */
+export function redactWechatId(value: string): string {
+  if (typeof value !== 'string') return value;
+  if (value.length === 0) return value;
+  if (value.length <= 4) {
+    return '*'.repeat(value.length);
+  }
+  const head = value.slice(0, 2);
+  const tail = value.slice(-2);
+  const middle = '*'.repeat(value.length - 4);
+  return `${head}${middle}${tail}`;
+}
+
+/**
+ * Redact a contact-string value that may carry a phone number or a
+ * non-phone WeChat ID. Phone numbers are masked first; if no phone pattern
+ * was found the value is treated as a WeChat ID and masked with
+ * `redactWechatId`. This ensures both `13800138000` and
+ * `wechat_secret_01` are masked under the same contact key.
+ */
+function redactContactValue(value: string): string {
+  const phoneRedacted = redactPhone(value);
+  if (phoneRedacted !== value) {
+    return phoneRedacted;
+  }
+  return redactWechatId(value);
+}
+
 export function redactContent(value: string, maxLength: number = 200): string {
   if (typeof value !== 'string') return value;
   let redacted = redactPhone(value);
@@ -49,8 +83,13 @@ function isSensitiveKey(lower: string, sensitiveKeys: string[]): boolean {
  *
  * - Plain objects and arrays are traversed element-wise (returning fresh
  *   copies so the stored task is never mutated).
- * - String values under a sensitive key are redacted with `redactPhone` (or
- *   `redactContent` for raw-text keys).
+ * - String values under a raw-text key (`content` / `原始文本`) are
+ *   redacted with `redactContent`.
+ * - String values under a WeChat/contact key (`wechat` / `微信` /
+ *   `联系方式` / `contact`) are redacted with `redactContactValue`,
+ *   which masks both phone numbers and non-phone WeChat IDs.
+ * - String values under other sensitive keys (e.g. `phone` / `mobile`)
+ *   are redacted with `redactPhone`.
  * - All other string values pass through `redactPhone` so a phone number
  *   embedded under a non-sensitive key (e.g. `evidence.budget`) is still
  *   masked at the response boundary.
@@ -69,10 +108,18 @@ function redactValueDeep(value: unknown, sensitiveKeys: string[]): unknown {
       const lower = key.toLowerCase();
       const v = source[key];
       if (typeof v === 'string' && isSensitiveKey(lower, sensitiveKeys)) {
-        result[key] =
-          lower.includes('content') || lower.includes('原始文本')
-            ? redactContent(v)
-            : redactPhone(v);
+        if (lower.includes('content') || lower.includes('原始文本')) {
+          result[key] = redactContent(v);
+        } else if (
+          lower.includes('wechat') ||
+          lower.includes('微信') ||
+          lower.includes('联系方式') ||
+          lower.includes('contact')
+        ) {
+          result[key] = redactContactValue(v);
+        } else {
+          result[key] = redactPhone(v);
+        }
       } else {
         result[key] = redactValueDeep(v, sensitiveKeys);
       }
@@ -84,7 +131,16 @@ function redactValueDeep(value: unknown, sensitiveKeys: string[]): unknown {
 
 export function redactObject(
   obj: Record<string, unknown>,
-  sensitiveKeys: string[] = ['phone', '联系方式', 'mobile', 'wechat', '微信', 'content', '原始文本']
+  sensitiveKeys: string[] = [
+    'phone',
+    '联系方式',
+    'contact',
+    'mobile',
+    'wechat',
+    '微信',
+    'content',
+    '原始文本',
+  ]
 ): Record<string, unknown> {
   return redactValueDeep(obj, sensitiveKeys) as Record<string, unknown>;
 }

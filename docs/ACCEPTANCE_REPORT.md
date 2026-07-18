@@ -534,3 +534,98 @@ GPT 基于 Commit `94f0199` 复审 TASK-002 时发现 3 个 P0，Trae 按修复�
 - **Gate D 飞书集成**：需待 TASK-003（写入日志仓库 + 业务主表写入）完成才能整体通过。
 
 > 整体状态：PHASE_3B_TASK_002_P0_FIX_APPLIED_AWAITING_GPT_REVIEW
+
+---
+
+## Phase 3B / TASK-002 GPT Re-review of Commit `9dc7817`（2026-07-18）
+
+### 结论
+
+- **Verdict：`MVP_FAIL`**
+- **P0-02：ACCEPTED** — 原始 Candidate 证据与未知字段已独立、持久化保留。
+- **P0-03：ACCEPTED** — 成功/失败路径的完整 Pipeline 证据已持久化。
+- **P0-01：PARTIALLY FIXED / STILL BLOCKING** — 手机号、递归对象/数组及 warning phone/path 脱敏通过；非手机号微信 ID 仍从 GET 响应原样泄露。
+
+### 独立复现
+
+构建 Commit `9dc7817` 后，通过真实 Fastify inject 链路创建任务、发送带签名 Candidate（`contact: "wechat_secret_01"`），再查询 GET：
+
+```json
+{"callbackStatus":200,"getStatus":200,"wechatIdLeaked":true}
+```
+
+根因：`redactValueDeep()` 对 `wechat` / `微信` / `联系方式` 敏感键仍只调用 `redactPhone()`，非手机号微信 ID 不发生变化。该行为违反 `docs/API_CONTRACT.md` §3.2 和 `docs/PHASE2_DATA_CONTRACTS.md` 第五节。
+
+### 本次 fresh verification
+
+- `npm run typecheck`：exit 0
+- `npm run lint`：exit 0
+- `npm run test`：exit 0，260/260 passed
+- `npm run test:integration`：exit 0，32/32 passed
+- `npm run test:coverage`：exit 0，Lines 85.28% / Branches 81.95% / Functions 88.53%
+- `npm run build`：exit 0
+- `npm run evaluate`：exit 0，Gate C-Core 50/50，四项指标 100%
+- `npm run audit:legacy`：exit 0，62 modules
+- `git diff origin/main -- src/data-cleaning`：exit 0，无输出
+- `git diff --check`：exit 0
+- HTTP 微信 ID 安全复现：FAIL（`wechatIdLeaked: true`）
+
+### 下一步
+
+Trae 仅修复 `docs/ai/reviews/TASK-002_GPT_REVIEW.md` 中 2026-07-18 re-review 的 P0-01 残项并补直接测试；提交并 push 后再次交 GPT 复核。TASK-003 继续禁止启动。
+
+> 整体状态：PHASE_3B_TASK_002_MVP_FAIL_P0_01_WECHAT_REDACTION
+
+## Phase 3B / TASK-002 P0-01 残项修复结论（2026-07-18）
+
+### 范围
+
+仅修复 `docs/ai/reviews/TASK-002_GPT_REVIEW.md` 中 2026-07-18 re-review fix packet 定义的 P0-01 残项：非手机号微信 ID 仍从 `GET /v1/ingestions/:id` 原样泄露。不修改 P0-02/P0-03，不顺手重构，不启动 TASK-003。
+
+### 代码修改
+
+- `src/server/security/redaction.ts`：
+  - 新增 `redactWechatId(value)`：保留首尾各 2 字符，中间字符替换为 `*`；长度 ≤ 4 时全掩码（绝不返回原秘密）；空串原样返回。
+  - 新增私有 `redactContactValue(value)`：先 `redactPhone`，若未匹配（返回等于原值）则 fallback 到 `redactWechatId`，确保同一 contact 字段中手机号与微信 ID 都被脱敏。
+  - `redactValueDeep` 改为三分支：`content`/`原始文本` → `redactContent`；`wechat`/`微信`/`联系方式`/`contact` → `redactContactValue`；其他敏感 key → `redactPhone`。
+  - `redactObject` 默认 sensitiveKeys 新增 `contact`（修复 GPT 复审证据中 `evidence.contact` 仍泄露的根因——原列表只有中文 `联系方式`，缺英文 `contact`）。
+- `tests/unit/security/redaction.test.ts`：新增 6 个 `redactWechatId` 单测（length 16/11/5/4/3/2/1/0 全覆盖）+ 4 个 `redactObject` 递归测试（nested wechat/微信/联系方式/contact、数组、短 ID、phone 优先级）；更新现有 nested phone 测试的 `evidence.contact` 断言（contact 现在是敏感 key）。
+- `tests/integration/ingestions.test.ts`：新增 1 个 HTTP 集成回归测试 `P0-01 (residual): GET response redacts non-phone WeChat IDs under contact / 联系方式 without mutating stored evidence`。
+
+### HTTP 回归测试关键断言
+
+- POST candidate with `contact: 'wechat_secret_01'` → callback 200。
+- GET `/v1/ingestions/:id` 响应体不含 `wechat_secret_01`，含 `we************01`（head 2 + 12 masked + tail 2 = 16 chars）。
+- `repository.findById(id).raw_candidate.fields['contact']` 仍为 `'wechat_secret_01'`（原始证据不变）。
+- `repository.findById(id).candidate.fields['联系方式']` 仍为 `'wechat_secret_01'`（中文键原始证据不变）。
+- `reviewRepository.findByIngestionId(id).validation.rawCandidate.fields['contact']` 仍为 `'wechat_secret_01'`（review 原始证据不变）。
+- 再次 `repository.findById(id)` 确认 GET 不修改存储。
+
+### 工程命令执行记录
+
+| 命令 | 退出码 | 关键结果 |
+|------|--------|----------|
+| `npm run typecheck` | 0 | tsc -p tsconfig.test.json --noEmit 通过 |
+| `npm run lint` | 0 | eslint src tests scripts 通过 |
+| `npm run build` | 0 | tsc -p tsconfig.json 通过 |
+| `npm run test` | 0 | 271/271 passed（28 test files） |
+| `npm run test:integration` | 0 | 33/33 passed（3 test files，含新 P0-01 residual HTTP 回归） |
+| `npm run test:coverage` | 0 | All files Lines 85.44% / Branches 82.13% / Funcs 88.63%；redaction.ts Lines 100% / Branch 90.47%；所有关键模块 Lines ≥80% |
+| `npm run evaluate` | 0 | Gate C-Core 50/50 PASS；4 项核心指标 100%（field_accuracy 132/132、required_field_recall 91/91、enum_precision 33/33、error_interception_rate 1/1） |
+| `npm run audit:legacy` | 0 | 62 modules（SAFE 4 / UNSAFE 57 / BLOCKED 1） |
+| `git diff origin/main -- src/data-cleaning` | 0 | 无输出（Legacy 源码零修改） |
+| `git diff --check` | 0 | 仅 LF/CRLF 警告，无 whitespace 错误 |
+
+### 安全复现
+
+HTTP 复现路径现已不再泄露微信 ID：`wechat_secret_01` 在 GET 响应中被脱敏为 `we************01`，repository/review 原始证据保持不变。
+
+### 未通过项
+
+无。
+
+### 下一步
+
+提交并 push 后交 GPT 对新 commit 复核；通过后解除 TASK-003 启动门槛。
+
+> 整体状态：PHASE_3B_TASK_002_P0_01_RESIDUAL_FIX_APPLIED_AWAITING_GPT_REVIEW

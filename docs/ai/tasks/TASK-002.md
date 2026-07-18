@@ -2,7 +2,7 @@
 
 ## Status
 
-P0 FIX APPLIED — AWAITING GPT RE-REVIEW
+P0 FIX PARTIALLY ACCEPTED — P0-01 WECHAT REDACTION REMAINS
 
 ## Stage
 
@@ -179,3 +179,28 @@ Gate A + Gate C-Core 回归（2026-07-18，Phase 3B / TASK-002 最终验证）�
 - **P0-03 修复**：`src/server/domain/ingestion.ts` 新增 `pipeline_evidence?: Record<string, unknown>` 字段；`src/server/services/ingestion-service.ts` 新增 `buildPipelineEvidence` helper（结构化包含 `pipelineVersion`/`stages`/`validation`/`corrections`/`warnings`/`errors`/`qualityReport`/`success`），成功与失败路径均把 `pipeline_evidence` 写入 task；mapper warnings 与 Pipeline warnings 严格区分（mapper 在 `task.warnings` 是 `{field, code, message}`，Pipeline 在 `pipeline_evidence.warnings` 是 `string[]`）。`tests/unit/ingestion-service.test.ts` 新增 4 个测试覆盖成功路径持久化、失败路径持久化、mapper/Pipeline warnings 区分、跨新服务实例持久化。
 - **Gate A + Gate C-Core 回归**：全部命令退出码 0；测试 260 passed（28 test files，新增 24 个测试：11 redaction + 13 ingestion-service）；集成测试 32 passed（3 test files，新增 1 个 HTTP 集成测试）；All files Lines 85.28% / Branch 81.95% / Funcs 88.53%；关键模块 Lines 全部 ≥80%（redaction.ts 100%, ingestion-service 96.88%, mapping 100%, repository-factory 100%, feishu-review-repository 86.66%, feishu-task-repository 91.2%, feishu-client 95.62%, cleaning-pipeline 100%）；Gate C-Core PASS（50/50 case，4 项核心指标 100%）；`git diff origin/main -- src/data-cleaning` 无输出。
 - TASK-003：`NOT STARTED — BLOCKED BY TASK-002 GPT RE-REVIEW`
+
+### 2026-07-18 — GPT Re-review of Commit `9dc7817`
+
+- Verdict: `MVP_FAIL`
+- P0-02: `ACCEPTED` — `raw_candidate` 与 `review.validation.rawCandidate` 保留原始证据，未知字段不进入 Pipeline/normalized fields，跨实例回放证据仍在。
+- P0-03: `ACCEPTED` — 成功与 `validation_failed` 路径均持久化完整 `pipeline_evidence`，mapper/Pipeline warnings 保持区分。
+- P0-01: `PARTIALLY FIXED / STILL BLOCKING` — 递归遍历、手机号与 warning phone/path 脱敏已通过；非手机号微信 ID 仍只经过 `redactPhone()`，构建后的 HTTP 复现为 `wechatIdLeaked: true`。
+- Fix packet: `docs/ai/reviews/TASK-002_GPT_REVIEW.md` 的 “2026-07-18 Re-review — Commit `9dc7817`”。
+- TASK-003: `NOT STARTED — BLOCKED BY TASK-002 P0-01`
+
+### 2026-07-18 — Trae P0-01 Residual Fix Applied
+
+- 基线：Commit `9dc7817`（GPT re-review MVP_FAIL，仅 P0-01 残项阻塞）
+- 范围：仅修复 `docs/ai/reviews/TASK-002_GPT_REVIEW.md` 中 2026-07-18 re-review fix packet 定义的 P0-01 残项；不修改 P0-02/P0-03，不顺手重构，不启动 TASK-003。
+- **P0-01 残项修复**：
+  - `src/server/security/redaction.ts` 新增 `redactWechatId(value)`：保留首尾各 2 字符，中间字符替换为 `*`；长度 ≤ 4 时全掩码（绝不返回原秘密）；空串原样返回。
+  - 新增私有 `redactContactValue(value)`：先 `redactPhone`，未匹配则 fallback 到 `redactWechatId`，确保同一 contact 字段中手机号与微信 ID 都被脱敏。
+  - `redactValueDeep` 改为三分支：`content`/`原始文本` → `redactContent`；`wechat`/`微信`/`联系方式`/`contact` → `redactContactValue`；其他敏感 key → `redactPhone`。
+  - `redactObject` 默认 sensitiveKeys 新增 `contact`（修复 GPT 复审证据中 `evidence.contact` 仍泄露的根因——原列表只有中文 `联系方式`，缺英文 `contact`）。
+- **测试**：
+  - `tests/unit/security/redaction.test.ts` 新增 6 个 `redactWechatId` 单测（length 16/11/5/4/3/2/1/0 全覆盖）+ 4 个 `redactObject` 递归测试（nested wechat/微信/联系方式/contact、数组、短 ID、phone 优先级）；更新现有 nested phone 测试的 `evidence.contact` 断言。
+  - `tests/integration/ingestions.test.ts` 新增 1 个 HTTP 集成回归测试 `P0-01 (residual): GET response redacts non-phone WeChat IDs under contact / 联系方式 without mutating stored evidence`。
+- **Gate A + Gate C-Core 回归**：全部命令退出码 0；测试 271 passed（28 test files，新增 11 个测试：6 redactWechatId + 4 redactObject 递归 + 1 HTTP 集成）；集成测试 33 passed（3 test files，新增 1 个 HTTP 集成回归）；All files Lines 85.44% / Branches 82.13% / Funcs 88.63%；关键模块 Lines 全部 ≥80%（redaction.ts 100% / Branch 90.47%, ingestion-service 96.88%, mapping 100%, repository-factory 100%, feishu-review-repository 86.66%, feishu-task-repository 91.2%, feishu-client 95.62%, cleaning-pipeline 100%）；Gate C-Core PASS（50/50 case，4 项核心指标 100%）；`git diff origin/main -- src/data-cleaning` 无输出；`git diff --check` 退出码 0；`npm run audit:legacy` 退出码 0（62 modules）。
+- **HTTP 安全复现**：`wechat_secret_01` 在 GET 响应中被脱敏为 `we************01`，repository/review 原始证据保持不变。
+- TASK-003：`NOT STARTED — BLOCKED BY TASK-002 GPT RE-REVIEW OF NEW COMMIT`

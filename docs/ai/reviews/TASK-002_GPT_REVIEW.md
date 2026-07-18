@@ -124,3 +124,75 @@ Expected: all npm commands exit 0; Gate C-Core remains 50/50 PASS; Legacy diff h
 ## Stop Condition
 
 After Trae commits and pushes the P0 fix, stop and request GPT re-review. Do not start TASK-003 until GPT changes the TASK-002 verdict to `MVP_PASS` or `MVP_PASS_WITH_DEBT`.
+
+---
+
+## 2026-07-18 Re-review — Commit `9dc7817`
+
+### Verdict
+
+`MVP_FAIL`
+
+P0-02 and P0-03 are accepted. P0-01 is only partially fixed: recursive traversal, phone masking, and mapper-warning phone/path sanitization work, but non-phone WeChat IDs still pass through the GET response unchanged. TASK-003 remains blocked.
+
+### Accepted fixes
+
+- **P0-02 — ACCEPTED**: `raw_candidate` preserves a deep copy of the original Candidate on success and failure; the canonical mapped Candidate remains separate; review evidence retains `validation.rawCandidate`; replay tests pass.
+- **P0-03 — ACCEPTED**: `pipeline_evidence` persists `pipelineVersion`, `stages`, `validation`, `corrections`, `warnings`, `errors`, `qualityReport`, and `success` on success and `validation_failed`; mapper warnings remain separate.
+
+### Remaining P0-01: WeChat IDs are not redacted
+
+**Repository evidence**
+
+- `src/server/security/redaction.ts` recognizes keys containing `wechat`, `微信`, or `联系方式` as sensitive.
+- For those string values it still calls only `redactPhone()`. A non-phone WeChat ID therefore remains unchanged.
+- `docs/API_CONTRACT.md` §3.2 promises that phone, WeChat, and raw-text fields are redacted.
+- `docs/PHASE2_DATA_CONTRACTS.md` section 5 requires a WeChat ID to retain its first and last two characters and replace the middle with `*`.
+
+**Fresh built-service reproduction**
+
+The review built Commit `9dc7817`, posted a signed Candidate with `contact: "wechat_secret_01"`, then queried `GET /v1/ingestions/:id`:
+
+```json
+{"callbackStatus":200,"getStatus":200,"wechatIdLeaked":true}
+```
+
+Direct `redactObject()` reproduction also returned all three values unchanged:
+
+```json
+{"candidate":{"fields":{"wechat":"zhangsan001","微信":"lisi_model","联系方式":"wx_secret_01"}}}
+```
+
+**Impact**
+
+GET `/v1/ingestions/:id` has no application-level authentication and can expose a customer's WeChat identifier. This is the same security boundary as original P0-01, not a new scope item.
+
+### Minimal fix packet
+
+1. Add a focused `redactWechatId()` helper implementing the accepted rule: preserve the first and last two characters and replace the middle with `*`; define deterministic behavior for IDs of length 4 or less without returning the original secret.
+2. In recursive redaction, distinguish raw-text keys, phone-only values, and WeChat/contact keys. Sensitive WeChat/contact string values must mask both phone numbers and non-phone WeChat IDs.
+3. Do not redact stored `raw_candidate` or review evidence; apply masking only at response/log boundaries.
+4. Add unit tests for nested `wechat`, `微信`, and `联系方式` values, including arrays and a short ID.
+5. Add one HTTP regression test that posts `contact: "wechat_secret_01"`, calls GET, asserts the raw ID is absent, asserts the expected masked form is present, and proves repository/review evidence remains unchanged.
+
+Do not change P0-02/P0-03, do not start TASK-003, and do not perform unrelated refactoring.
+
+### Fresh verification evidence
+
+| Command / check | Result |
+|---|---|
+| `npm run typecheck` | exit 0 |
+| `npm run lint` | exit 0 |
+| `npm run test` | exit 0; 260/260 passed, 28 files |
+| `npm run test:integration` | exit 0; 32/32 passed, 3 files |
+| `npm run test:coverage` | exit 0; Lines 85.28%, Branches 81.95%, Functions 88.53% |
+| `npm run build` | exit 0 |
+| `npm run evaluate` | exit 0; Gate C-Core 50/50, all four metrics 100% |
+| `npm run audit:legacy` | exit 0; 62 modules |
+| `git diff origin/main -- src/data-cleaning` | exit 0; no output |
+| `git diff --check` | exit 0 |
+| Built HTTP WeChat reproduction | failed security expectation; `wechatIdLeaked: true` |
+
+### Stop condition
+
+Trae must commit and push only this P0-01 residual fix and direct tests, then request GPT re-review. TASK-003 remains `NOT STARTED — BLOCKED BY TASK-002`.
