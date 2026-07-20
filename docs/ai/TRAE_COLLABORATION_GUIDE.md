@@ -1,5 +1,7 @@
 # Trae Collaboration Guide — collator（数据清洗服务）
 
+> **本文件地位说明**：本指南是 `.trae/rules/trae-executor-role.md` 的详细操作手册，提供"怎么做"的具体指引。规则冲突时以 `.trae/rules/` 下的权威规则文件为准；本指南不定义新的规则，仅解释和补充现有规则。
+
 ## 新窗口启动流程（6 步）
 
 每次开启新窗口或重新接手任务时，必须按以下顺序恢复上下文（见改造方案第 5 节）：
@@ -17,11 +19,11 @@
    ```
    确认分支、未提交修改、当前代码与任务包基线一致。不得在不了解 Git 状态的情况下直接修改文件。
 
-## GPT 任务包处理方式
+## GPT 任务包处理方式（对应 trae-executor-role.md 第 2 节 Preflight）
 
-收到 GPT 任务包后，Trae 不得立即盲目执行，必须先完成以下三步（见改造方案第 6 节）：
+收到 GPT 任务包后，Trae 不得立即盲目执行，必须先完成 Preflight（见 `trae-executor-role.md` 第 2 节）。以下为详细操作指引：
 
-### 1. 仓库一致性检查
+### 1. 仓库一致性检查（Preflight 检查项）
 - `task_id` 是否与现有任务重复。
 - GPT 引用的文件、模块和接口是否存在。
 - GPT 对当前架构的理解是否正确。
@@ -30,14 +32,14 @@
 - 任务范围是否明显大于一个合理的独立交付单元。
 - 是否存在明显缺失但会导致无法执行的信息。
 
-### 2. 冲突处理
+### 2. 冲突处理（对应 trae-executor-role.md 第 2.3 节 EXECUTION_CONFLICT）
 - 轻微措辞差异但目标明确：根据仓库事实修正，并在任务文件中记录修正。
-- 重大冲突：不得自行选择方案。记录 Execution Conflict（GPT Instruction / Repository Evidence / Impact / Decision Required），然后停止扩大修改范围，交由用户裁决。
+- 重大冲突：不得自行选择方案。按 `trae-executor-role.md` 第 2.3 节定义的 `EXECUTION_CONFLICT` 格式输出（GPT Assumption / Repository Fact / Evidence Files / Impact / Recommended Adjustment），然后停止扩大修改范围，交由用户裁决。
 
 ### 3. 将任务包正式落库
 确认可执行后，由 Trae 创建或更新 `docs/ai/tasks/TASK-xxx.md`，包含：Status / Stage / Objective / Context / In Scope / Out of Scope / Acceptance Criteria / Implementation Constraints / Planned Approach / Changed Files / Verification / Known Limitations / Review History / Final Result。
 
-## 实现原则
+## 实现原则（对应 AGENTS.md 基本执行规则）
 
 ### 最小满足原则
 优先选择能够满足验收标准的最小实现。不得因「代码可以更优雅」「可以顺便重构」「未来可能需要」「可以增加更多功能」「可以统一整个项目的写法」「当前模块看起来不够完美」等理由自行扩大任务。
@@ -59,7 +61,7 @@
 ### 不覆盖用户未提交内容
 发现工作区存在不属于当前任务的未提交修改时：不得直接覆盖、不得擅自丢弃、不得执行破坏性 reset、不得把无关修改混入当前 commit。应先识别修改来源并隔离当前任务。
 
-## Git 工作方式
+## Git 工作方式（对应 trae-executor-role.md 第 6 节 Git 规则）
 
 ### 分支命名
 每个独立任务使用独立分支：
@@ -93,15 +95,29 @@ TASK-xxx: 简短描述
 
 PR 说明建议包含：Task / Objective / Changes / Verification / Known Debt / Out of Scope。
 
-## 验证规则
+### Codex 协作（对应 trae-executor-role.md 第 6.2 节）
+
+任务显式转交 Codex 时，按 `trae-executor-role.md` 第 6.2 节执行：
+1. 停止修改相关工作区。
+2. 记录 Branch、HEAD 和 Git Status。
+3. 明确 Codex 允许修改的文件。
+4. 优先为 Codex 创建独立 Branch 或 Git Worktree。
+5. 等待 Codex 生成 Commit。
+6. 接管后检查 Diff。
+7. 重新运行最终验证。
+8. 决定 Cherry-pick、Merge、修改或拒绝 Codex Commit。
+
+**禁止**：不得与 Codex 同时修改同一工作区或同一 Branch。
+
+## 验证规则（对应 trae-executor-role.md 第 4.2 节证据要求）
 
 ### 只能报告实际执行的验证
 Trae 不得声称「测试通过」「构建正常」「没有问题」「应该可以工作」，除非相关命令实际运行并获得结果。
 
-验证记录应包含：Command / Result / Evidence（具体测试数量或输出）。
+验证记录应包含：Command / Result / Evidence（具体测试数量或输出），并填入完成包的 `Commands Run` 字段。
 
 ### 无法执行验证时
-如果因环境、权限、依赖或外部服务导致无法验证，必须明确写出：Not Executed / Reason / Alternative Verification / Remaining Risk。不得用替代验证冒充完整验证。
+如果因环境、权限、依赖或外部服务导致无法验证，必须明确写出：Not Executed / Reason / Alternative Verification / Remaining Risk。不得用替代验证冒充完整验证。外部集成（飞书 / Dify）无法访问真实环境时状态必须标记为 `BLOCKED_EXTERNAL_ENV`，不得伪造通过。
 
 ### 推荐验证顺序
 1. 格式检查。
@@ -138,6 +154,29 @@ Trae 应：
 ### MVP_FAIL
 含义：存在明确 P0 问题，当前任务不能通过验收。GPT 通常会提供 `FIX_PACKET`。
 Trae 应：只修复明确列出的 P0 问题及其直接回归，不主动处理 P1 和 P2。
+
+## Codex 升级规则（对应 trae-executor-role.md 第 5 节）
+
+### 可建议 CODEX_REQUIRED 的场景
+- 安全、权限、Token、Secret 或 PII。
+- 并发、事务、幂等、状态机或迁移。
+- 需要全仓库复杂调用链分析。
+- 连续两轮修复失败。
+- 故障难以复现。
+- 核心业务不变量仍无法确认。
+- 高风险合并需要独立验证。
+
+### 不得默认升级 Codex 的场景
+- 普通修改、机械重构、文档、测试补充、明确 Bug。
+
+### 升级方式
+升级建议必须在完成包的 `Recommended Verdict` 字段标注 `CODEX_REQUIRED`，并在 `Known Limitations` 中说明升级理由。最终是否升级由用户决定。
+
+## 完成包输出（对应 trae-executor-role.md 第 4 节）
+
+每次任务完成后，必须按 `trae-executor-role.md` 第 4 节定义的完成包格式输出，包含：`Project ID / Task ID / Risk Level / Branch / Base Commit / Result Commit / Git Status / Changed Files / Diff Summary / Acceptance Criteria Mapping / Commands Run / Known Limitations / Unverified Areas / Highest Risk Areas / Scope Changes / Recommended Verdict / Next Owner`。
+
+会话/阶段结束时，在完成包基础上按 `collator-handoff-audit.md` 第 4.2 节追加阶段级审计补充（阶段状态、Gate 验收、阻塞项、风险、下一步）。
 
 ## 项目特定补充工作流
 

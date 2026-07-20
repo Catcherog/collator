@@ -103,7 +103,12 @@ finishing-a-development-branch（收尾集成）
 
 当多条规则同时触发时，按以下顺序执行：
 1. `_core.md`（始终生效，优先级最高）
-2. `_file_management.md`（文件操作前执行，优先于 temp_script）
-3. `_temp_script.md`（若涉及临时脚本，在 file_management 之后执行）
-4. `_memory.md`（会话启动时执行，优先于 experience）
-5. `_experience.md`（任务结束时执行，在 memory 写入之后）
+2. `trae-executor-role.md`（Trae 执行者角色权威规范，定义 Preflight、执行流程、完成包格式、Codex 升级、Git 规则）
+3. `collator-handoff-audit.md`（跨窗口审计输出规则，补充阶段级审计要素）
+4. `项目操作规则.md`（场景化操作规则：飞书操作、文件管理、数据摄入等）
+5. `_file_management.md`（文件操作前执行，优先于 temp_script）
+6. `_temp_script.md`（若涉及临时脚本，在 file_management 之后执行）
+7. `_memory.md`（会话启动时执行，优先于 experience）
+8. `_experience.md`（任务结束时执行，在 memory 写入之后）
+
+> 项目特定规则（trae-executor-role.md / collator-handoff-audit.md / 项目操作规则.md）优先级高于通用执行规则（_file_management.md 等），但 `_core.md` 始终为最高优先级。

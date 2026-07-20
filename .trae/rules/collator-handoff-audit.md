@@ -38,22 +38,23 @@
 
 ## 4. 每次会话结束必须输出给 GPT 的审计资料
 
-完成当前阶段或当前会话结束时，必须按以下格式向用户（即回传给 GPT 审计）输出：
+完成当前阶段或当前会话结束时，必须按以下两层结构输出审计资料：
+
+### 4.1 第一层：任务级完成包（引用 trae-executor-role.md 第 4 节）
+
+按 `.trae/rules/trae-executor-role.md` 第 4 节定义的完成包格式输出，包含：
+`Project ID / Task ID / Risk Level / Branch / Base Commit / Result Commit / Git Status / Changed Files / Diff Summary / Acceptance Criteria Mapping / Commands Run / Known Limitations / Unverified Areas / Highest Risk Areas / Scope Changes / Recommended Verdict / Next Owner`。
+
+### 4.2 第二层：阶段级审计补充
+
+在完成包基础上，追加以下阶段级要素：
 
 ```text
 阶段：Phase X / 子阶段标识
 状态：DONE / IN_PROGRESS / BLOCKED
-当前 Commit：<完整 hash>
-当前分支：<branch-name>
 
 本次完成：
 - <具体完成项，可验证>
-
-修改文件：
-- <文件相对路径>
-
-执行命令与结果：
-- <命令> → <退出码>，<关键结果摘要>
 
 验收项（按 Collator_验收清单_v1.0）：
 - [x] <已通过项及证据>
@@ -68,6 +69,12 @@
 下一步：
 - <下一窗口第一项动作>
 ```
+
+### 4.3 输出顺序
+
+1. 先输出任务级完成包（trae-executor-role.md 第 4 节格式）。
+2. 再输出阶段级审计补充（本节 4.2 格式）。
+3. 两层均为强制输出，不得省略任意一层。
 
 ---
 
@@ -106,4 +113,16 @@
 
 ## 7. 与现有规则的优先级
 
-本规则与 `_core.md`、`项目操作规则.md` 冲突时，以本规则为准；与 `_file_management.md`、`_temp_script.md`、`_memory.md`、`_experience.md` 冲突时，后者优先处理文件、临时脚本、记忆和经验写入，本规则负责输出格式与审计资料完整性。
+### 7.1 优先级链
+
+1. `_core.md`（始终生效，最高优先级）
+2. `trae-executor-role.md`（Trae 执行者角色权威规范，定义任务级完成包格式）
+3. `collator-handoff-audit.md`（本规则，定义阶段级审计输出格式）
+4. `项目操作规则.md`（场景化操作规则）
+5. `_file_management.md` / `_temp_script.md` / `_memory.md` / `_experience.md`（通用执行规则）
+
+### 7.2 关系说明
+
+- 本规则的完成包格式（第 4 节）引用 `trae-executor-role.md` 第 4 节，不重复定义。
+- 本规则补充的阶段级要素（阶段状态、Gate 验收、阻塞项等）与任务级完成包互补，不冲突。
+- 与 `_file_management.md`、`_temp_script.md`、`_memory.md`、`_experience.md` 冲突时，后者优先处理文件、临时脚本、记忆和经验写入，本规则负责输出格式与审计资料完整性。
