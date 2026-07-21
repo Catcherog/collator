@@ -1,13 +1,26 @@
 # AGENTS — collator（数据清洗服务）
 
+## 总项目章程引用
+
+本项目是"飞书智能业务数据中台"（Project ID：`FEISHU-AI-MIDDLE-PLATFORM`）的子项目，业务规则、合同规范、模块职责以总项目章程为准：
+
+- **章程**：[../docs/project_control/PROJECT_CHARTER.md](../docs/project_control/PROJECT_CHARTER.md)
+- **状态**：[../docs/project_control/STATUS.yaml](../docs/project_control/STATUS.yaml)
+- **当前状态**：[../docs/project_control/CURRENT_STATE.md](../docs/project_control/CURRENT_STATE.md)
+- **任务队列**：[../docs/project_control/TASK_QUEUE.md](../docs/project_control/TASK_QUEUE.md)
+
+冲突时以总项目章程为最高权威。本项目不维护章程副本，仅通过相对路径引用。
+
 ## 项目当前阶段
 
-- 项目名称：collator（数据清洗服务）
-- 当前阶段：Phase 3A / TASK-001 完成，等待 GPT 复审
-- 当前里程碑：Phase 3 飞书集成 / V1 Core Service 验收
-- 当前任务位置：docs/ai/tasks/TASK-001.md（Status: DONE — AWAITING_GPT_REVIEW）
+- 项目名称：collator — 飞书智能业务数据中台 · 统一数据摄入与清洗中枢
+- 上级项目：飞书智能业务数据中台（Project ID：FEISHU-AI-MIDDLE-PLATFORM）
+- 上级章程：../docs/project_control/PROJECT_CHARTER.md
+- 当前阶段：Phase 3A 完成 / 作为 Collator 接入跨项目合同（Candidate V1）
+- 当前里程碑：从数据清洗服务升级为飞书智能业务数据中台的摄入层
+- 当前任务位置：FAMP-INTEGRATION-CONTRACT-01（跨项目合同冻结）
 - 当前分支：phase/3-feishu-integration
-- 最近一次更新：2026-07-17
+- 最近一次更新：2026-07-21
 
 ## Web GPT、Trae、Codex 与用户的角色
 

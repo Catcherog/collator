@@ -12,9 +12,11 @@ description: Trae 执行者角色规范 — 默认职责、Preflight、执行流
 
 ## 0. 项目标识
 
-- **Project ID**：collator
-- **Project Name**：collator（数据清洗服务）
-- **Repository Path**：`d:\360Downloads\Trae 项目\collator`
+- **Project ID**：FEISHU-AI-MIDDLE-PLATFORM / collator
+- **Project Name**：collator — 飞书智能业务数据中台 · 统一数据摄入与清洗中枢
+- **上级项目**：飞书智能业务数据中台（lark 根目录）
+- **上级章程**：`../../docs/project_control/PROJECT_CHARTER.md`
+- **Repository Path**：`d:\360Downloads\Trae 项目\lark\collator`
 
 ---
 
