@@ -1,0 +1,79 @@
+project_id: FEISHU-AI-MIDDLE-PLATFORM
+project_name: 飞书智能业务数据中台
+charter_version: v1.1
+charter_authority: collator/docs/project_control/PROJECT_CHARTER.md
+charter_adopted_at: 2026-07-22
+charter_adoption_task: FAMP-PROJECT-CHARTER-V1.1-01
+current_phase: CHARTER_V1_1_ADOPTED
+product_target: PORTFOLIO_READY
+default_route: R2
+next_owner: Trae
+next_task: FAMP-DUAL-WRITE-BOUNDARY-AUDIT-01
+codex_required: false
+last_revision: FAMP-PROJECT-CHARTER-V1.1-01 (2026-07-22)
+revision_reason: |
+  v1.1 章程入库：废止 v1.0 写入边界，确立飞书为权威业务数据库、
+  Collator 为主智能写入入口（非唯一）、SOP 为双模式治理引擎（PRE_WRITE + POST_WRITE）。
+  权威章程文件落户 collator 仓库，SOP 仓库保留非权威同步副本。
+core_repositories:
+  - name: collator
+    role: authoritative_repository
+    path: collator/
+    branch: phase/3-feishu-integration
+    head: 3e6085ab2b390e3948587c1c240aae97cde0f38f
+    pushed: true
+    push_target: https://github.com/Catcherog/collator.git
+    workspace_status: |
+      clean for charter task files;
+      预存未跟踪文件保留（docs/ai/collator-collab-completion.md, docs/dify/, src/scripts/temp/create-draft-pr.ps1, src/scripts/temp/draft-pr-body.txt）
+    charter_task_changes:
+      - docs/project_control/PROJECT_CHARTER.md (新建, v1.1 权威章程, 含权威仓库标记)
+      - docs/project_control/STATUS.yaml (新建, 精简版仓库状态)
+  - name: SOP
+    role: non_authoritative_mirror
+    path: SOP/
+    branch: master
+    head: b3e15d2af8a42ea7c3b939de00d016cdba1e42f7
+    pushed: false
+    push_target: null
+    push_blocker: SOP 仓库未配置 git remote，无法 push；章程任务 commit 已完成，用户可决定是否配置远程仓库
+    workspace_status: |
+      预存修改和未跟踪文件保留（.trae/rules/_experience.md / _file_management.md / _gpt_audit.md / _memory.md / _temp_script.md / docs/ai/REVIEW_POLICY.md / docs/ai/TRAE_COLLABORATION_GUIDE.md / docs/ai/templates/* / .trae/rules/_execution_role.md / docs/ai/CODEX_EXECUTION_PROTOCOL.md / docs/ai/tasks/TASK-*.md）
+    charter_task_changes:
+      - docs/project_control/PROJECT_CHARTER.md (新建, v1.1 非权威同步副本, 含非权威标记)
+lark_root:
+  git_tracked: false
+  role: coordination_center
+  note: lark 根目录不是 git 仓库，控制文件作为非 git 协调副本存在；权威章程在 collator 仓库
+  charter_task_changes:
+    - docs/project_control/PROJECT_CHARTER.md (更新为 v1.1, 含协调副本标记)
+    - docs/project_control/STATUS.yaml (更新为 v1.1 采用状态)
+    - docs/project_control/SESSION_HANDOFF.md (更新会话交接)
+    - docs/project_control/CURRENT_STATE.md (更新当前状态)
+    - docs/project_control/TASK_QUEUE.md (更新任务队列)
+authoritative_business_rules:
+  client_project_requires_customer: true
+  creative_project_requires_model: true
+  creative_project_customer_optional: true
+  missing_project_type_requires_review: true
+  llm_has_final_write_authority: false
+v1_1_architecture_facts:
+  feishu_is_authoritative_database: true
+  collator_is_primary_intelligent_write_entry: true
+  collator_is_not_exclusive_write_entry: true
+  direct_feishu_editing_allowed: true
+  sop_is_governance_engine_not_exclusive_writer: true
+  governance_modes: [PRE_WRITE, POST_WRITE]
+  field_authority_levels: [RAW, CANDIDATE, CONFIRMED, AUTHORITATIVE]
+  collator_responsible_for_ingestion_idempotency: true
+  sop_responsible_for_business_idempotency: true
+  collator_self_trigger_loop_protection_required: true
+  data_quality_vs_business_rule_review_distinguishable: true
+v1_0_superseded_definitions:
+  - "Collator 不负责正式业务表写入" (已废止)
+  - "SOP 是正式业务数据唯一写入入口" (已废止)
+  - "用户应当只通过 Collator 或 SOP 修改飞书数据" (已废止)
+status: READY_FOR_NEXT_TASK
+status_note: |
+  v1.1 章程已入库 collator 权威仓库，SOP 保留非权威副本。
+  下一任务：FAMP-DUAL-WRITE-BOUNDARY-AUDIT-01（双入口只读调查）。
