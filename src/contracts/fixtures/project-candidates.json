@@ -1,0 +1,172 @@
+[
+  {
+    "schema_version": "v1",
+    "candidate_id": "cand_demo_client_ok",
+    "ingestion_id": "ingest_demo_20260721_001",
+    "source": {
+      "system": "feishu_bitable",
+      "table": "project_statistics_demo",
+      "record_id": "rec_demo_client_ok_001"
+    },
+    "entity_type": "project",
+    "raw_evidence": {
+      "redacted": true,
+      "captured_fields": {
+        "项目类型": "客片",
+        "客户": "customer_demo_001",
+        "模特": null,
+        "拍摄日期": "2026-08-15"
+      },
+      "redacted_fields": ["客户电话", "客户身份证号"],
+      "ocr_text_excerpt": "[REDACTED] 客片订单，关联客户 customer_demo_001"
+    },
+    "normalized_fields": {
+      "project_type": "client",
+      "customer_ref": "customer_demo_001",
+      "model_ref": null,
+      "shoot_date": "2026-08-15"
+    },
+    "quality": {
+      "status": "PASS",
+      "issues": [],
+      "score": 0.95
+    },
+    "processing": {
+      "ocr_version": "tesseract-5.3.0",
+      "asr_version": "whisper-large-v3",
+      "processed_at": "2026-07-21T10:30:00.000Z",
+      "agent_version": "collator-1.0.0"
+    },
+    "idempotency_key": "sha256_a1b2c3d4e5f67890"
+  },
+  {
+    "schema_version": "v1",
+    "candidate_id": "cand_demo_creative_ok",
+    "ingestion_id": "ingest_demo_20260721_002",
+    "source": {
+      "system": "feishu_bitable",
+      "table": "project_statistics_demo",
+      "record_id": "rec_demo_creative_ok_002"
+    },
+    "entity_type": "project",
+    "raw_evidence": {
+      "redacted": true,
+      "captured_fields": {
+        "项目类型": "样片",
+        "客户": null,
+        "模特": "model_demo_001",
+        "拍摄日期": "2026-09-01"
+      },
+      "redacted_fields": [],
+      "ocr_text_excerpt": "样片创作，关联模特 model_demo_001"
+    },
+    "normalized_fields": {
+      "project_type": "creative",
+      "customer_ref": null,
+      "model_ref": "model_demo_001",
+      "shoot_date": "2026-09-01"
+    },
+    "quality": {
+      "status": "PASS",
+      "issues": [],
+      "score": 0.92
+    },
+    "processing": {
+      "ocr_version": "tesseract-5.3.0",
+      "asr_version": "whisper-large-v3",
+      "processed_at": "2026-07-21T11:00:00.000Z",
+      "agent_version": "collator-1.0.0"
+    },
+    "idempotency_key": "sha256_b1c3d4e5f6789012"
+  },
+  {
+    "schema_version": "v1",
+    "candidate_id": "cand_demo_client_missing_customer",
+    "ingestion_id": "ingest_demo_20260721_003",
+    "source": {
+      "system": "feishu_bitable",
+      "table": "project_statistics_demo",
+      "record_id": "rec_demo_client_missing_customer_003"
+    },
+    "entity_type": "project",
+    "raw_evidence": {
+      "redacted": true,
+      "captured_fields": {
+        "项目类型": "客片",
+        "客户": null,
+        "模特": null,
+        "拍摄日期": "2026-08-20"
+      },
+      "redacted_fields": [],
+      "ocr_text_excerpt": "客片订单但未关联客户，需人工复核"
+    },
+    "normalized_fields": {
+      "project_type": "client",
+      "customer_ref": null,
+      "model_ref": null,
+      "shoot_date": "2026-08-20"
+    },
+    "quality": {
+      "status": "NEEDS_REVIEW",
+      "issues": [
+        {
+          "code": "CUSTOMER_REQUIRED",
+          "message": "客片必须关联 Customer"
+        }
+      ],
+      "score": 0.55
+    },
+    "processing": {
+      "ocr_version": "tesseract-5.3.0",
+      "asr_version": "whisper-large-v3",
+      "processed_at": "2026-07-21T11:30:00.000Z",
+      "agent_version": "collator-1.0.0"
+    },
+    "idempotency_key": "sha256_c1d3e4f5a6b7c890"
+  },
+  {
+    "schema_version": "v1",
+    "candidate_id": "cand_demo_missing_type",
+    "ingestion_id": "ingest_demo_20260721_004",
+    "source": {
+      "system": "feishu_bitable",
+      "table": "project_statistics_demo",
+      "record_id": "rec_demo_missing_type_004"
+    },
+    "entity_type": "project",
+    "raw_evidence": {
+      "redacted": true,
+      "captured_fields": {
+        "项目类型": null,
+        "客户": null,
+        "模特": null,
+        "拍摄日期": null
+      },
+      "redacted_fields": [],
+      "ocr_text_excerpt": "项目类型字段为空，需人工复核"
+    },
+    "normalized_fields": {
+      "project_type": "unknown",
+      "customer_ref": null,
+      "model_ref": null,
+      "shoot_date": null
+    },
+    "quality": {
+      "status": "NEEDS_REVIEW",
+      "issues": [
+        {
+          "code": "PROJECT_TYPE_REQUIRED",
+          "message": "项目类型为空，需人工复核"
+        }
+      ],
+      "score": 0.40
+    },
+    "processing": {
+      "ocr_version": "tesseract-5.3.0",
+      "asr_version": "whisper-large-v3",
+      "processed_at": "2026-07-21T12:00:00.000Z",
+      "agent_version": "collator-1.0.0"
+    },
+    "idempotency_key": "sha256_d1e3f4a5b6c7d890"
+  }
+]
