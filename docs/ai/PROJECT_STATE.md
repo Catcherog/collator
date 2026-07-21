@@ -7,7 +7,9 @@ V1 Fast Closure Complete — Awaiting PR
 - 状态：`V1_FAST_CLOSURE_COMPLETE_AWAITING_PR` — COLLATOR-V1-FAST-CLOSURE-01 已完成，等待创建 Draft PR 到 main。
 - 当前分支：phase/3-feishu-integration
 - 验收基线 Commit：`4aaf9f3`（V1 收口任务卡指定 baseline）
-- 当前 HEAD：`3169e69`（COLLATOR-V1-FAST-CLOSURE-01 两个收口 commit + 本 evidence-fix commit 之后）
+- V1 实现完成 Commit：`3169e69`
+- 最近一次证据审查 Commit：`18e3440`
+- 当前远程分支 HEAD：以 `git rev-parse origin/phase/3-feishu-integration` 实时结果为准
 - 当前版本：v1.0
 - Phase 3：DONE（Gate D PASSED，exit_code=0，25/25 断言通过；446/446 回归通过）
 - TASK-003：CLOSED
@@ -42,7 +44,7 @@ V1 收口完成 — Gate A/B/C-Core/D/E/F PASS，Gate G PASS_WITH_DEBT，C-LLM D
 
 ## Next Priorities
 
-1. **创建 Draft PR 到 main**：明确这是 Phase 2 至 V1 的 33-commit 累计集成 PR，而非仅本轮 8 个文件的 Docker 收口。
+1. **创建 Draft PR 到 main**：明确这是 Phase 2 至 V1 的累计集成 PR，而非仅本轮 8 个文件的 Docker 收口。PR 描述中的 commit 数应通过 `git rev-list --count origin/main..HEAD` 实时填入，不硬编码。
 2. **C-LLM（Gate C-LLM）**：DEFERRED — 作为外部依赖债务（DEBT-001）不阻塞 V1 收口；待 Dify 凭据就绪后单独解锁。
 
 ## Roadmap
@@ -123,7 +125,7 @@ V1 收口完成 — Gate A/B/C-Core/D/E/F PASS，Gate G PASS_WITH_DEBT，C-LLM D
 
 ## Last Updated
 
-2026-07-21（COLLATOR-V1-FAST-CLOSURE-01-EVIDENCE-FIX-01：修正 docs/ai/PROJECT_STATE.md 与 docs/portfolio/COLLATOR-DEPLOYMENT-EVIDENCE.md 中的状态与证据表述。当前 HEAD 更新为 `3169e69`；Phase 5 / Gate F 标记 PASS；Phase 6 / Gate G 标记 PASS_WITH_DEBT；Next Priorities 更新为「创建 Draft PR 到 main」。C-LLM 仍 DEFERRED 不阻塞 V1。）
+2026-07-21（COLLATOR-V1-FAST-CLOSURE-01-EVIDENCE-FIX-02：移除 docs/ai/PROJECT_STATE.md 中固定的「当前 HEAD」字段，改为分别记录 V1 实现完成 Commit、最近一次证据审查 Commit，并声明当前远程分支 HEAD 以 `git rev-parse origin/phase/3-feishu-integration` 实时结果为准；Next Priorities 中不再硬编码 commit 数量。C-LLM 仍 DEFERRED 不阻塞 V1。）
 
 ---
 
