@@ -201,7 +201,7 @@ export function validateCandidateV1(input: unknown): CandidateV1 {
     ) {
       code = 'MISSING_REQUIRED_FIELD';
     } else if (
-      firstIssue.code === 'invalid_literal_value' &&
+      firstIssue.code === 'invalid_literal' &&
       fieldPath.includes('schema_version')
     ) {
       code = 'UNKNOWN_SCHEMA_VERSION';
