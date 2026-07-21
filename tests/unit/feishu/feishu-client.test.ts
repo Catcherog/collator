@@ -153,6 +153,35 @@ describe('FeishuClient', () => {
       expect(recordId).toBe('rec123');
     });
 
+    it('passes client_token as a query parameter for server-side idempotency', async () => {
+      const clientToken = 'fe599b60-450f-46ff-b2ef-9f6675625b97';
+      const fetchFn = createMockFetch([
+        {
+          match: (url) => url.includes('/auth/v3/tenant_access_token'),
+          response: mockResponse(200, TENANT_TOKEN_RESP),
+        },
+        {
+          match: (url, init) =>
+            url.includes(`/tables/${TABLE_ID}/records?client_token=${clientToken}`) &&
+            init?.method === 'POST',
+          response: mockResponse(200, {
+            code: 0,
+            msg: 'ok',
+            data: { record: { record_id: 'rec_idempotent' } },
+          }),
+        },
+      ]);
+      client.setFetchFn(fetchFn);
+
+      const recordId = await client.createRecord(
+        TABLE_ID,
+        { name: 'test' },
+        clientToken
+      );
+
+      expect(recordId).toBe('rec_idempotent');
+    });
+
     it('sends tenant_access_token in Authorization header', async () => {
       const fetchFn = createMockFetch([
         {
@@ -418,6 +447,71 @@ describe('FeishuClient', () => {
 
       expect(results).toHaveLength(2);
       expect(results[0].record_id).toBe('recA');
+    });
+
+    // TASK-003-GATE-D-TEXT-NORMALIZATION AC-06:
+    // Explicitly request text fields as plain strings (text_field_as_array=false)
+    // so Feishu does not return text fields as [{text: "..."}] arrays.
+    it('sets text_field_as_array=false in the search request body', async () => {
+      const fetchFn = createMockFetch([
+        {
+          match: (url) => url.includes('/auth/v3/tenant_access_token'),
+          response: mockResponse(200, TENANT_TOKEN_RESP),
+        },
+        {
+          match: (url, init) => url.includes('/records/search') && init?.method === 'POST',
+          response: mockResponse(200, {
+            code: 0,
+            msg: 'ok',
+            data: { items: [], total: 0, has_more: false },
+          }),
+        },
+      ]);
+      client.setFetchFn(fetchFn);
+
+      await client.searchRecords(TABLE_ID, {
+        filter: { conjunction: 'and', conditions: [{ field_name: '摄入 ID', operator: 'is', value: ['ing_001'] }] },
+      });
+
+      const searchCall = fetchFn.calls.find(
+        (c) => c.url.includes('/records/search') && c.init?.method === 'POST'
+      );
+      expect(searchCall).toBeDefined();
+      const body = JSON.parse(searchCall!.init!.body as string);
+      expect(body.text_field_as_array).toBe(false);
+    });
+  });
+
+  describe('getRecord text_field_as_array', () => {
+    // TASK-003-GATE-D-TEXT-NORMALIZATION AC-06:
+    // Explicitly request text fields as plain strings in getRecord too.
+    it('appends text_field_as_array=false as a query parameter', async () => {
+      const fetchFn = createMockFetch([
+        {
+          match: (url) => url.includes('/auth/v3/tenant_access_token'),
+          response: mockResponse(200, TENANT_TOKEN_RESP),
+        },
+        {
+          match: (url, init) =>
+            url.includes(`/tables/${TABLE_ID}/records/recText`) &&
+            (!init?.method || init.method === 'GET'),
+          response: mockResponse(200, {
+            code: 0,
+            msg: 'ok',
+            data: { record: { record_id: 'recText', fields: { name: 'test' } } },
+          }),
+        },
+      ]);
+      client.setFetchFn(fetchFn);
+
+      await client.getRecord(TABLE_ID, 'recText');
+
+      const getCall = fetchFn.calls.find(
+        (c) => c.url.includes(`/tables/${TABLE_ID}/records/recText`) &&
+          (!c.init?.method || c.init.method === 'GET')
+      );
+      expect(getCall).toBeDefined();
+      expect(getCall!.url).toContain('text_field_as_array=false');
     });
   });
 

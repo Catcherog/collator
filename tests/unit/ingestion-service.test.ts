@@ -3,6 +3,11 @@ import type { Mock } from 'vitest';
 import { IngestionService } from '../../src/server/services/ingestion-service.js';
 import { InMemoryTaskRepository } from '../../src/server/repositories/in-memory-task-repository.js';
 import { InMemoryReviewRepository } from '../../src/server/repositories/in-memory-review-repository.js';
+import { InMemoryWriteLogRepository } from '../../src/server/repositories/in-memory-write-log-repository.js';
+import type { WriteLogRepository } from '../../src/server/repositories/write-log-repository.js';
+import { FeishuCommitFailedError } from '../../src/server/domain/errors.js';
+import { FeishuApiError } from '../../src/server/feishu/feishu-errors.js';
+import type { CustomerRecordWriter, CustomerRecordWriterInput, CustomerRecordWriterResult } from '../../src/server/business/customer-record-writer.js';
 import type { CreateIngestionRequest } from '../../src/server/domain/ingestion.js';
 import type { PipelineResult } from '../../src/server/cleaning/pipeline/cleaning-pipeline.js';
 
@@ -171,14 +176,17 @@ describe('IngestionService', () => {
     const approved = await service.approve(created.ingestion_id, {
       reviewer_id: 'reviewer_1',
       review_record_id: candidate.review_record_id,
-      corrections: { 预算区间: '5000-8000元', shooting_date: '2026-08-01' },
+      // 预算区间 is a real customer-schema enum field; '5000元以上' is in
+      // the enum (candidate had '3000-5000元'). English `budget` key is also
+      // supported by TASK-002 mapper and is exercised in the TASK-003
+      // corrections test below.
+      corrections: { 预算区间: '5000元以上' },
     });
 
     expect(approved.status).toBe('completed');
     expect(approved.review_decision).toBe('modified');
     expect(approved.normalized_fields).toMatchObject({
-      预算区间: '5000-8000元',
-      shooting_date: '2026-08-01',
+      预算区间: '5000元以上',
     });
   });
 
@@ -583,16 +591,405 @@ describe('IngestionService', () => {
     });
 
     it('task Pipeline evidence is durable across a new service instance', async () => {
-      const created = await service.createIngestion(makeRequest());
-      await service.receiveCandidate(created.ingestion_id, { candidate: makeCandidate() });
+    const created = await service.createIngestion(makeRequest());
+    await service.receiveCandidate(created.ingestion_id, { candidate: makeCandidate() });
 
-      const newService = new IngestionService(repository, reviewRepository);
-      const task = await newService.getIngestion(created.ingestion_id);
-      expect(task.pipeline_evidence).toBeDefined();
-      const evidence = task.pipeline_evidence as Record<string, unknown>;
-      expect(evidence['pipelineVersion']).toBeDefined();
-      expect(evidence['stages']).toBeDefined();
-      expect(evidence['success']).toBe(true);
+    const newService = new IngestionService(repository, reviewRepository);
+    const task = await newService.getIngestion(created.ingestion_id);
+    expect(task.pipeline_evidence).toBeDefined();
+    const evidence = task.pipeline_evidence as Record<string, unknown>;
+    expect(evidence['pipelineVersion']).toBeDefined();
+    expect(evidence['stages']).toBeDefined();
+    expect(evidence['success']).toBe(true);
+  });
+  });
+
+  // ---------------------------------------------------------------------
+  // TASK-003: customer commit flow (committing / completed / commit_failed,
+  // dry_run / reject, idempotent retry, per-ingestion serialization)
+  // ---------------------------------------------------------------------
+
+  describe('TASK-003: commit flow', () => {
+    let writeLogRepository: InMemoryWriteLogRepository;
+    let writer: CustomerRecordWriter;
+    let write: Mock<(input: CustomerRecordWriterInput) => Promise<CustomerRecordWriterResult>>;
+    let commitService: IngestionService;
+
+    beforeEach(() => {
+      writeLogRepository = new InMemoryWriteLogRepository();
+      write = vi.fn(async (input: CustomerRecordWriterInput): Promise<CustomerRecordWriterResult> => ({
+        business_record_id: `rec_customer_${input.ingestionId.slice(-6)}`,
+        created: true,
+      }));
+      writer = { write };
+      commitService = new IngestionService(
+        repository,
+        reviewRepository,
+        writer,
+        writeLogRepository
+      );
+    });
+
+    async function prepareApprovedTask(dryRun: boolean = false) {
+      const created = await commitService.createIngestion(makeRequest({ dry_run: dryRun }));
+      const candidate = await commitService.receiveCandidate(created.ingestion_id, {
+        candidate: makeCandidate(),
+      });
+      return { ingestionId: created.ingestion_id, reviewRecordId: candidate.review_record_id };
+    }
+
+    it('runs the full commit flow: pending_review -> approved -> committing -> completed', async () => {
+      const { ingestionId, reviewRecordId } = await prepareApprovedTask(false);
+
+      const approved = await commitService.approve(ingestionId, {
+        reviewer_id: 'reviewer_1',
+        review_record_id: reviewRecordId,
+      });
+
+      expect(approved.status).toBe('completed');
+      expect(approved.business_record_id).toMatch(/^rec_customer_/);
+      expect(approved.error_code).toBeUndefined();
+      expect(approved.error_message).toBeUndefined();
+      expect(write).toHaveBeenCalledTimes(1);
+
+      // Write log persisted with status=succeeded.
+      const logs = await writeLogRepository.findByIngestionId(ingestionId);
+      expect(logs).toHaveLength(1);
+      expect(logs[0].status).toBe('succeeded');
+      expect(logs[0].business_record_id).toBe(approved.business_record_id);
+    });
+
+    it('dry_run=true: writes skipped_dry_run log, no customer write, status=completed', async () => {
+      const { ingestionId, reviewRecordId } = await prepareApprovedTask(true);
+
+      const result = await commitService.approve(ingestionId, {
+        reviewer_id: 'reviewer_1',
+        review_record_id: reviewRecordId,
+      });
+
+      expect(result.status).toBe('completed');
+      expect(result.business_record_id).toBeUndefined();
+      expect(write).not.toHaveBeenCalled();
+
+      const logs = await writeLogRepository.findByIngestionId(ingestionId);
+      expect(logs).toHaveLength(1);
+      expect(logs[0].status).toBe('skipped_dry_run');
+      expect(logs[0].target_table_id).toBe('dry_run');
+      expect(logs[0].business_record_id).toBeUndefined();
+    });
+
+    it('commit_failed: customer write raises FeishuApiError -> task status=commit_failed + sanitised write log + FeishuCommitFailedError re-thrown', async () => {
+      const { ingestionId, reviewRecordId } = await prepareApprovedTask(false);
+      // FeishuApiError already redacts phones; message carries the masked form.
+      const feishuError = new FeishuApiError(1254045, 'permission denied phone 13800138000');
+      write.mockRejectedValueOnce(feishuError);
+
+      await expect(
+        commitService.approve(ingestionId, {
+          reviewer_id: 'reviewer_1',
+          review_record_id: reviewRecordId,
+        })
+      ).rejects.toBeInstanceOf(FeishuCommitFailedError);
+
+      const task = await commitService.getIngestion(ingestionId);
+      expect(task.status).toBe('commit_failed');
+      expect(task.error_code).toBe('FEISHU_COMMIT_FAILED');
+      // Sanitised message persisted (phone already masked by FeishuApiError).
+      expect(task.error_message).toContain('138****8000');
+      expect(task.error_message).not.toContain('13800138000');
+
+      const logs = await writeLogRepository.findByIngestionId(ingestionId);
+      expect(logs).toHaveLength(1);
+      expect(logs[0].status).toBe('failed');
+      expect(logs[0].error_code).toBe('FEISHU_COMMIT_FAILED');
+      expect(logs[0].redacted_error_message).toContain('138****8000');
+      expect(logs[0].redacted_error_message).not.toContain('13800138000');
+    });
+
+    it('commit_failed: unknown error is wrapped as FeishuCommitFailedError with sanitised name-only message', async () => {
+      const { ingestionId, reviewRecordId } = await prepareApprovedTask(false);
+      const internalError = new Error('Internal path /usr/local/secret with phone 13900139000');
+      write.mockRejectedValueOnce(internalError);
+
+      try {
+        await commitService.approve(ingestionId, {
+          reviewer_id: 'reviewer_1',
+          review_record_id: reviewRecordId,
+        });
+        throw new Error('expected rejection');
+      } catch (e) {
+        expect(e).toBeInstanceOf(FeishuCommitFailedError);
+        // Unknown errors are reduced to name only — no path, no PII.
+        expect((e as Error).message).not.toContain('/usr/local/secret');
+        expect((e as Error).message).not.toContain('13900139000');
+      }
+
+      const task = await commitService.getIngestion(ingestionId);
+      expect(task.status).toBe('commit_failed');
+      expect(task.error_message).not.toContain('/usr/local/secret');
+      expect(task.error_message).not.toContain('13900139000');
+    });
+
+    it('retry after commit_failed: writer finds existing record by ingestion ID and returns completed', async () => {
+      const { ingestionId, reviewRecordId } = await prepareApprovedTask(false);
+      // First attempt fails.
+      write.mockRejectedValueOnce(new FeishuApiError(1254045, 'transient'));
+      await expect(
+        commitService.approve(ingestionId, {
+          reviewer_id: 'reviewer_1',
+          review_record_id: reviewRecordId,
+        })
+      ).rejects.toBeInstanceOf(FeishuCommitFailedError);
+
+      // Second attempt: writer reports the customer record now exists
+      // (idempotent search-by-Collator 摄入 ID finds it on the Feishu side).
+      write.mockResolvedValueOnce({
+        business_record_id: 'rec_existing_001',
+        created: false,
+      });
+      const retried = await commitService.approve(ingestionId, {
+        reviewer_id: 'reviewer_1',
+        review_record_id: reviewRecordId,
+      });
+
+      expect(retried.status).toBe('completed');
+      expect(retried.business_record_id).toBe('rec_existing_001');
+      // Prior commit_failed error fields cleared on successful retry.
+      expect(retried.error_code).toBeUndefined();
+      expect(retried.error_message).toBeUndefined();
+      // Two write logs: one failed (first attempt), one succeeded (retry).
+      const logs = await writeLogRepository.findByIngestionId(ingestionId);
+      const statuses = logs.map((l) => l.status).sort();
+      expect(statuses).toEqual(['failed', 'succeeded']);
+    });
+
+    it('cannot approve a completed ingestion', async () => {
+      const { ingestionId, reviewRecordId } = await prepareApprovedTask(false);
+      await commitService.approve(ingestionId, {
+        reviewer_id: 'reviewer_1',
+        review_record_id: reviewRecordId,
+      });
+      await expect(
+        commitService.approve(ingestionId, {
+          reviewer_id: 'reviewer_1',
+          review_record_id: reviewRecordId,
+        })
+      ).rejects.toThrow('Ingestion already completed');
+    });
+
+    it('cannot approve a rejected ingestion', async () => {
+      const { ingestionId, reviewRecordId } = await prepareApprovedTask(false);
+      await commitService.reject(ingestionId, {
+        reviewer_id: 'reviewer_1',
+        reason_code: 'INSUFFICIENT_INFO',
+        reason: '缺少联系方式。',
+      });
+      await expect(
+        commitService.approve(ingestionId, {
+          reviewer_id: 'reviewer_1',
+          review_record_id: reviewRecordId,
+        })
+      ).rejects.toThrow('Rejected ingestion cannot be approved');
+    });
+
+    it('reject does NOT call the customer writer and does NOT create a write log', async () => {
+      const { ingestionId } = await prepareApprovedTask(false);
+      const rejected = await commitService.reject(ingestionId, {
+        reviewer_id: 'reviewer_1',
+        reason_code: 'INSUFFICIENT_INFO',
+        reason: '缺少联系方式。',
+      });
+
+      expect(rejected.status).toBe('review_rejected');
+      expect(rejected.review_decision).toBe('rejected');
+      expect(write).not.toHaveBeenCalled();
+      const logs = await writeLogRepository.findByIngestionId(ingestionId);
+      expect(logs).toHaveLength(0);
+    });
+
+    it('does not allow an ingestion without a review record to reach the customer writer', async () => {
+      const created = await commitService.createIngestion(
+        makeRequest({ dry_run: false })
+      );
+
+      await expect(
+        commitService.approve(created.ingestion_id, {
+          reviewer_id: 'reviewer_1',
+          review_record_id: 'forged_review_id',
+        })
+      ).rejects.toThrow('Ingestion is not awaiting approval');
+
+      expect(write).not.toHaveBeenCalled();
+      const persisted = await commitService.getIngestion(created.ingestion_id);
+      expect(persisted.status).toBe('received');
+    });
+
+    it('per-ingestion serialization: 20 concurrent approve calls share a single in-flight commit', async () => {
+      const { ingestionId, reviewRecordId } = await prepareApprovedTask(false);
+
+      const results = await Promise.all(
+        Array.from({ length: 20 }, () =>
+          commitService.approve(ingestionId, {
+            reviewer_id: 'reviewer_1',
+            review_record_id: reviewRecordId,
+          })
+        )
+      );
+
+      // All 20 calls resolve to the same completed task.
+      const ids = new Set(results.map((r) => r.ingestion_id));
+      expect(ids.size).toBe(1);
+      expect(results[0].status).toBe('completed');
+      // The writer was invoked exactly once — no duplicate customer records.
+      expect(write).toHaveBeenCalledTimes(1);
+      // Exactly one succeeded write log.
+      const logs = await writeLogRepository.findByIngestionId(ingestionId);
+      const succeeded = logs.filter((l) => l.status === 'succeeded');
+      expect(succeeded).toHaveLength(1);
+    });
+
+    it('legacy fallback: when writer/repo absent, approve goes straight to completed (Phase 3B path)', async () => {
+      // service (without writer/writeLogRepository) was constructed in beforeEach.
+      const created = await service.createIngestion(makeRequest());
+      const candidate = await service.receiveCandidate(created.ingestion_id, {
+        candidate: makeCandidate(),
+      });
+
+      const approved = await service.approve(created.ingestion_id, {
+        reviewer_id: 'reviewer_1',
+        review_record_id: candidate.review_record_id,
+      });
+
+      expect(approved.status).toBe('completed');
+      expect(approved.business_record_id).toBeUndefined();
+    });
+
+    it('fails closed for a non-dry-run approval when writer and write-log repository are absent', async () => {
+      const created = await service.createIngestion(makeRequest({ dry_run: false }));
+      const candidate = await service.receiveCandidate(created.ingestion_id, {
+        candidate: makeCandidate(),
+      });
+
+      await expect(
+        service.approve(created.ingestion_id, {
+          reviewer_id: 'reviewer_1',
+          review_record_id: candidate.review_record_id,
+        })
+      ).rejects.toThrow('Customer commit flow is not configured');
+
+      const persisted = await service.getIngestion(created.ingestion_id);
+      expect(persisted.status).toBe('pending_review');
+    });
+
+    it('rejects partial commit-flow dependency injection', () => {
+      expect(
+        () => new IngestionService(repository, reviewRepository, writer)
+      ).toThrow('Customer record writer and write-log repository must be configured together');
+      expect(
+        () => new IngestionService(repository, reviewRepository, undefined, writeLogRepository)
+      ).toThrow('Customer record writer and write-log repository must be configured together');
+    });
+
+    it('does not report completed when the succeeded write log cannot be persisted', async () => {
+      const failingWriteLogRepository: WriteLogRepository = {
+        create: vi.fn(async () => {
+          throw new Error('write log unavailable');
+        }),
+        findByIngestionId: vi.fn(async () => []),
+        save: vi.fn(async () => undefined),
+      };
+      const serviceWithFailingLog = new IngestionService(
+        repository,
+        reviewRepository,
+        writer,
+        failingWriteLogRepository
+      );
+      const created = await serviceWithFailingLog.createIngestion(
+        makeRequest({ dry_run: false })
+      );
+      const candidate = await serviceWithFailingLog.receiveCandidate(
+        created.ingestion_id,
+        { candidate: makeCandidate() }
+      );
+
+      await expect(
+        serviceWithFailingLog.approve(created.ingestion_id, {
+          reviewer_id: 'reviewer_1',
+          review_record_id: candidate.review_record_id,
+        })
+      ).rejects.toBeInstanceOf(FeishuCommitFailedError);
+
+      const persisted = await serviceWithFailingLog.getIngestion(created.ingestion_id);
+      expect(persisted.status).toBe('commit_failed');
+      expect(persisted.business_record_id).toBeUndefined();
+    });
+
+    it('does not report a dry run completed when its audit log cannot be persisted', async () => {
+      const failingWriteLogRepository: WriteLogRepository = {
+        create: vi.fn(async () => {
+          throw new Error('write log unavailable');
+        }),
+        findByIngestionId: vi.fn(async () => []),
+        save: vi.fn(async () => undefined),
+      };
+      const serviceWithFailingLog = new IngestionService(
+        repository,
+        reviewRepository,
+        writer,
+        failingWriteLogRepository
+      );
+      const created = await serviceWithFailingLog.createIngestion(
+        makeRequest({ dry_run: true })
+      );
+      const candidate = await serviceWithFailingLog.receiveCandidate(
+        created.ingestion_id,
+        { candidate: makeCandidate() }
+      );
+
+      await expect(
+        serviceWithFailingLog.approve(created.ingestion_id, {
+          reviewer_id: 'reviewer_1',
+          review_record_id: candidate.review_record_id,
+        })
+      ).rejects.toBeInstanceOf(FeishuCommitFailedError);
+
+      const persisted = await serviceWithFailingLog.getIngestion(created.ingestion_id);
+      expect(persisted.status).toBe('approved');
+      expect(write).not.toHaveBeenCalled();
+    });
+
+    it('review_record_id mismatch is rejected with BAD_REQUEST', async () => {
+      const { ingestionId } = await prepareApprovedTask(false);
+      await expect(
+        commitService.approve(ingestionId, {
+          reviewer_id: 'reviewer_1',
+          review_record_id: 'wrong_record_id',
+        })
+      ).rejects.toThrow('Review record ID mismatch');
+    });
+
+    it('corrections are re-mapped and re-pipelined before the customer write', async () => {
+      const { ingestionId, reviewRecordId } = await prepareApprovedTask(false);
+
+      // Use the English key `budget` to verify TASK-002 mapper is applied
+      // to corrections. '5000元以上' is a canonical enum value (candidate
+      // had '3000-5000元' via the `budget` key), so format_clean passes it
+      // through unchanged — proving the corrected value survives the
+      // re-pipeline run and reaches the writer.
+      const approved = await commitService.approve(ingestionId, {
+        reviewer_id: 'reviewer_1',
+        review_record_id: reviewRecordId,
+        corrections: { budget: '5000元以上' },
+      });
+
+      expect(approved.status).toBe('completed');
+      expect(approved.review_decision).toBe('modified');
+      expect(approved.normalized_fields).toMatchObject({
+        预算区间: '5000元以上',
+      });
+      // Writer received the corrected, re-pipelined normalized_fields.
+      const writerInput = write.mock.calls[0][0];
+      expect(writerInput.normalizedFields['预算区间']).toBe('5000元以上');
     });
   });
 });

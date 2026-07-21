@@ -1,6 +1,7 @@
 import type { IngestionTask } from '../domain/ingestion.js';
 import type { TaskRepository } from './task-repository.js';
-import type { FeishuClient } from '../feishu/feishu-client.js';
+import type { FeishuClient, FeishuRecord } from '../feishu/feishu-client.js';
+import { normalizeFeishuJson } from '../feishu/normalize-text.js';
 
 /**
  * Field names in the "Collator 摄入任务" Feishu table.
@@ -113,23 +114,28 @@ export class FeishuTaskRepository implements TaskRepository {
 
   /**
    * Parse the 任务快照 JSON field back into an IngestionTask.
-   * Throws if the snapshot is missing or malformed — the indexed columns
-   * alone cannot reconstruct a full task.
+   *
+   * Uses the shared `normalizeFeishuJson` helper so that all three legal
+   * Feishu text-field return shapes are handled transparently:
+   *   - string                    (text_field_as_array=false)
+   *   - { text: string }          (single-segment rich text)
+   *   - Array<{ text: string }>   (multi-segment rich text / API default)
+   *
+   * Throws a `NormalizeTextError` if the field is missing, has an
+   * unsupported shape, or contains malformed JSON. The error includes
+   * repository / field name / record_id for diagnosis but never echoes
+   * the raw snapshot content (which may contain PII).
    */
-  private parseSnapshot(record: { fields: Record<string, unknown> }): IngestionTask {
-    const raw = record.fields[FIELD.snapshot];
-    if (typeof raw !== 'string') {
-      throw new Error(
-        `FeishuTaskRepository: 任务快照 JSON missing or not a string for record`
-      );
-    }
-    try {
-      return JSON.parse(raw) as IngestionTask;
-    } catch (e) {
-      throw new Error(
-        `FeishuTaskRepository: 任务快照 JSON parse failed: ${(e as Error).message}`
-      );
-    }
+  private parseSnapshot(record: FeishuRecord): IngestionTask {
+    return normalizeFeishuJson<IngestionTask>(
+      record.fields[FIELD.snapshot],
+      {
+        repository: 'FeishuTaskRepository',
+        fieldName: FIELD.snapshot,
+        recordId: record.record_id,
+        required: true,
+      }
+    ) as IngestionTask;
   }
 
   /**

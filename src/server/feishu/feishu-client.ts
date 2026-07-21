@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { FeishuApiError } from './feishu-errors.js';
 
 /**
@@ -13,6 +14,19 @@ const DEFAULT_API_BASE = 'https://open.feishu.cn';
  * Official signal: code=99991663 ("invalid access token" / "token expired").
  */
 const TOKEN_INVALID_CODE = 99991663;
+
+/**
+ * Produce a stable UUIDv4-shaped operation token from a logical operation
+ * key. Feishu validates the UUID version/variant bits and uses the token to
+ * make record creation idempotent. The token contains no source data.
+ */
+export function createStableClientToken(operationKey: string): string {
+  const bytes = Buffer.from(createHash('sha256').update(operationKey).digest().subarray(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 export interface FeishuClientOptions {
   appId: string;
@@ -130,19 +144,31 @@ export class FeishuClient {
     return this.getTenantAccessToken();
   }
 
-  async createRecord(tableId: string, fields: Record<string, unknown>): Promise<string> {
+  async createRecord(
+    tableId: string,
+    fields: Record<string, unknown>,
+    clientToken?: string
+  ): Promise<string> {
+    const query = clientToken
+      ? `?client_token=${encodeURIComponent(clientToken)}`
+      : '';
     const data = await this.callWithRetry<{ record: { record_id: string } }>(
       'POST',
-      `/open-apis/bitable/v1/apps/${this.baseToken}/tables/${tableId}/records`,
+      `/open-apis/bitable/v1/apps/${this.baseToken}/tables/${tableId}/records${query}`,
       { fields }
     );
     return data.record.record_id;
   }
 
   async getRecord(tableId: string, recordId: string): Promise<FeishuRecord> {
+    // Explicitly request text fields as plain strings rather than
+    // `[{ text: "..." }]` arrays. The Repository adapters still defend
+    // against both shapes, but setting this flag reduces response-size
+    // variance and makes the default behaviour deterministic.
+    // See TASK-003-GATE-D-TEXT-NORMALIZATION AC-06.
     const data = await this.callWithRetry<{ record: FeishuRecord }>(
       'GET',
-      `/open-apis/bitable/v1/apps/${this.baseToken}/tables/${tableId}/records/${recordId}`
+      `/open-apis/bitable/v1/apps/${this.baseToken}/tables/${tableId}/records/${recordId}?text_field_as_array=false`
     );
     return data.record;
   }
@@ -172,6 +198,12 @@ export class FeishuClient {
     if (opts.filter) payload.filter = opts.filter;
     if (typeof opts.page_size === 'number') payload.page_size = opts.page_size;
     if (typeof opts.page_token === 'string') payload.page_token = opts.page_token;
+    // Explicitly request text fields as plain strings rather than
+    // `[{ text: "..." }]` arrays. The Repository adapters still defend
+    // against both shapes, but setting this flag reduces response-size
+    // variance and makes the default behaviour deterministic.
+    // See TASK-003-GATE-D-TEXT-NORMALIZATION AC-06.
+    payload.text_field_as_array = false;
     const data = await this.callWithRetry<{
       items?: FeishuRecord[];
       has_more?: boolean;
@@ -180,7 +212,7 @@ export class FeishuClient {
     }>(
       'POST',
       `/open-apis/bitable/v1/apps/${this.baseToken}/tables/${tableId}/records/search`,
-      Object.keys(payload).length ? payload : {}
+      payload
     );
     return data.items ?? [];
   }

@@ -1,10 +1,18 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { buildApp } from '../../src/server/app.js';
 import { InMemoryTaskRepository } from '../../src/server/repositories/in-memory-task-repository.js';
 import { InMemoryReviewRepository } from '../../src/server/repositories/in-memory-review-repository.js';
+import { InMemoryWriteLogRepository } from '../../src/server/repositories/in-memory-write-log-repository.js';
 import { generateSignatureHeaders } from '../../src/server/security/signature.js';
 import type { FastifyInstance } from 'fastify';
 import type { IngestionTask } from '../../src/server/domain/ingestion.js';
+import type {
+  CustomerRecordWriter,
+  CustomerRecordWriterInput,
+  CustomerRecordWriterResult,
+} from '../../src/server/business/customer-record-writer.js';
+import { FeishuApiError } from '../../src/server/feishu/feishu-errors.js';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
 
@@ -26,12 +34,45 @@ async function setup(): Promise<{
   app: FastifyInstance;
   repository: InMemoryTaskRepository;
   reviewRepository: InMemoryReviewRepository;
+}>;
+async function setup(options: {
+  writer?: CustomerRecordWriter;
+  writeLogRepository?: InMemoryWriteLogRepository;
+}): Promise<{
+  app: FastifyInstance;
+  repository: InMemoryTaskRepository;
+  reviewRepository: InMemoryReviewRepository;
+  writeLogRepository: InMemoryWriteLogRepository;
+  writer: CustomerRecordWriter;
+}>;
+async function setup(options?: {
+  writer?: CustomerRecordWriter;
+  writeLogRepository?: InMemoryWriteLogRepository;
+}): Promise<{
+  app: FastifyInstance;
+  repository: InMemoryTaskRepository;
+  reviewRepository: InMemoryReviewRepository;
+  writeLogRepository?: InMemoryWriteLogRepository;
+  writer?: CustomerRecordWriter;
 }> {
   process.env.COLLATOR_WEBHOOK_SECRET = WEBHOOK_SECRET;
   const repository = new InMemoryTaskRepository();
   const reviewRepository = new InMemoryReviewRepository();
-  const { app } = await buildApp({ repository, reviewRepository });
-  return { app, repository, reviewRepository };
+  // Only pass writer/writeLogRepository through to buildApp when a writer
+  // is provided. When writer is absent, IngestionService falls back to the
+  // legacy Phase 3B path (approve -> completed directly), which is the
+  // behaviour existing tests rely on.
+  const writer = options?.writer;
+  const writeLogRepository = writer
+    ? (options?.writeLogRepository ?? new InMemoryWriteLogRepository())
+    : undefined;
+  const { app } = await buildApp({
+    repository,
+    reviewRepository,
+    customerRecordWriter: writer,
+    writeLogRepository,
+  });
+  return { app, repository, reviewRepository, writeLogRepository, writer };
 }
 
 describe('POST /v1/ingestions', () => {
@@ -776,5 +817,207 @@ describe('POST /v1/ingestions/:id/approve and /reject', () => {
     const body = response.json();
     expect(body.status).toBe('review_rejected');
     expect(body.review_decision).toBe('rejected');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-003: HTTP-level integration for the customer-record commit flow.
+// Exercises the full pipeline: approve -> committing -> completed/commit_failed
+// through Fastify's HTTP layer, verifying status codes, response shapes, and
+// that PII never leaks in HTTP responses.
+// ---------------------------------------------------------------------------
+
+describe('TASK-003: POST /v1/ingestions/:id/approve commit flow', () => {
+  beforeEach(() => {
+    delete process.env.COLLATOR_WEBHOOK_SECRET;
+  });
+
+  function makeWriter(
+    impl: (input: CustomerRecordWriterInput) => Promise<CustomerRecordWriterResult>
+  ): { writer: CustomerRecordWriter; write: Mock<typeof impl> } {
+    const write = vi.fn(impl);
+    return { writer: { write }, write };
+  }
+
+  async function createPendingReviewTask(
+    app: FastifyInstance,
+    options: { dryRun?: boolean } = {}
+  ): Promise<{ ingestionId: string; reviewRecordId: string }> {
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/ingestions',
+      payload: { ...makeIngestionBody(), dry_run: options.dryRun ?? false },
+    });
+    const ingestionId = created.json().ingestion_id as string;
+
+    const payload = {
+      candidate: {
+        schema_name: 'customer',
+        schema_version: '1.0.0',
+        prompt_version: '1.0.0',
+        fields: { 客户姓名: '张三', 联系方式: '13800138000', 预算区间: '3000-5000元' },
+        field_confidence: {},
+        evidence: {},
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+    const { timestamp, signature } = generateSignatureHeaders(rawBody, WEBHOOK_SECRET);
+
+    const candidateResponse = await app.inject({
+      method: 'POST',
+      url: `/v1/internal/ingestions/${ingestionId}/candidate`,
+      headers: {
+        'x-collator-timestamp': timestamp,
+        'x-collator-signature': signature,
+      },
+      payload,
+    });
+
+    return {
+      ingestionId,
+      reviewRecordId: candidateResponse.json().review_record_id as string,
+    };
+  }
+
+  it('returns 200 with business_record_id on a successful commit', async () => {
+    const { writer, write } = makeWriter(async (input) => ({
+      business_record_id: `rec_customer_${input.ingestionId.slice(-6)}`,
+      created: true,
+    }));
+    const { app, writeLogRepository } = await setup({ writer });
+
+    const { ingestionId, reviewRecordId } = await createPendingReviewTask(app);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/ingestions/${ingestionId}/approve`,
+      payload: { reviewer_id: 'reviewer_1', review_record_id: reviewRecordId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.status).toBe('completed');
+    expect(body.business_record_id).toMatch(/^rec_customer_/);
+    expect(body.error_code).toBeUndefined();
+    expect(write).toHaveBeenCalledTimes(1);
+
+    // Sanitised GET response: phone in normalized_fields is masked.
+    const getResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/ingestions/${ingestionId}`,
+    });
+    expect(getResponse.body).not.toContain('13800138000');
+    expect(getResponse.body).toContain('138****8000');
+
+    // Write log persisted with status=succeeded.
+    const logs = await writeLogRepository!.findByIngestionId(ingestionId);
+    expect(logs).toHaveLength(1);
+    expect(logs[0].status).toBe('succeeded');
+  });
+
+  it('returns 502 with FEISHU_COMMIT_FAILED when the writer raises FeishuApiError', async () => {
+    // Writer throws a raw FeishuApiError (as a lower-level Feishu client would).
+    // The service classifies it as FEISHU_COMMIT_FAILED and re-throws as
+    // FeishuCommitFailedError, which Fastify's error handler maps to HTTP 502.
+    const { writer } = makeWriter(async () => {
+      throw new FeishuApiError(1254045, 'permission denied phone 13800138000');
+    });
+    const { app, writeLogRepository } = await setup({ writer });
+
+    const { ingestionId, reviewRecordId } = await createPendingReviewTask(app);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/ingestions/${ingestionId}/approve`,
+      payload: { reviewer_id: 'reviewer_1', review_record_id: reviewRecordId },
+    });
+
+    expect(response.statusCode).toBe(502);
+    const body = response.json();
+    expect(body.error.code).toBe('FEISHU_COMMIT_FAILED');
+    // HTTP error message must not contain the raw phone number.
+    expect(JSON.stringify(body)).not.toContain('13800138000');
+
+    // Task persisted as commit_failed with sanitised error_message.
+    const getResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/ingestions/${ingestionId}`,
+    });
+    const task = getResponse.json();
+    expect(task.status).toBe('commit_failed');
+    expect(task.error_code).toBe('FEISHU_COMMIT_FAILED');
+    // Sanitised message persisted (phone already masked by FeishuApiError).
+    expect(task.error_message).toContain('138****8000');
+    expect(task.error_message).not.toContain('13800138000');
+
+    // Write log persisted with status=failed and FEISHU_COMMIT_FAILED code.
+    const logs = await writeLogRepository!.findByIngestionId(ingestionId);
+    expect(logs).toHaveLength(1);
+    expect(logs[0].status).toBe('failed');
+    expect(logs[0].error_code).toBe('FEISHU_COMMIT_FAILED');
+    expect(logs[0].redacted_error_message).toContain('138****8000');
+  });
+
+  it('returns 200 with status=completed on dry_run=true (no customer write)', async () => {
+    const { writer, write } = makeWriter(async () => {
+      throw new Error('writer should not be called on dry_run=true');
+    });
+    const { app, writeLogRepository } = await setup({ writer });
+
+    const { ingestionId, reviewRecordId } = await createPendingReviewTask(app, {
+      dryRun: true,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/ingestions/${ingestionId}/approve`,
+      payload: { reviewer_id: 'reviewer_1', review_record_id: reviewRecordId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.status).toBe('completed');
+    expect(body.business_record_id).toBeUndefined();
+    expect(write).not.toHaveBeenCalled();
+
+    const logs = await writeLogRepository!.findByIngestionId(ingestionId);
+    expect(logs).toHaveLength(1);
+    expect(logs[0].status).toBe('skipped_dry_run');
+    expect(logs[0].target_table_id).toBe('dry_run');
+  });
+
+  it('retry after commit_failed: second approve returns 200 with business_record_id', async () => {
+    // First call fails, second succeeds (writer finds existing record).
+    const { writer, write } = makeWriter(async (input) => ({
+      business_record_id: `rec_existing_${input.ingestionId.slice(-6)}`,
+      created: false,
+    }));
+    write.mockRejectedValueOnce(new FeishuApiError(1254045, 'transient'));
+    const { app, writeLogRepository } = await setup({ writer });
+
+    const { ingestionId, reviewRecordId } = await createPendingReviewTask(app);
+
+    const firstResponse = await app.inject({
+      method: 'POST',
+      url: `/v1/ingestions/${ingestionId}/approve`,
+      payload: { reviewer_id: 'reviewer_1', review_record_id: reviewRecordId },
+    });
+    expect(firstResponse.statusCode).toBe(502);
+
+    const secondResponse = await app.inject({
+      method: 'POST',
+      url: `/v1/ingestions/${ingestionId}/approve`,
+      payload: { reviewer_id: 'reviewer_1', review_record_id: reviewRecordId },
+    });
+    expect(secondResponse.statusCode).toBe(200);
+    const body = secondResponse.json();
+    expect(body.status).toBe('completed');
+    expect(body.business_record_id).toMatch(/^rec_existing_/);
+    expect(body.error_code).toBeUndefined();
+
+    // Two write logs: failed (first attempt) + succeeded (retry).
+    const logs = await writeLogRepository!.findByIngestionId(ingestionId);
+    const statuses = logs.map((l) => l.status).sort();
+    expect(statuses).toEqual(['failed', 'succeeded']);
   });
 });

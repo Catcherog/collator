@@ -8,11 +8,21 @@ import {
 } from './repositories/repository-factory.js';
 import type { TaskRepository } from './repositories/task-repository.js';
 import type { ReviewRepository } from './repositories/review-repository.js';
+import type { WriteLogRepository } from './repositories/write-log-repository.js';
+import type { CustomerRecordWriter } from './business/customer-record-writer.js';
 import { CollatorError } from './domain/errors.js';
 
 export interface BuildAppOptions {
   repository?: TaskRepository;
   reviewRepository?: ReviewRepository;
+  /**
+   * Optional customer-record writer. When provided alongside
+   * `writeLogRepository`, `approve()` runs the full TASK-003 commit
+   * flow (pending_review → approved → committing → completed/commit_failed).
+   * When absent, `approve()` falls back to the legacy Phase 3B path.
+   */
+  customerRecordWriter?: CustomerRecordWriter;
+  writeLogRepository?: WriteLogRepository;
 }
 
 export async function buildApp(options?: BuildAppOptions) {
@@ -21,9 +31,13 @@ export async function buildApp(options?: BuildAppOptions) {
   // Tests can pass explicit repositories to bypass config-driven selection.
   let repository: TaskRepository;
   let reviewRepository: ReviewRepository;
+  let customerRecordWriter: CustomerRecordWriter | undefined;
+  let writeLogRepository: WriteLogRepository | undefined;
   if (options?.repository && options?.reviewRepository) {
     repository = options.repository;
     reviewRepository = options.reviewRepository;
+    customerRecordWriter = options.customerRecordWriter;
+    writeLogRepository = options.writeLogRepository;
   } else if (options?.repository) {
     // Backward-compat: caller injected only a task repository. Synthesize
     // an in-memory review repository so the service can still run.
@@ -32,12 +46,21 @@ export async function buildApp(options?: BuildAppOptions) {
       './repositories/in-memory-review-repository.js'
     );
     reviewRepository = new InMemoryReviewRepository();
+    customerRecordWriter = options.customerRecordWriter;
+    writeLogRepository = options.writeLogRepository;
   } else {
     const bundle = createRepositories(config);
     repository = bundle.taskRepository;
     reviewRepository = bundle.reviewRepository;
+    customerRecordWriter = bundle.customerRecordWriter;
+    writeLogRepository = bundle.writeLogRepository;
   }
-  const service = new IngestionService(repository, reviewRepository);
+  const service = new IngestionService(
+    repository,
+    reviewRepository,
+    customerRecordWriter,
+    writeLogRepository
+  );
 
   const app = Fastify({
     logger: {

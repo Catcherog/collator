@@ -3,6 +3,10 @@
 // 不透明 review_record_id 直接使用飞书返回的真实 record_id。
 
 import type { FeishuClient, FeishuRecord } from '../feishu/feishu-client.js';
+import {
+  normalizeFeishuJson,
+  normalizeFeishuText,
+} from '../feishu/normalize-text.js';
 import type {
   NewReviewRecord,
   ReviewRecord,
@@ -160,10 +164,10 @@ export class FeishuReviewRepository implements ReviewRepository {
       updated_at: updatedAt,
     };
 
-    const reviewer = this.readOptionalScalar(fields, FIELD.reviewer);
+    const reviewer = this.readOptionalScalar(fields, FIELD.reviewer, record.record_id);
     if (reviewer !== undefined) result.reviewer_id = reviewer as string;
 
-    const decision = this.readOptionalScalar(fields, FIELD.decision);
+    const decision = this.readOptionalScalar(fields, FIELD.decision, record.record_id);
     if (decision !== undefined) {
       result.review_decision = decision as ReviewRecord['review_decision'];
     }
@@ -185,28 +189,37 @@ export class FeishuReviewRepository implements ReviewRepository {
     recordId: string
   ): unknown {
     const raw = fields[fieldName];
-    if (raw === undefined || raw === null) {
-      throw new Error(
-        `FeishuReviewRepository: required field "${fieldName}" missing on record ${recordId}`
-      );
+    // Datetime fields are returned as numbers (epoch ms). Preserve the
+    // numeric value so callers can distinguish datetime from text.
+    if (typeof raw === 'number') {
+      return raw;
     }
-    // Feishu may return text fields as { text: '...' } objects.
-    if (typeof raw === 'object' && 'text' in raw) {
-      return (raw as { text: string }).text;
-    }
-    return raw;
+    // Text fields: delegate to the shared normaliser, which handles all
+    // three legal Feishu return shapes (string, {text}, Array<{text}>)
+    // and rejects unsupported shapes with a diagnostic error.
+    return normalizeFeishuText(raw, {
+      repository: 'FeishuReviewRepository',
+      fieldName,
+      recordId,
+      required: true,
+    });
   }
 
   private readOptionalScalar(
     fields: Record<string, unknown>,
-    fieldName: string
+    fieldName: string,
+    recordId: string
   ): unknown {
     const raw = fields[fieldName];
-    if (raw === undefined || raw === null) return undefined;
-    if (typeof raw === 'object' && 'text' in raw) {
-      return (raw as { text: string }).text;
+    if (typeof raw === 'number') {
+      return raw;
     }
-    return raw;
+    return normalizeFeishuText(raw, {
+      repository: 'FeishuReviewRepository',
+      fieldName,
+      recordId,
+      required: false,
+    });
   }
 
   private readJson(
@@ -214,21 +227,18 @@ export class FeishuReviewRepository implements ReviewRepository {
     fieldName: string,
     recordId: string
   ): unknown {
-    const raw = fields[fieldName];
-    if (raw === undefined || raw === null) {
-      throw new Error(
-        `FeishuReviewRepository: required JSON field "${fieldName}" missing on record ${recordId}`
-      );
-    }
-    const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
-    try {
-      return JSON.parse(text);
-    } catch (e) {
-      // Mention only field name and record_id — never echo the raw content
-      // (it may contain phone numbers or original customer chat text).
-      throw new Error(
-        `FeishuReviewRepository: field "${fieldName}" on record ${recordId} is not valid JSON (${(e as Error).message})`
-      );
-    }
+    // Delegate both text-shape normalisation and JSON parsing to the
+    // shared helper. Errors distinguish "text structure" failures from
+    // "JSON parse" failures, and never echo the raw (potentially
+    // sensitive) field content.
+    return normalizeFeishuJson(
+      fields[fieldName],
+      {
+        repository: 'FeishuReviewRepository',
+        fieldName,
+        recordId,
+        required: true,
+      }
+    );
   }
 }

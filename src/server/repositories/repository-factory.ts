@@ -1,10 +1,14 @@
 import type { Config } from '../config.js';
 import type { TaskRepository } from './task-repository.js';
 import type { ReviewRepository } from './review-repository.js';
+import type { WriteLogRepository } from './write-log-repository.js';
+import type { CustomerRecordWriter } from '../business/customer-record-writer.js';
 import { InMemoryTaskRepository } from './in-memory-task-repository.js';
 import { InMemoryReviewRepository } from './in-memory-review-repository.js';
 import { FeishuTaskRepository } from './feishu-task-repository.js';
 import { FeishuReviewRepository } from './feishu-review-repository.js';
+import { FeishuWriteLogRepository } from './feishu-write-log-repository.js';
+import { FeishuCustomerRecordWriter } from '../business/customer-record-writer.js';
 import { FeishuClient } from '../feishu/feishu-client.js';
 
 /**
@@ -12,10 +16,17 @@ import { FeishuClient } from '../feishu/feishu-client.js';
  * `taskRepository` and `reviewRepository` always come as a pair so callers
  * never have to construct a review repository without the matching task
  * repository.
+ *
+ * `customerRecordWriter` and `writeLogRepository` are optional: in memory
+ * mode they are absent (IngestionService falls back to the legacy
+ * approve() path). In feishu mode they are constructed so the full
+ * TASK-003 commit flow is available.
  */
 export interface RepositoryBundle {
   taskRepository: TaskRepository;
   reviewRepository: ReviewRepository;
+  customerRecordWriter?: CustomerRecordWriter;
+  writeLogRepository?: WriteLogRepository;
 }
 
 interface FeishuRequiredFields {
@@ -24,10 +35,12 @@ interface FeishuRequiredFields {
   baseToken: string;
   ingestionTableId: string;
   reviewTableId: string;
+  writeLogTableId: string;
+  customerTableId: string;
 }
 
 /**
- * Collect and validate the Feishu credentials required by both repositories.
+ * Collect and validate the Feishu credentials required by all repositories.
  *
  * The config schema already rejects missing values at load time, but we
  * re-validate here so any future caller that bypasses `loadConfig` (e.g. a
@@ -44,6 +57,8 @@ function collectFeishuRequired(config: Config): FeishuRequiredFields {
     ['baseToken', 'FEISHU_BASE_APP_TOKEN', config.feishuBaseAppToken],
     ['ingestionTableId', 'FEISHU_INGESTION_TABLE_ID', config.feishuIngestionTableId],
     ['reviewTableId', 'FEISHU_REVIEW_TABLE_ID', config.feishuReviewTableId],
+    ['writeLogTableId', 'FEISHU_WRITE_LOG_TABLE_ID', config.feishuWriteLogTableId],
+    ['customerTableId', 'FEISHU_CUSTOMER_TABLE_ID', config.feishuCustomerTableId],
   ];
   const result = {} as FeishuRequiredFields;
   for (const [field, envName, value] of required) {
@@ -90,9 +105,16 @@ export function createTaskRepository(config: Config): TaskRepository {
  * Build the production repository bundle used by `buildApp`.
  *
  * Memory mode returns `InMemoryTaskRepository` plus `InMemoryReviewRepository`.
- * Feishu mode constructs one shared `FeishuClient` (so both repositories reuse
- * the same access token cache) and returns `FeishuTaskRepository` plus
- * `FeishuReviewRepository` with their environment-injected table IDs.
+ * `customerRecordWriter` and `writeLogRepository` are intentionally absent
+ * in memory mode — the IngestionService detects their absence and falls
+ * back to the legacy approve() path that does not perform a customer
+ * write. Tests that need the commit flow inject `InMemoryWriteLogRepository`
+ * plus a mock `CustomerRecordWriter` directly through `BuildAppOptions`.
+ *
+ * Feishu mode constructs one shared `FeishuClient` (so all repositories
+ * reuse the same access token cache) and returns `FeishuTaskRepository`
+ * plus `FeishuReviewRepository` plus `FeishuWriteLogRepository` plus
+ * `FeishuCustomerRecordWriter` with their environment-injected table IDs.
  *
  * There is no silent fallback to memory: if any required Feishu credential
  * is missing, this function throws with the exact environment variable name.
@@ -111,6 +133,12 @@ export function createRepositories(config: Config): RepositoryBundle {
       }),
       reviewRepository: new FeishuReviewRepository(client, {
         reviewTableId: required.reviewTableId,
+      }),
+      writeLogRepository: new FeishuWriteLogRepository(client, {
+        writeLogTableId: required.writeLogTableId,
+      }),
+      customerRecordWriter: new FeishuCustomerRecordWriter(client, {
+        customerTableId: required.customerTableId,
       }),
     };
   }

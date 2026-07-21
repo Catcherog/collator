@@ -37,6 +37,8 @@ const configSchema = z.object({
     ['feishuBaseAppToken', 'FEISHU_BASE_APP_TOKEN'],
     ['feishuIngestionTableId', 'FEISHU_INGESTION_TABLE_ID'],
     ['feishuReviewTableId', 'FEISHU_REVIEW_TABLE_ID'],
+    ['feishuWriteLogTableId', 'FEISHU_WRITE_LOG_TABLE_ID'],
+    ['feishuCustomerTableId', 'FEISHU_CUSTOMER_TABLE_ID'],
   ];
   for (const [key, envName] of required) {
     const v = data[key];

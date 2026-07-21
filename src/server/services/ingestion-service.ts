@@ -8,9 +8,21 @@ import type {
   RejectRequest,
   ReviewDecision,
 } from '../domain/ingestion.js';
-import { BadRequestError, ConflictError, NotFoundError } from '../domain/errors.js';
+import {
+  BadRequestError,
+  ConflictError,
+  FeishuCommitFailedError,
+  NotFoundError,
+} from '../domain/errors.js';
 import type { TaskRepository } from '../repositories/task-repository.js';
 import type { NewReviewRecord, ReviewRepository } from '../repositories/review-repository.js';
+import type {
+  WriteLogRepository,
+} from '../repositories/write-log-repository.js';
+import type {
+  CustomerRecordWriter,
+} from '../business/customer-record-writer.js';
+import { FeishuApiError } from '../feishu/feishu-errors.js';
 import { mapCustomerCandidate } from '../mapping/customer-candidate-mapper.js';
 import { runCleaningPipeline } from '../cleaning/pipeline/cleaning-pipeline.js';
 import { sanitizeWarningText } from '../security/redaction.js';
@@ -69,11 +81,33 @@ export class IngestionService {
     string,
     Promise<{ ingestion_id: string; status: string; review_record_id: string }>
   >();
+  private readonly pendingApprovals = new Map<string, Promise<IngestionTask>>();
 
   constructor(
     private readonly repository: TaskRepository,
-    private readonly reviewRepository: ReviewRepository
-  ) {}
+    private readonly reviewRepository: ReviewRepository,
+    /**
+     * Optional customer-record writer. A non-dry-run approval fails closed
+     * when the TASK-003 commit dependencies are absent. The legacy path is
+     * retained only for dry-run compatibility.
+     *
+     * When present, approve() runs the full TASK-003 commit flow:
+     * pending_review → approved → committing → completed / commit_failed.
+     */
+    private readonly customerRecordWriter?: CustomerRecordWriter,
+    /**
+     * Optional write-log repository. When `customerRecordWriter` is
+     * present this must also be present so the audit trail is persisted.
+     * Partial dependency injection is rejected by the constructor.
+     */
+    private readonly writeLogRepository?: WriteLogRepository
+  ) {
+    if (Boolean(customerRecordWriter) !== Boolean(writeLogRepository)) {
+      throw new Error(
+        'Customer record writer and write-log repository must be configured together'
+      );
+    }
+  }
 
   async createIngestion(req: CreateIngestionRequest): Promise<IngestionResponse> {
     if (req.target_domain !== 'customer_consultation') {
@@ -285,6 +319,22 @@ export class IngestionService {
   }
 
   async approve(ingestionId: string, req: ReviewDecision): Promise<IngestionTask> {
+    // Per-ingestion serialization: concurrent approve calls for the same
+    // ingestion share a single in-flight promise so the commit flow runs
+    // once and all callers observe the same final task. This is critical
+    // for commit_failed retries — without serialization two concurrent
+    // retries could both think no customer write has happened yet.
+    const inFlight = this.pendingApprovals.get(ingestionId);
+    if (inFlight) return inFlight;
+
+    const promise = this.doApprove(ingestionId, req).finally(() => {
+      this.pendingApprovals.delete(ingestionId);
+    });
+    this.pendingApprovals.set(ingestionId, promise);
+    return promise;
+  }
+
+  private async doApprove(ingestionId: string, req: ReviewDecision): Promise<IngestionTask> {
     const task = await this.getIngestion(ingestionId);
 
     if (task.status === 'completed') {
@@ -295,24 +345,277 @@ export class IngestionService {
       throw new ConflictError('Rejected ingestion cannot be approved');
     }
 
+    if (!['pending_review', 'commit_failed', 'approved', 'committing'].includes(task.status)) {
+      throw new ConflictError('Ingestion is not awaiting approval');
+    }
+
     if (task.review_record_id && task.review_record_id !== req.review_record_id) {
       throw new BadRequestError('Review record ID mismatch');
     }
 
+    if (!task.dry_run && (!this.customerRecordWriter || !this.writeLogRepository)) {
+      throw new Error('Customer commit flow is not configured');
+    }
+
+    // Re-map corrections (TASK-002 supports English corrections keys) and
+    // re-run the deterministic cleaning pipeline so the persisted
+    // normalized_fields reflect the human-approved final values. The
+    // original task.normalized_fields is never mutated in place.
+    const finalNormalizedFields = this.applyCorrections(task, req.corrections);
+
     const now = nowIso();
-    const updated: IngestionTask = {
+    // Stage 1: pending_review (or commit_failed retry) -> approved.
+    // Persist the approved snapshot before attempting the customer write
+    // so a crash between approve and commit leaves the task in a
+    // recoverable state with the human decision captured.
+    const approvedTask: IngestionTask = {
       ...task,
-      status: 'completed',
+      status: 'approved',
       reviewer_id: req.reviewer_id,
-      review_decision: req.corrections && Object.keys(req.corrections).length > 0 ? 'modified' : 'approved',
-      normalized_fields: req.corrections
-        ? { ...(task.normalized_fields ?? {}), ...req.corrections }
-        : task.normalized_fields,
+      review_decision:
+        req.corrections && Object.keys(req.corrections).length > 0
+          ? 'modified'
+          : 'approved',
+      normalized_fields: finalNormalizedFields,
       updated_at: now,
     };
+    await this.repository.save(approvedTask);
 
-    await this.repository.save(updated);
-    return updated;
+    // Legacy dry-run compatibility path. Non-dry-run approvals fail closed
+    // above when the commit dependencies are absent.
+    if (!this.customerRecordWriter || !this.writeLogRepository) {
+      const completedTask: IngestionTask = {
+        ...approvedTask,
+        status: 'completed',
+        updated_at: nowIso(),
+      };
+      await this.repository.save(completedTask);
+      return completedTask;
+    }
+
+    if (approvedTask.dry_run) {
+      return this.handleDryRunApprove(approvedTask);
+    }
+
+    return this.handleCommitFlow(approvedTask, finalNormalizedFields);
+  }
+
+  /**
+   * Merge human corrections into the task's normalised fields. Corrections
+   * may use English keys (TASK-002 candidate schema) or Chinese canonical
+   * keys; English keys are mapped through `mapCustomerCandidate` before
+   * being merged. The pipeline is then re-run on the merged result so
+   * enum mapping / format cleaning / validation reflect the final
+   * human-approved values.
+   *
+   * Returns a fresh object; the task input is not mutated.
+   */
+  private applyCorrections(
+    task: IngestionTask,
+    corrections?: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (!corrections || Object.keys(corrections).length === 0) {
+      return task.normalized_fields ?? {};
+    }
+    // Map corrections through the same English->Chinese mapper used for
+    // candidates. Chinese keys pass through; English keys are translated;
+    // unknown keys are dropped (with warnings we discard here since the
+    // human explicitly typed them — the merge below still includes any
+    // Chinese keys verbatim).
+    const { mappedFields } = mapCustomerCandidate(corrections);
+    const merged = { ...(task.normalized_fields ?? {}), ...mappedFields };
+    // Re-run the deterministic pipeline so enum mapping, format cleaning,
+    // and validation reflect the corrected values. We only persist the
+    // standardizedRecord; pipeline evidence is already on the task from
+    // the candidate stage and we don't want to overwrite it with a
+    // corrections-only run.
+    const result = runCleaningPipeline({
+      schemaKey: 'customer',
+      recordType: task.target_domain,
+      data: merged,
+    });
+    if (result.success) {
+      return result.standardizedRecord;
+    }
+    // If the corrected values fail the pipeline, persist the raw merge
+    // so the human can see what they entered. The pipeline failure
+    // does not block the commit flow — the human reviewer is the
+    // final authority.
+    return merged;
+  }
+
+  /**
+   * dry_run=true path: no customer write, write log status=skipped_dry_run,
+   * task status=completed. business_record_id remains undefined.
+   */
+  private async handleDryRunApprove(
+    approvedTask: IngestionTask
+  ): Promise<IngestionTask> {
+    const now = nowIso();
+    // Persist a skipped_dry_run write log so auditors can see the
+    // human approval happened even though no customer record was
+    // written.
+    try {
+      await this.writeLogRepository!.create({
+        ingestion_id: approvedTask.ingestion_id,
+        target_table_id: 'dry_run',
+        status: 'skipped_dry_run',
+        created_at: now,
+      });
+    } catch (e) {
+      throw new FeishuCommitFailedError(
+        `Dry-run audit failed: ${(e as Error)?.name ?? 'UnknownError'}`
+      );
+    }
+
+    const completedTask: IngestionTask = {
+      ...approvedTask,
+      status: 'completed',
+      updated_at: now,
+    };
+    await this.repository.save(completedTask);
+
+    return completedTask;
+  }
+
+  /**
+   * Full commit flow: approved -> committing -> try customer write ->
+   * completed (success) / commit_failed (failure).
+   *
+   * On failure the task is persisted as `commit_failed` and a sanitised
+   * write-log entry is created before re-throwing `FeishuCommitFailedError`
+   * so the HTTP layer returns 502.
+   */
+  private async handleCommitFlow(
+    approvedTask: IngestionTask,
+    finalNormalizedFields: Record<string, unknown>
+  ): Promise<IngestionTask> {
+    const targetTableId = this.getCustomerTableId();
+
+    // Stage 2: approved -> committing.
+    const committingTask: IngestionTask = {
+      ...approvedTask,
+      status: 'committing',
+      updated_at: nowIso(),
+    };
+    await this.repository.save(committingTask);
+
+    // Stage 3: try customer write.
+    let businessRecordId: string;
+    try {
+      const result = await this.customerRecordWriter!.write({
+        ingestionId: committingTask.ingestion_id,
+        normalizedFields: finalNormalizedFields,
+      });
+      businessRecordId = result.business_record_id;
+    } catch (e) {
+      // Persist commit_failed and a sanitised write-log entry before
+      // re-throwing. The HTTP layer converts FeishuCommitFailedError to
+      // HTTP 502; any other error type surfaces as INTERNAL_ERROR (500)
+      // but the task state is still recoverable.
+      const failedTask: IngestionTask = {
+        ...committingTask,
+        status: 'commit_failed',
+        // Both FeishuApiError (raw from lower-level Feishu calls) and
+        // FeishuCommitFailedError (wrapped by FeishuCustomerRecordWriter)
+        // are classified as FEISHU_COMMIT_FAILED per TASK-003 spec: any
+        // Feishu-side commit failure surfaces as HTTP 502 with this code.
+        error_code:
+          e instanceof FeishuCommitFailedError || e instanceof FeishuApiError
+            ? 'FEISHU_COMMIT_FAILED'
+            : 'COMMIT_FAILED',
+        error_message: this.sanitiseCommitErrorMessage(e),
+        updated_at: nowIso(),
+      };
+      await this.repository.save(failedTask);
+
+      try {
+        await this.writeLogRepository!.create({
+          ingestion_id: failedTask.ingestion_id,
+          target_table_id: targetTableId,
+          status: 'failed',
+          error_code: failedTask.error_code,
+          redacted_error_message: failedTask.error_message,
+          created_at: failedTask.updated_at,
+        });
+      } catch {
+        // Write-log failure must not mask the original commit failure.
+      }
+
+      // Re-throw FeishuCommitFailedError as-is; wrap unknown errors so
+      // the HTTP layer returns 502 (the caller can retry idempotently).
+      if (e instanceof FeishuCommitFailedError) throw e;
+      throw new FeishuCommitFailedError(
+        `Commit failed: ${(e as Error)?.name ?? 'UnknownError'}`
+      );
+    }
+
+    const completedAt = nowIso();
+    try {
+      await this.writeLogRepository!.create({
+        ingestion_id: committingTask.ingestion_id,
+        target_table_id: targetTableId,
+        business_record_id: businessRecordId,
+        status: 'succeeded',
+        created_at: completedAt,
+      });
+    } catch (e) {
+      const failedTask: IngestionTask = {
+        ...committingTask,
+        status: 'commit_failed',
+        error_code: 'COMMIT_AUDIT_FAILED',
+        error_message: this.sanitiseCommitErrorMessage(e),
+        updated_at: nowIso(),
+      };
+      await this.repository.save(failedTask);
+      throw new FeishuCommitFailedError(
+        `Commit audit failed: ${(e as Error)?.name ?? 'UnknownError'}`
+      );
+    }
+
+    // Stage 4: committing -> completed only after the succeeded audit entry
+    // is durable. A retry can safely reuse the same customer record.
+    const completedTask: IngestionTask = {
+      ...committingTask,
+      status: 'completed',
+      business_record_id: businessRecordId,
+      // Clear any prior commit_failed error fields on successful retry.
+      error_code: undefined,
+      error_message: undefined,
+      updated_at: completedAt,
+    };
+    await this.repository.save(completedTask);
+
+    return completedTask;
+  }
+
+  /**
+   * Derive the customer table ID for the write log's `target_table_id`
+   * field. We read it from the writer's options if available; otherwise
+   * fall back to the opaque string 'customer' so auditors still have a
+   * stable label.
+   */
+  private getCustomerTableId(): string {
+    const writer = this.customerRecordWriter as
+      | { options?: { customerTableId?: string } }
+      | undefined;
+    return writer?.options?.customerTableId ?? 'customer';
+  }
+
+  /**
+   * Sanitise a commit error message for write-log persistence.
+   * FeishuApiError already redacts phones and excludes app_secret; we
+   * pass its message through. Unknown errors are reduced to their
+   * `name` so no internal stack trace or PII leaks into the audit log.
+   */
+  private sanitiseCommitErrorMessage(e: unknown): string {
+    if (e instanceof FeishuApiError) {
+      return e.message;
+    }
+    if (e instanceof FeishuCommitFailedError) {
+      return e.message;
+    }
+    return `Commit failed: ${(e as Error)?.name ?? 'UnknownError'}`;
   }
 
   async reject(ingestionId: string, req: RejectRequest): Promise<IngestionTask> {
