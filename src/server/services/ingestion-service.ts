@@ -8,6 +8,8 @@ import type {
   RejectRequest,
   ReviewDecision,
 } from '../domain/ingestion.js';
+import type { CandidateV1 } from '../../contracts/candidate-v1.js';
+import { adaptCandidateV1ToRecord } from '../contracts/candidate-v1-adapter.js';
 import {
   BadRequestError,
   ConflictError,
@@ -315,6 +317,57 @@ export class IngestionService {
       ingestion_id: updated.ingestion_id,
       status: 'pending_review',
       review_record_id: review.review_record_id,
+    };
+  }
+
+  /**
+   * Task 3 Adoption Gate — 持续摄入入口的 V1 候选采用方法。
+   *
+   * 与 `receiveCandidate` 的关键区别：
+   * - **不**调用 `mapCustomerCandidate`（V1 是 project 实体，不是 customer）
+   * - **不**调用 `runCleaningPipeline`（清洗管道是 customer_consultation 专用）
+   * - **不**创建复核记录（reviewRepository 不被调用）
+   * - **不**触发飞书业务写入（无 customerRecordWriter 调用）
+   *
+   * 仅持久化 V1 候选（通过 `adaptCandidateV1ToRecord` 适配为内部 CandidateRecord
+   * 形状）作为采用证据，并将任务状态置为 `candidate_received`。
+   *
+   * 幂等性：同一 ingestion 重复调用 adoptCandidateV1 返回首次结果（基于
+   * `task.raw_candidate` 存在性判断，与 receiveCandidate 的幂等策略一致）。
+   */
+  async adoptCandidateV1(
+    ingestionId: string,
+    candidate: CandidateV1
+  ): Promise<{ ingestion_id: string; candidate_id: string; status: string }> {
+    const task = await this.getIngestion(ingestionId);
+
+    // Idempotent replay: V1 candidate already adopted.
+    if (
+      task.raw_candidate &&
+      task.raw_candidate.schema_name === 'project_candidate_v1'
+    ) {
+      return {
+        ingestion_id: task.ingestion_id,
+        candidate_id: (task.raw_candidate.fields as { candidate_id: string }).candidate_id,
+        status: 'candidate_received',
+      };
+    }
+
+    const adaptedRecord = adaptCandidateV1ToRecord(candidate);
+    const now = nowIso();
+    const updated: IngestionTask = {
+      ...task,
+      status: 'candidate_received',
+      candidate: adaptedRecord,
+      raw_candidate: adaptedRecord,
+      updated_at: now,
+    };
+    await this.repository.save(updated);
+
+    return {
+      ingestion_id: updated.ingestion_id,
+      candidate_id: candidate.candidate_id,
+      status: 'candidate_received',
     };
   }
 

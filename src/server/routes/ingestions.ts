@@ -4,6 +4,10 @@ import { CollatorError } from '../domain/errors.js';
 import type { IngestionService } from '../services/ingestion-service.js';
 import { verifySignature } from '../security/signature.js';
 import { redactObject } from '../security/redaction.js';
+import {
+  validateCandidateV1,
+  ContractValidationError,
+} from '../../contracts/candidate-v1.js';
 
 const createIngestionSchema = z.object({
   source_system: z.string().min(1),
@@ -72,6 +76,41 @@ export async function ingestionRoutes(app: FastifyInstance, service: IngestionSe
 
     const body = candidateCallbackSchema.parse(request.body);
     const result = await service.receiveCandidate(id, body);
+    return reply.status(200).send(result);
+  });
+
+  // Task 3 Adoption Gate — Candidate V1 持续摄入入口
+  //
+  // 此路由是 AC-10 Adoption Gate 的 collator 侧采用点：路由在调用任何
+  // 下游服务前，先通过 `validateCandidateV1` 校验请求体是否符合 Candidate V1
+  // 合同。校验失败时返回 HTTP 400 并附带合同错误代码（UNKNOWN_SCHEMA_VERSION /
+  // MISSING_REQUIRED_FIELD / INVALID_FIELD_TYPE），**不**调用 service，**不**
+  // 产生飞书业务写入副作用。校验通过时调用 `service.adoptCandidateV1` 持久化
+  // V1 候选作为采用证据（不触发 customer_consultation 清洗管道）。
+  //
+  // 与现有 `/v1/internal/ingestions/:id/candidate` 路由的关系：新增路由，不修改
+  // 现有 Dify 回调链路。Dify 回调仍使用 CandidateRecord 形状，V1 合同接入是
+  // 新增路径而非重构现有路径。
+  app.post('/v1/ingestions/:id/candidate-v1', async (request, reply) => {
+    const { id } = request.params as { id: string };
+
+    let candidate;
+    try {
+      candidate = validateCandidateV1(request.body);
+    } catch (err) {
+      if (err instanceof ContractValidationError) {
+        return reply.status(400).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            field: err.field,
+          },
+        });
+      }
+      throw err;
+    }
+
+    const result = await service.adoptCandidateV1(id, candidate);
     return reply.status(200).send(result);
   });
 
