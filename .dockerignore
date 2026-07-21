@@ -1,0 +1,43 @@
+# Version control & secrets — never enter the build context.
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+
+# Node artifacts — rebuilt inside the image.
+node_modules
+dist
+coverage
+*.log
+
+# Build artifacts — not needed in image.
+artifacts
+# Reports excluded except the legacy-module-profiles.json required at runtime
+# (copied explicitly in Dockerfile runtime stage).
+reports
+!reports/phase2/legacy-module-profiles.json
+
+# Documentation & AI config — not needed in image.
+docs
+.trae
+.vscode
+.idea
+
+# Tests — not needed in image.
+tests
+
+# Top-level scripts (run-gate-d, run-evaluation, phase2 audit) — not needed in image.
+scripts
+
+# Temp scripts & local credentials — never enter image.
+src/scripts/temp
+src/scripts/*.ps1
+
+# Local cache & temp.
+.cache
+.tmp
+*.tmp
+Dockerfile
+.dockerignore
+docker-compose*.yml
