@@ -1,4 +1,4 @@
-# Collator — V1 部署证据与展示材料（Gate G）
+# Collator — V1 Docker 本地运行验收与展示材料（Gate G）
 
 > 本文档为 Collator V1 收口阶段的部署证据汇总与求职/官网展示材料。所有命令、状态码、断言数均来自本地真实执行结果。文档中不包含真实 App ID、Base Token、Table ID、record ID、App Secret 或任何飞书凭据。出现于示例中的标识符一律为脱敏占位符。
 
@@ -8,18 +8,18 @@
 
 **Collator 解决什么问题**
 
-Collator 解决「非结构化业务信息 → 可校验业务主表」的录入可靠性问题。在客户咨询、订单管理、拍摄执行等场景中，业务信息原本散落在聊天文本、截图、语音、文档附件中，人工录入易错、易重复、易丢失字段证据。Collator 在「模型候选字段」与「业务主表」之间插入一层：候选字段生成 → 五重约束校验 → 人工审核 → 状态机 → 幂等写入边界，确保错误数据不进入正式表、同一业务记录不被重复写入、失败结果具备可解释性。
+Collator 解决「非结构化业务信息 → 可校验业务主表」的录入可靠性问题。在客户咨询、订单管理、拍摄执行等场景中，业务信息原本散落在聊天文本、文档附件等多种介质中，人工录入易错、易重复、易丢失字段证据。Collator 在「模型候选字段」与「业务主表」之间插入一层：候选字段生成 → 五重约束校验 → 人工审核 → 状态机 → 幂等写入边界，确保错误数据不进入正式表、同一业务记录不被重复写入、失败结果具备可解释性。V1 当前支持聊天文本；截图、语音、OCR / ASR 为后续扩展方向。
 
 **用户、输入、输出与业务价值**
 
 | 维度 | 说明 |
 |------|------|
-| 用户 | 客服、运营、复盘人员（通过飞书机器人 + Webhook 触发） |
-| 输入 | 客户咨询文本（V1 现网仅启用 plain text pipeline） |
+| 用户 | 客服、运营、复盘人员（通过 Webhook/API 触发） |
+| 输入 | 客户咨询文本（V1 当前支持聊天文本） |
 | 输出 | 飞书业务主表中的精确记录 + 写入日志 + 审核任务 |
 | 业务价值 | 录入错误率下降、重复客户识别、字段证据可追溯、失败可解释、模型幻觉被边界拦截 |
 
-V1 现网范围：仅处理 `customer_consultation` 纯文本管道；OCR / ASR / 多模态校验为后续能力扩展点，不在 V1 验收范围内。
+V1 实现范围：当前处理 `customer_consultation` 纯文本管道；截图、语音、OCR / ASR / 多模态校验为后续扩展方向，不在 V1 验收范围内。
 
 ---
 
@@ -79,7 +79,9 @@ V1 现网范围：仅处理 `customer_consultation` 纯文本管道；OCR / ASR 
 
 ---
 
-## 4. Deployment Evidence（部署证据）
+## 4. Docker Local Runtime Evidence（Docker 本地运行验收）
+
+> 本节为本地 Docker 构建与容器运行验收，不是公网或云平台生产部署。无公网 URL、无云平台运行证据，不得理解为“已上线”或“现网运行”。
 
 ### 4.1 Docker 镜像构建
 
@@ -177,7 +179,8 @@ C-LLM（Dify 联调）依赖外部 Dify 实例的可用性与凭据，这些不�
 | `npm run test` | 446/446 PASS | Gate A regression |
 | `git diff --check` | exit 0（仅 CRLF 警告） | Gate A |
 | `git diff origin/main -- src/data-cleaning` | 无输出 | AC-13 Legacy 零修改 |
-| `npm run test:integration` | Gate D 25/25 PASS，exit_code=0 | Gate D |
+| `npm run gate:d` | Gate D 25/25 PASS，exit_code=0 | Gate D |
+| `npm run test:integration` | Integration regression PASS | Gate A regression |
 | `docker build -t collator:v1-local .` | exit 0，镜像 317 MB | Gate F |
 | `docker run ... collator:v1-local` | 容器 running，exit_code=0 | Gate F |
 | `GET /healthz` | HTTP 200 `{"status":"ok"}` | Gate F |
@@ -195,7 +198,7 @@ C-LLM（Dify 联调）依赖外部 Dify 实例的可用性与凭据，这些不�
 
 ### 7.1 项目摘要（60–90 字中文）
 
-Collator 是一个 Agent 数据清洗与业务写入系统，把聊天文本、截图、语音中的非结构化业务信息转换为可校验、可人工确认、可幂等写入飞书的结构化记录，在模型候选字段与业务主表之间建立可靠性边界。
+Collator 是一个 Agent 数据清洗与业务写入系统，当前支持将聊天文本中的非结构化业务信息转换为可校验、可人工确认、可幂等写入飞书的结构化记录，在模型候选字段与业务主表之间建立可靠性边界；截图、语音、OCR / ASR 为后续扩展方向。
 
 ### 7.2 项目亮点（3 条）
 
@@ -213,7 +216,7 @@ V1 收口阶段 Gate A 回归 446/446、Gate C-Core 50/50（四项指标 100%）
 
 ### 7.5 我的职责（1 段）
 
-独立负责 Collator 的架构设计、核心代码实现、飞书适配层开发、Legacy 沙箱集成、Gate A-F 全套验证用例编写与执行、Docker 容器化与部署证据产出。从需求拆解、ADR 决策记录、Phase 推进到最终收口交付全流程主导，包括跨窗口协作的状态文档维护与敏感信息脱敏审计。
+独立负责 Collator 的架构设计、核心代码实现、飞书适配层开发、Legacy 沙箱集成、Gate A-F 全套验证用例编写与执行、Docker 容器化与本地运行验收证据产出。从需求拆解、ADR 决策记录、Phase 推进到最终收口交付全流程主导，包括跨窗口协作的状态文档维护与敏感信息脱敏审计。
 
 ---
 
@@ -221,6 +224,6 @@ V1 收口阶段 Gate A 回归 446/446、Gate C-Core 50/50（四项指标 100%）
 
 - 本文档不包含真实飞书 App ID、Base Token、Table ID、record ID、App Secret 或任何凭据。
 - 本文档不新增真实飞书截图或标识符；如需截图证据，参见 `docs/ACCEPTANCE_REPORT.md`（内部文档，含脱敏处理后的执行记录）。
-- V1 现网范围限定为 `customer_consultation` 纯文本管道；OCR / ASR / 多模态校验 / C-LLM 为后续能力扩展点，不在 V1 验收范围内。
+- V1 实现范围限定为 `customer_consultation` 纯文本管道；截图、语音、OCR / ASR / 多模态校验 / C-LLM 为后续扩展方向，不在 V1 验收范围内。
 - C-LLM（Dify 联调）状态为 `DEFERRED`（DEBT-001），不阻塞 V1。
 - Legacy 源码遗留标识符为 `DEBT-002`，受 AC-13 保护不在本次收口范围内修改。

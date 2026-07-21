@@ -2,12 +2,12 @@
 
 ## Current Stage
 
-Phase 5 / Gate F — Docker 容器化与本地部署运行验收（V1 收口批次执行中）
+V1 Fast Closure Complete — Awaiting PR
 
-- 状态：`PHASE_5_GATE_F_IN_PROGRESS` — COLLATOR-V1-FAST-CLOSURE-01 单批次连续执行 V1 收口。
+- 状态：`V1_FAST_CLOSURE_COMPLETE_AWAITING_PR` — COLLATOR-V1-FAST-CLOSURE-01 已完成，等待创建 Draft PR 到 main。
 - 当前分支：phase/3-feishu-integration
-- 验收基线 Commit：`4aaf9f3`（V1 收口任务卡指定 baseline；远程 origin/phase/3-feishu-integration HEAD 一致）
-- 当前 HEAD：`4aaf9f3`（V1 收口 Stage A/B 执行中，未 commit；待 Stage A+B 完成后创建 Commit 1）
+- 验收基线 Commit：`4aaf9f3`（V1 收口任务卡指定 baseline）
+- 当前 HEAD：`3169e69`（COLLATOR-V1-FAST-CLOSURE-01 两个收口 commit + 本 evidence-fix commit 之后）
 - 当前版本：v1.0
 - Phase 3：DONE（Gate D PASSED，exit_code=0，25/25 断言通过；446/446 回归通过）
 - TASK-003：CLOSED
@@ -16,11 +16,11 @@ Phase 5 / Gate F — Docker 容器化与本地部署运行验收（V1 收口批�
 
 ## Current Milestone
 
-Phase 5 / Gate F — Docker 容器化与本地部署运行验收（V1 收口）
+V1 收口完成 — Gate A/B/C-Core/D/E/F PASS，Gate G PASS_WITH_DEBT，C-LLM DEFERRED
 
 ## In Progress
 
-- **COLLATOR-V1-FAST-CLOSURE-01（PHASE_5_GATE_F_IN_PROGRESS）**：V1 收口单批次连续执行。Stage A 已完成（`src/scripts/temp/create-collator-tables.ts` 删除；`get_tables.ps1`/`get_fields.ps1` 改为 env 读取 + fail closed；`.trae/Knowledge/项目总览.md` 替换为占位符；活跃源码零匹配）。Stage B 进行中（本文件状态修正）。Stage C（Dockerfile + .dockerignore + Gate F 本地构建/启动验证）与 Stage D（`docs/portfolio/COLLATOR-DEPLOYMENT-EVIDENCE.md`）待执行。本任务不进行 Git history rewrite，不追逐 Dify 联调，不扩展业务功能。
+- 无。COLLATOR-V1-FAST-CLOSURE-01 全部 Stage（0/A/B/C/D）已完成，等待创建 Draft PR 到 main。
 
 ## Recently Completed
 
@@ -42,10 +42,8 @@ Phase 5 / Gate F — Docker 容器化与本地部署运行验收（V1 收口）
 
 ## Next Priorities
 
-1. **Stage C — Dockerfile + .dockerignore + Gate F 本地验证**：使用 Node 20 官方镜像 + multi-stage build + npm ci + 非 root 用户 + 0.0.0.0 监听 + PORT 环境变量；本地 `docker build` + `docker run` 验证 `/healthz` + `/readyz` 返回 2xx；镜像与日志不含真实凭据/标识符。
-2. **Stage D — Gate G 展示证据**：生成 `docs/portfolio/COLLATOR-DEPLOYMENT-EVIDENCE.md`（脱敏，含产品摘要/系统流程/可靠性证据/部署证据/产品决策/官网文案）。
-3. **Commit 1（fix: 标识符清理 + 状态文档修正）+ Commit 2（feat: Docker + 部署证据）**：分两次 commit，正常 `git push origin phase/3-feishu-integration`（非 force）。
-4. **C-LLM（Gate C-LLM）**：DEFERRED — 作为外部依赖债务（DEBT-001）不阻塞 V1 收口；待 Dify 凭据就绪后单独解锁。
+1. **创建 Draft PR 到 main**：明确这是 Phase 2 至 V1 的 33-commit 累计集成 PR，而非仅本轮 8 个文件的 Docker 收口。
+2. **C-LLM（Gate C-LLM）**：DEFERRED — 作为外部依赖债务（DEBT-001）不阻塞 V1 收口；待 Dify 凭据就绪后单独解锁。
 
 ## Roadmap
 
@@ -64,17 +62,17 @@ Phase 5 / Gate F — Docker 容器化与本地部署运行验收（V1 收口）
 - 验收标准：Gate D 飞书集成验收通过 ✅（2026-07-21 第五次尝试 exit_code=0，25/25 断言通过；446/446 回归通过；4 张表合成记录按精确 record_id 全部清理）
 - TASK-001 / TASK-002 / TASK-003 / TASK-003-PUBLIC-HISTORY-REDACTION-01 全部 CLOSED
 
-### Phase 5: 部署 — IN_PROGRESS
+### Phase 5: 部署 — DONE
 - 里程碑：Dockerfile + 容器化构建与启动验证
 - 依赖：Phase 3 完成 ✅
 - 阻塞项：无
-- 验收标准：Gate F 部署运行验收通过（待 Stage C 完成）
+- 验收标准：Gate F 部署运行验收通过 ✅（Docker 本地构建/启动/健康检查通过，容器非 root 运行，无真实凭据泄漏）
 
-### Phase 6: 展示证据 — IN_PROGRESS
+### Phase 6: 展示证据 — DONE
 - 里程碑：脱敏展示证据（Docker build/run + Gate D + Gate C-Core 摘要）
-- 依赖：Phase 5 完成（同步推进中）
+- 依赖：Phase 5 完成 ✅
 - 阻塞项：无
-- 验收标准：Gate G 展示证据验收通过（待 Stage D 完成）
+- 验收标准：Gate G 展示证据验收通过 ✅（`docs/portfolio/COLLATOR-DEPLOYMENT-EVIDENCE.md` 已生成并脱敏；V1 实现范围表述准确，截图/语音/OCR/ASR 标注为后续扩展方向）
 
 ## Active Blockers
 
@@ -125,7 +123,7 @@ Phase 5 / Gate F — Docker 容器化与本地部署运行验收（V1 收口）
 
 ## Last Updated
 
-2026-07-21（COLLATOR-V1-FAST-CLOSURE-01 V1 收口批次执行：Stage A 完成 — `src/scripts/temp/create-collator-tables.ts` 删除、`get_tables.ps1`/`get_fields.ps1` 改为 env 读取 + fail closed、`.trae/Knowledge/项目总览.md` 占位符替换；BASE_TOKEN 分类 RESOURCE_IDENTIFIER_ONLY；活跃源码零匹配。Stage B 完成 — PROJECT_STATE.md 状态修正为 Phase 5 / Gate F；TASK-003 / TASK-003-PUBLIC-HISTORY-REDACTION-01 标记 CLOSED；Gate D PASSED 证据固化（exit_code=0, 25/25 断言, 446/446 回归）；C-LLM 标记 DEFERRED 不阻塞 V1；Pre-existing Identifier Cleanup 最终分类与处理结果记录。Stage C/D 待执行。基线 `4aaf9f3`，未 commit、未 push，等待 Stage A+B 完成 + Commit 1 创建。）
+2026-07-21（COLLATOR-V1-FAST-CLOSURE-01-EVIDENCE-FIX-01：修正 docs/ai/PROJECT_STATE.md 与 docs/portfolio/COLLATOR-DEPLOYMENT-EVIDENCE.md 中的状态与证据表述。当前 HEAD 更新为 `3169e69`；Phase 5 / Gate F 标记 PASS；Phase 6 / Gate G 标记 PASS_WITH_DEBT；Next Priorities 更新为「创建 Draft PR 到 main」。C-LLM 仍 DEFERRED 不阻塞 V1。）
 
 ---
 
@@ -185,8 +183,8 @@ Phase 5 / Gate F — Docker 容器化与本地部署运行验收（V1 收口）
 | C-LLM | 数据质量（LLM 语义） | DEFERRED | 未配置 Dify 凭据（DEBT-001）；不阻塞 V1 收口，待 Dify 环境就绪后单独解锁 |
 | D | 飞书集成 | PASSED | 2026-07-21 第五次真实运行 `npm run gate:d` exit_code=0，25/25 断言全部通过；4 张表（ingestion/review/customer/write_log）合成记录全部按精确 record_id 在 finally 块中清理；446/446 回归通过；重复 approve 断言通过（code=CONFLICT 409）；writer replay 返回同一 record_id、created=false。历史细节见附录「Gate D 第五次尝试」。|
 | E | 安全隐私 | PASSED | Commit `0f0f63d` GPT re-review `MVP_PASS`；P0-01D/P0-04B accepted，P0-02/P0-03 保持 accepted。TASK-003 沿用同套 redaction invariant，未引入新 PII 泄露路径（writer 错误降级为 name-only message）。 |
-| F | 部署运行 | IN_PROGRESS | COLLATOR-V1-FAST-CLOSURE-01 Stage C 执行中：Dockerfile + .dockerignore + 本地构建/启动验证（待完成） |
-| G | 展示证据 | IN_PROGRESS | COLLATOR-V1-FAST-CLOSURE-01 Stage D 执行中：`docs/portfolio/COLLATOR-DEPLOYMENT-EVIDENCE.md`（待完成） |
+| F | 部署运行 | PASS | Dockerfile + .dockerignore 已实现；`docker build` exit 0；容器 running，/healthz 与 /readyz 均 HTTP 200；运行用户 node（非 root）；镜像与容器日志无真实凭据 |
+| G | 展示证据 | PASS_WITH_DEBT | `docs/portfolio/COLLATOR-DEPLOYMENT-EVIDENCE.md` 已生成并脱敏；V1 实现范围表述准确；C-LLM 仍标记为 DEFERRED（DEBT-001） |
 
 ## 附录：最近一次执行
 
