@@ -2,22 +2,25 @@
 
 ## Current Stage
 
-Phase 3 / TASK-003-GATE-D-TEXT-NORMALIZATION（Gate D 第五次尝试：方案 B 代码兼容修复后真实通过；本轮不创建 commit）
+Phase 5 / Gate F — Docker 容器化与本地部署运行验收（V1 收口批次执行中）
 
-- 状态：`GATE_D_PASS_AWAITING_GPT_REVIEW` — GPT 基于第四次尝试的 `FIX_REQUIRED` 判决采用方案 B（代码兼容）；新增共享文本规范化函数 `normalizeFeishuText`/`normalizeFeishuJson`，三个 Feishu Repository 适配层迁移到共享 normalizer；FeishuClient `getRecord`/`searchRecords` 显式设置 `text_field_as_array=false`；客户表 MultiSelect 字段（`意向风格`）在 writer 中包装为 array of strings 修复 `MultiSelectFieldConvFail`；`npm run gate:d` 真实运行退出码 **0（PASS）**，25/25 断言全部通过，4 张表（ingestion/review/customer/write_log）合成记录全部按精确 record_id 在 finally 块中清理；之前第四次尝试遗留的 `recXXX`（属于 Collator 摄入任务表，非客户表）经 RESIDUAL-EVIDENCE-FIX 修正轮使用 `client.getRecord(ingestionTableId, ...)` 验证，飞书返回 code=1254043 RecordIdNotFound，证明摄入任务表已无残留；Gate A + Gate C-Core 全套回归通过，446/446 测试通过；AC-06 + AC-07 从 `BLOCKED_SCHEMA_MISMATCH` 解锁为真实 PASS。未 commit、未 push（AC-12 git 纪律 + 任务卡 `NO_COMMIT` 指令）。
-- Planning Review：APPROVED_WITH_REQUIRED_CHANGES（Phase 2 Planning Correction 已完成）
+- 状态：`PHASE_5_GATE_F_IN_PROGRESS` — COLLATOR-V1-FAST-CLOSURE-01 单批次连续执行 V1 收口。
 - 当前分支：phase/3-feishu-integration
-- 验收基线 Commit：`af3cba1`（TASK-003-TAKEOVER-VERIFY 任务卡指定的 baseline）
-- 当前 HEAD：`af3cba1`（与基线一致，未 commit；所有变更在工作区）
+- 验收基线 Commit：`4aaf9f3`（V1 收口任务卡指定 baseline；远程 origin/phase/3-feishu-integration HEAD 一致）
+- 当前 HEAD：`4aaf9f3`（V1 收口 Stage A/B 执行中，未 commit；待 Stage A+B 完成后创建 Commit 1）
 - 当前版本：v1.0
+- Phase 3：DONE（Gate D PASSED，exit_code=0，25/25 断言通过；446/446 回归通过）
+- TASK-003：CLOSED
+- TASK-003-PUBLIC-HISTORY-REDACTION-01：CLOSED（远程分支历史敏感标识符扫描零匹配；本地备份分支 `backup/task-003-pre-redaction` 保留未 push）
+- C-LLM（Gate C-LLM）：DEFERRED — 外部 Dify 凭据未配置（DEBT-001），不阻塞 V1 收口
 
 ## Current Milestone
 
-Phase 3 飞书集成 / TASK-003-GATE-D-TEXT-NORMALIZATION — Gate D 真实通过；等待 GPT 证据审查；本轮不 commit
+Phase 5 / Gate F — Docker 容器化与本地部署运行验收（V1 收口）
 
 ## In Progress
 
-- **TASK-003-GATE-D-TEXT-NORMALIZATION（GATE_D_PASS_AWAITING_GPT_REVIEW）**：基于 GPT 第四次尝试后的 `FIX_REQUIRED` 判决采用方案 B（代码兼容），新增共享文本规范化函数 `src/server/feishu/normalize-text.ts` 导出 `normalizeFeishuText`/`normalizeFeishuJson`，三个 Feishu Repository 适配层迁移到共享 normalizer；FeishuClient `getRecord`/`searchRecords` 显式设置 `text_field_as_array=false`；MultiSelect 字段修复；`npm run gate:d` 真实运行 exit_code=0，25/25 断言通过，4 张表合成记录全部清理；446/446 测试通过。HEAD 保持 `af3cba1`，未 commit、未 push；等待 GPT 证据审查 + 用户 commit 授权。
+- **COLLATOR-V1-FAST-CLOSURE-01（PHASE_5_GATE_F_IN_PROGRESS）**：V1 收口单批次连续执行。Stage A 已完成（`src/scripts/temp/create-collator-tables.ts` 删除；`get_tables.ps1`/`get_fields.ps1` 改为 env 读取 + fail closed；`.trae/Knowledge/项目总览.md` 替换为占位符；活跃源码零匹配）。Stage B 进行中（本文件状态修正）。Stage C（Dockerfile + .dockerignore + Gate F 本地构建/启动验证）与 Stage D（`docs/portfolio/COLLATOR-DEPLOYMENT-EVIDENCE.md`）待执行。本任务不进行 Git history rewrite，不追逐 Dify 联调，不扩展业务功能。
 
 ## Recently Completed
 
@@ -39,12 +42,10 @@ Phase 3 飞书集成 / TASK-003-GATE-D-TEXT-NORMALIZATION — Gate D 真实通�
 
 ## Next Priorities
 
-1. **Trae 接管 Codex 未提交修改并运行独立验证**：逐文件检查 Diff，重点复核 `client_token` 参数、状态机 fail-closed 与审计落库顺序；运行 Gate A 全套 + Gate C-Core，生成修订完成包。Codex 按用户约束未创建 Commit。
-2. **真实 Gate D**：用户以短生命周期进程环境提供飞书凭据后运行 `npm run gate:d`，确认真实 Base 对相同 `client_token` 的重复/并发 create 返回同一 record_id，并精确清理合成记录。
-3. **GPT 重新进行证据审查**：基于 Trae 修订完成包作出 `EVIDENCE_REVIEW_PASS` / `MVP_FAIL` 判决。
-4. **Gate D 真实验收解锁**：用户提供 `FEISHU_APP_SECRET` 真实凭据（替换 `.env` 中的 `replace_me` 占位符），运行 `npm run gate:d`（脚本已存在），将 AC-07 从 `BLOCKED_EXTERNAL_ENV` 升级为真实 PASS。
-5. 配置 Dify 环境与凭据（DEBT-001），解锁 Gate C-LLM 真实 LLM 联调。
-6. TASK-003 完成并通过 Gate D 后，按 Phase 推进流程进入 Phase 5（部署）、Phase 6（展示证据）。
+1. **Stage C — Dockerfile + .dockerignore + Gate F 本地验证**：使用 Node 20 官方镜像 + multi-stage build + npm ci + 非 root 用户 + 0.0.0.0 监听 + PORT 环境变量；本地 `docker build` + `docker run` 验证 `/healthz` + `/readyz` 返回 2xx；镜像与日志不含真实凭据/标识符。
+2. **Stage D — Gate G 展示证据**：生成 `docs/portfolio/COLLATOR-DEPLOYMENT-EVIDENCE.md`（脱敏，含产品摘要/系统流程/可靠性证据/部署证据/产品决策/官网文案）。
+3. **Commit 1（fix: 标识符清理 + 状态文档修正）+ Commit 2（feat: Docker + 部署证据）**：分两次 commit，正常 `git push origin phase/3-feishu-integration`（非 force）。
+4. **C-LLM（Gate C-LLM）**：DEFERRED — 作为外部依赖债务（DEBT-001）不阻塞 V1 收口；待 Dify 凭据就绪后单独解锁。
 
 ## Roadmap
 
@@ -57,23 +58,23 @@ Phase 3 飞书集成 / TASK-003-GATE-D-TEXT-NORMALIZATION — Gate D 真实通�
 - 实施位置：`scripts/run-evaluation.ts`（CLI）+ `src/evaluation/`（核心模块）+ `tests/fixtures/customer-consultation-50.jsonl`（评测集）+ `artifacts/evaluation/`（报告，不入库）
 - 验收结果：50/50 case 通过；测试 157 passed；evaluation 模块 Lines 85.50% / Funcs 100%；Gate C-Core PASS
 
-### Phase 3: 飞书集成
-- 里程碑：FeishuTaskRepository 实现 + 凭据配置 + 字段映射层 + 硬编码资源 ID 迁出
-- 依赖：Phase 2F 完成（Gate C 通过）；外部阻塞：需用户提供飞书测试 Base 凭据（DEBT-002）和 Dify 凭据（DEBT-001）
-- 阻塞项：DEBT-001（Dify 凭据）、DEBT-002（飞书 Base 凭据）、DEBT-004（中英文字段映射）、DEBT-005（硬编码资源 ID）
-- 验收标准：Gate D 飞书集成验收通过
+### Phase 3: 飞书集成 — ✅ DONE
+- 里程碑：FeishuTaskRepository 实现 + 凭据配置 + 字段映射层 + 幂等客户表写入 + 硬编码资源 ID 迁出
+- 依赖：Phase 2F 完成（Gate C 通过）✅；飞书测试 Base 凭据已就绪
+- 验收标准：Gate D 飞书集成验收通过 ✅（2026-07-21 第五次尝试 exit_code=0，25/25 断言通过；446/446 回归通过；4 张表合成记录按精确 record_id 全部清理）
+- TASK-001 / TASK-002 / TASK-003 / TASK-003-PUBLIC-HISTORY-REDACTION-01 全部 CLOSED
 
-### Phase 5: 部署
+### Phase 5: 部署 — IN_PROGRESS
 - 里程碑：Dockerfile + 容器化构建与启动验证
-- 依赖：Phase 3 完成
+- 依赖：Phase 3 完成 ✅
 - 阻塞项：无
-- 验收标准：Gate F 部署运行验收通过
+- 验收标准：Gate F 部署运行验收通过（待 Stage C 完成）
 
-### Phase 6: 展示证据
-- 里程碑：端到端运行证据（截图/日志）
-- 依赖：Phase 5 完成
+### Phase 6: 展示证据 — IN_PROGRESS
+- 里程碑：脱敏展示证据（Docker build/run + Gate D + Gate C-Core 摘要）
+- 依赖：Phase 5 完成（同步推进中）
 - 阻塞项：无
-- 验收标准：Gate G 展示证据验收通过
+- 验收标准：Gate G 展示证据验收通过（待 Stage D 完成）
 
 ## Active Blockers
 
@@ -84,25 +85,47 @@ Phase 3 飞书集成 / TASK-003-GATE-D-TEXT-NORMALIZATION — Gate D 真实通�
 - ~~TASK-002 P0-04B~~：RESOLVED（GPT `MVP_PASS`, commit `0f0f63d`）。
 - ~~TASK-002 P0-02~~：RESOLVED（2026-07-18，P0 修复 commit）— `IngestionTask.raw_candidate` 深拷贝原始 Candidate；`review.validation.rawCandidate` 复用飞书 JSON 列保留原始证据；mapper warning sanitization 切断 PII 通过 warning 字段泄露路径。
 - ~~TASK-002 P0-03~~：RESOLVED（2026-07-18，P0 修复 commit）— `IngestionTask.pipeline_evidence` 持久化完整 Pipeline 证据（pipelineVersion/stages/validation/corrections/warnings/errors/qualityReport/success）；成功与失败路径均写入；mapper warnings 与 Pipeline warnings 严格区分。
-- 未配置 Dify 环境与凭据（`DIFY_BASE_URL`、`DIFY_WORKFLOW_API_KEY`、`DIFY_WORKFLOW_ID`）— 见 DEBT-001。阻塞 Gate C-LLM 真实 LLM 联调。
-- **TASK-003 AC-07 Gate D 真实飞书验收**：`BLOCKED_SCHEMA_MISMATCH`（2026-07-20 第四次尝试，写权限已解锁，schema 不匹配阻塞）- 用户已为自建应用 `cli_<redacted>` 在目标 Base「测试 Base」添加协作权限并授予「可编辑」权限；`npx tsx --env-file=.env scripts/run-gate-d.ts` 真实运行 exit_code=1（FAIL），鉴权与写权限已通过（不再返回 91403/403）；`createIngestion` 阶段成功写入 ingestion task 记录（record_id=`recXXX`，ingestion_id=`ing_<uuid-redacted>`），但 `receiveCandidate` 阶段在 `findById` 读取该记录时抛错 `FeishuTaskRepository: 任务快照 JSON missing or not a string for record`；诊断脚本 `scripts/temp/diagnose-gate-d-snapshot.ts` 确认飞书表 `任务快照 JSON`、`摄入 ID`、`幂等键`、`来源记录 ID` 字段实际类型为富文本（返回 `[{text:"..."}]` 数组结构），而 `FeishuTaskRepository.parseSnapshot` 期望字段为字符串；`FeishuReviewRepository` / `FeishuWriteLogRepository` 仅部分兼容 `{text:"..."}` 单对象格式但不兼容 `[{text:"..."}]` 数组格式。**残留测试数据**：ingestion 表中存在未清理的测试记录 `recXXX`（合成数据 `GateD测试客户 / 13800000000`，非真实业务数据）；Gate D 脚本 finally 块只清理 customer/write_log 表，未覆盖 ingestion 表，需用户手动清理或下轮 Codex 修复脚本。**解锁动作**：GPT 裁决修复方向 — 方案 A：用户在飞书表中将 `任务快照 JSON`/`摄入 ID`/`幂等键`/`来源记录 ID` 字段类型从「富文本」改为「多行文本」；方案 B：修改 `FeishuTaskRepository.parseSnapshot` 及其他 repository 的 readScalar/readJson 兼容 `[{text:"..."}]` 数组格式（超出 TASK-003-GATE-D-FINAL-RETRY 任务范围，需新 TASK）。Mock 集成测试 `tests/integration/feishu-gate-d.test.ts`（4 tests）仍覆盖 commit flow 合同。
-- ~~**TASK-003 GPT 复核结论 `MVP_FAIL` / `CODEX_REQUIRED` / `NO_COMMIT`**~~：`CODEX_FIX_READY_FOR_TRAE_REVIEW`（2026-07-20）— Phase 1 文件清单问题已校正；Codex Phase 2 已在限定白名单内修复 AC-03/AC-04/AC-05 关键反例并保留 `NO_COMMIT`。当前工作区相对 `af3cba1` 为 13 modified + 9 untracked = 22 文件；下一责任方为 Trae，需逐文件复核并运行最终 Gate。
-- ~~**TASK-003 幂等架构核心风险**~~：代码级已缓解（2026-07-20）— 纯 `search → create` 不再作为强幂等边界；客户记录及 succeeded 写入日志改用官方新增记录接口的稳定 UUIDv4 `client_token`。**真实环境已验证（2026-07-21）** — Gate D 通过，重复 approve / writer replay 返回同一 record_id、created=false。
-- ~~**TASK-003 AC-06/AC-07 Gate D 真实飞书验收**~~：**RESOLVED（2026-07-21 第五次尝试；RESIDUAL-EVIDENCE-FIX 修正轮 2026-07-21）** — GPT 第四次尝试后判决 `FIX_REQUIRED` 采用方案 B（代码兼容）；新增共享 normalizer `normalizeFeishuText`/`normalizeFeishuJson` + FeishuClient `text_field_as_array=false` + MultiSelect 字段包装修复；`npm run gate:d` 真实运行 exit_code=0，25/25 断言通过；4 张表合成记录全部按精确 record_id 清理；第四次尝试遗留记录 `recXXX`（属于 Collator 摄入任务表，非客户表）经 RESIDUAL-EVIDENCE-FIX 修正轮使用 `client.getRecord(ingestionTableId, ...)` 验证，飞书返回 code=1254043 RecordIdNotFound，证明摄入任务表已无残留；Gate A + Gate C-Core 全套回归 446/446 通过。
+- ~~TASK-003 AC-07 Gate D 真实飞书验收~~：**RESOLVED（2026-07-21 第五次尝试）** — `npm run gate:d` 真实运行 exit_code=0，25/25 断言通过；4 张表合成记录全部按精确 record_id 清理；446/446 回归通过。历史细节见附录「Gate D 第五次尝试」。
+- ~~TASK-003 幂等架构核心风险~~：**RESOLVED（2026-07-21 Gate D 真实通过）** — 重复 approve 断言通过（code=CONFLICT 409）；writer replay 返回同一 record_id、created=false；稳定 client_token 在真实飞书租户下被正确接受。
+- ~~TASK-003-PUBLIC-HISTORY-REDACTION-01~~：**CLOSED（2026-07-21）** — 远程分支历史敏感标识符扫描零匹配；16 个未跟踪临时文件清理完成；本地备份分支 `backup/task-003-pre-redaction` 保留未 push（按任务约束）。
+- **C-LLM（Gate C-LLM）**：**DEFERRED** — 未配置 Dify 凭据（`DIFY_BASE_URL`/`DIFY_WORKFLOW_API_KEY`/`DIFY_WORKFLOW_ID`，见 DEBT-001）；不阻塞 V1 收口。待 Dify 环境就绪后单独解锁。
 
-> 注：Dify/飞书凭据仍属于外部环境边界；TASK-002 GPT 复审已通过。它们不改变已通过的 Phase 2F Gate C-Core 确定性数据质量结果。
+> 注：当前无活跃阻塞项。TASK-001/002/003 全部 CLOSED；C-LLM 作为外部依赖债务 DEFERRED。
 
 ## Known Risks
 
-- 旧 `src/data-cleaning/agent/index.js` 存在 `&&amp;` HTML 实体语法错误，任何引用该文件的入口无法运行；V1 采用新建 `src/server/` 替代旧 Agent 入口，不修复旧入口（见 DEBT-003）。
-- 现有 Schema 使用中文 fieldName，Dify Candidate 输出英文 raw 字段，Phase 2 需要增加映射层（见 DEBT-004）。
-- 硬编码飞书资源 ID 较多，Phase 3 需逐步迁出源码（见 DEBT-005）。
-- `core/data-cleaner.js` 导入闭包触发 `schemas/index.js` 与 `config/index.js` 的 import-time 文件读取，Phase 2A 审计需标记为 `EXTRACT_PURE_FUNCTION / MIGRATE_INCREMENTALLY`，不得简单 WRAP（见 DEBT-006）。
-- **TASK-003 `client_token` 真实环境语义待验**：~~代码级并发反例已收敛为同一稳定 token，mock 服务端只执行一次逻辑创建；但官方文档未在当前核验中确认 token 保留窗口，且真实租户尚未验证。Trae 接管后必须在 Gate D 中验证重复 approve / 模糊响应重试不会生成第二条客户记录。~~ **RESOLVED（2026-07-21 Gate D 真实通过）** — 重复 approve 断言通过（code=CONFLICT 409）；writer replay 返回同一 record_id=`recXXX`、created=false；稳定 client_token 在真实飞书租户下被正确接受。
+- 旧 `src/data-cleaning/agent/index.js` 存在 `&&amp;` HTML 实体语法错误；V1 采用新建 `src/server/` 替代旧 Agent 入口，不修复旧入口（DEBT-003）。
+- 现有 Schema 使用中文 fieldName，Dify Candidate 输出英文 raw 字段 — Phase 3B mapper 已解决（原 DEBT-004）。
+- 飞书资源标识符历史泄露：`src/data-cleaning/` Legacy 源码中仍含历史 Base Token / Table ID（AC-13 禁止修改 Legacy）；活跃源码（`src/scripts/*`、`src/server/*`、`.trae/Knowledge/*`）已零匹配。历史 `docs/reports/`、`docs/guides/`、`docs/ai/plans/`、`docs/ai/tasks/`、`.trae/specs/`、`src/config/cloud_drive_asset_report*.json` 中的引用作为历史记录保留，不进行重写（原 DEBT-005 部分残留）。
+- `core/data-cleaner.js` 导入闭包触发 import-time 文件读取（DEBT-006）— V1 通过 Adapter 边界隔离，不直接 import Legacy。
+- **TASK-003 `client_token` 真实环境语义**：**RESOLVED（2026-07-21 Gate D 真实通过）** — 重复 approve 断言通过；writer replay 返回同一 record_id、created=false。
+
+## Pre-existing Identifier Cleanup 最终分类与处理结果（Stage A, 2026-07-21）
+
+任务卡 `COLLATOR-V1-FAST-CLOSURE-01` Stage A 执行。
+
+- **目标文件** `src/scripts/temp/create-collator-tables.ts`（已 tracked，TEMP 标记过期 2026-07-20）：
+  - `BASE_TOKEN = 'MwGMbF0Q0alPc6s3jOccovvOnob'` 分类：**RESOURCE_IDENTIFIER_ONLY**
+    - 证据：仅作为 lark-cli `--base-token` 参数（飞书 Base 路径标识符），未用于 Authorization、tenant_access_token 获取、签名或认证。
+    - 处理：脚本整体删除（一次性建表已完成；package.json/source 无引用；TEMP 标记过期）。
+  - `CUSTOMER_TABLE_ID = 'tblmRVrUnfodlzlo'` 分类：**RESOURCE_IDENTIFIER_ONLY**
+    - 证据：仅作为 lark-cli `--table-id` 参数。
+    - 处理：随脚本删除。
+- **同步清理**：
+  - `src/scripts/get_tables.ps1`：改为从 `$env:FEISHU_BASE_APP_TOKEN` 读取，缺失时 `throw "FEISHU_BASE_APP_TOKEN is required"` fail closed。
+  - `src/scripts/get_fields.ps1`：改为从 `$env:FEISHU_BASE_APP_TOKEN` + `$env:FEISHU_TABLE_ID` 读取，缺失时 throw fail closed。
+  - `.trae/Knowledge/项目总览.md`：核心配置表真实值替换为 `<FEISHU_BASE_APP_TOKEN>` / `<FEISHU_WIKI_SPACE_ID>` / `<FEISHU_DRIVE_ROOT_TOKEN>` 占位符 + 警示说明。
+- **.env.example 核对**：仅含 `replace_me` 占位符，无真实值（`FEISHU_BASE_APP_TOKEN` / `FEISHU_CUSTOMER_TABLE_ID` 等均合规）。
+- **App Secret 轮换**：BASE_TOKEN 分类为 RESOURCE_IDENTIFIER_ONLY，按任务约束「资源标识符如果已确认不具备认证能力，不要求轮换 App Secret」执行 — 不轮换。
+- **遗留位置**（不修改，作为已知债务）：
+  - `src/data-cleaning/` Legacy 源码（AC-13 禁止修改；含 `agent-config.json` / `schemas/customer.json` / `schemas/project.json`）
+  - `src/config/cloud_drive_asset_report*.json` 历史扫描数据（非活跃 config，未被 `src/server` 引用）
+  - `docs/reports/` / `docs/guides/` / `docs/ai/plans/` / `docs/ai/tasks/TASK-001.md` / `.trae/specs/` 历史记录（不进行旧历史重写）
+- **活跃源码零匹配验证**：`src/scripts/*` / `src/server/*` / `.trae/Knowledge/*` / `.env.example` 全部零匹配。
 
 ## Last Updated
 
-2026-07-21（Gate D 第五次尝试 — TEXT-NORMALIZATION 修复后真实通过；同日 RESIDUAL-EVIDENCE-FIX 修正轮：GPT 基于第四次尝试的 `FIX_REQUIRED` 判决采用方案 B 代码兼容；新增共享 normalizer `normalizeFeishuText`/`normalizeFeishuJson` 支持三种合法结构（string / `{text}` / `Array<{text}>`）；三个 Feishu Repository 适配层迁移到共享 normalizer；FeishuClient `getRecord`/`searchRecords` 显式设置 `text_field_as_array=false`；客户表 `意向风格` MultiSelect 字段在 writer 中包装为 array of strings 修复 `MultiSelectFieldConvFail`；`npm run gate:d` 真实运行 exit_code=0，25/25 断言通过；4 张表（ingestion/review/customer/write_log）合成记录全部按精确 record_id 在 finally 块中清理；之前遗留 `recXXX`（属于 Collator 摄入任务表）经 RESIDUAL-EVIDENCE-FIX 修正轮使用 `client.getRecord(ingestionTableId, ...)` 验证，飞书返回 code=1254043 RecordIdNotFound，确认摄入任务表已无残留；Gate A + Gate C-Core 全套回归 446/446 通过；AC-06 + AC-07 从 `BLOCKED_SCHEMA_MISMATCH` 解锁为真实 PASS；未 commit、未 push（AC-12 git 纪律 + `NO_COMMIT` 指令））
+2026-07-21（COLLATOR-V1-FAST-CLOSURE-01 V1 收口批次执行：Stage A 完成 — `src/scripts/temp/create-collator-tables.ts` 删除、`get_tables.ps1`/`get_fields.ps1` 改为 env 读取 + fail closed、`.trae/Knowledge/项目总览.md` 占位符替换；BASE_TOKEN 分类 RESOURCE_IDENTIFIER_ONLY；活跃源码零匹配。Stage B 完成 — PROJECT_STATE.md 状态修正为 Phase 5 / Gate F；TASK-003 / TASK-003-PUBLIC-HISTORY-REDACTION-01 标记 CLOSED；Gate D PASSED 证据固化（exit_code=0, 25/25 断言, 446/446 回归）；C-LLM 标记 DEFERRED 不阻塞 V1；Pre-existing Identifier Cleanup 最终分类与处理结果记录。Stage C/D 待执行。基线 `4aaf9f3`，未 commit、未 push，等待 Stage A+B 完成 + Commit 1 创建。）
 
 ---
 
@@ -156,14 +179,14 @@ Phase 3 飞书集成 / TASK-003-GATE-D-TEXT-NORMALIZATION — Gate D 真实通�
 
 | Gate | 名称 | 状态 | 证据 |
 |---|---|---|---|
-| A | 代码基线 | PASSED | TASK-003-TAKEOVER-VERIFY 验证后：`typecheck` / `lint` / `audit:legacy` (62 modules) / `test` (365/365, 32 files) / `test:integration` (47/47, 4 files) / `build` / Legacy diff empty / `git diff --check` exit 0。 |
-| B | API 合同 | PASSED | `docs/API_CONTRACT.md`（含 §6 Candidate 字段映射章节）+ 14 项集成测试覆盖全部 V1 接口 |
+| A | 代码基线 | PASSED | TASK-003-GATE-D-TEXT-NORMALIZATION 修复后：`typecheck` / `lint` / `audit:legacy` (62 modules) / `test` (446/446, 33 files) / `build` / Legacy diff empty / `git diff --check` exit 0。 |
+| B | API 合同 | PASSED | `docs/API_CONTRACT.md`（含 §6 Candidate 字段映射章节）+ 集成测试覆盖全部 V1 接口 |
 | C-Core | 数据质量（确定性） | PASSED | Phase 2F + Phase 3B Redaction Invariant Closure fix 后回归：50/50 case 通过，4 项核心指标 100%（field_accuracy 132/132, required_field_recall 91/91, enum_precision 33/33, error_interception_rate 1/1） |
-| C-LLM | 数据质量（LLM 语义） | BLOCKED_EXTERNAL_ENV | 未配置 Dify 凭据（见 DEBT-001）|
-| D | 飞书集成 | PASSED | TASK-003-GATE-D-TEXT-NORMALIZATION 修复后真实通过；同日 RESIDUAL-EVIDENCE-FIX 修正轮修正残留记录验证证据链：2026-07-21 第五次真实运行 `npm run gate:d` exit_code=0，25/25 断言全部通过；4 张表（ingestion/review/customer/write_log）合成记录全部按精确 record_id 在 finally 块中清理；第四次尝试遗留记录 `recXXX`（属于 Collator 摄入任务表，非客户表）经 RESIDUAL-EVIDENCE-FIX 修正轮使用 `client.getRecord(ingestionTableId, ...)` 验证，飞书返回 code=1254043 RecordIdNotFound，确认摄入任务表已无残留；Gate A + Gate C-Core 全套回归 446/446 通过；AC-06 + AC-07 从 `BLOCKED_SCHEMA_MISMATCH` 解锁为真实 PASS。|
+| C-LLM | 数据质量（LLM 语义） | DEFERRED | 未配置 Dify 凭据（DEBT-001）；不阻塞 V1 收口，待 Dify 环境就绪后单独解锁 |
+| D | 飞书集成 | PASSED | 2026-07-21 第五次真实运行 `npm run gate:d` exit_code=0，25/25 断言全部通过；4 张表（ingestion/review/customer/write_log）合成记录全部按精确 record_id 在 finally 块中清理；446/446 回归通过；重复 approve 断言通过（code=CONFLICT 409）；writer replay 返回同一 record_id、created=false。历史细节见附录「Gate D 第五次尝试」。|
 | E | 安全隐私 | PASSED | Commit `0f0f63d` GPT re-review `MVP_PASS`；P0-01D/P0-04B accepted，P0-02/P0-03 保持 accepted。TASK-003 沿用同套 redaction invariant，未引入新 PII 泄露路径（writer 错误降级为 name-only message）。 |
-| F | 部署运行 | NOT_STARTED | 无 Dockerfile（Phase 5/6） |
-| G | 展示证据 | NOT_STARTED | 无运行证据（待 Docker/部署后补充） |
+| F | 部署运行 | IN_PROGRESS | COLLATOR-V1-FAST-CLOSURE-01 Stage C 执行中：Dockerfile + .dockerignore + 本地构建/启动验证（待完成） |
+| G | 展示证据 | IN_PROGRESS | COLLATOR-V1-FAST-CLOSURE-01 Stage D 执行中：`docs/portfolio/COLLATOR-DEPLOYMENT-EVIDENCE.md`（待完成） |
 
 ## 附录：最近一次执行
 
