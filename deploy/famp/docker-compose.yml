@@ -1,0 +1,76 @@
+# docker-compose.yml — FAMP collator + SOP 双服务编排（smoke）
+#
+# FAMP-CONTRACT-ADOPTION-GATE-01-R1-FIX-R3 / RF-R3-04
+#
+# 用途：真实 Docker 双服务冒烟测试，证明 collator→SOP HTTP PRE_WRITE 链路。
+#       RF-R3-01: collator 容器通过 smoke-counter.mjs 入口启动，暴露 :9999/smoke/counters。
+#
+# 位置：collator/deploy/famp/docker-compose.yml（RF-R3-04: 从 lark 根目录移入 collator 跟踪目录）
+#
+# 启动：docker compose -f collator/deploy/famp/docker-compose.yml up --build -d
+# 停止：docker compose -f collator/deploy/famp/docker-compose.yml down
+#
+# 服务：
+#   sop       — SOP PRE_WRITE HTTP 服务 (端口 3001)
+#   collator  — collator 数据摄入服务 (端口 8787) + smoke counter (端口 9999)
+#               通过 SOP_HTTP_URL=http://sop:3001 调用 sop
+
+services:
+  sop:
+    build:
+      context: ../../../SOP
+      dockerfile: Dockerfile
+    container_name: famp-sop
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - SOP_PORT=3001
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    networks:
+      - famp-net
+
+  collator:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: famp-collator
+    # RF-R3-01: smoke-counter 入口替代生产 CMD，激活计数 harness
+    command: ["node", "scripts/famp-smoke-counter.mjs"]
+    ports:
+      - "8787:8787"
+      - "9999:9999"
+    environment:
+      - NODE_ENV=production
+      - PORT=8787
+      - TASK_REPOSITORY=memory
+      - COLLATOR_WEBHOOK_SECRET=smoke-test-secret-not-real
+      - DRY_RUN=true
+      - LOG_LEVEL=info
+      # RF-FIX-01: collator 通过 HTTP 调用 SOP PRE_WRITE
+      - SOP_HTTP_URL=http://sop:3001
+      # RF-R3-01: smoke counter 激活标记
+      - SMOKE_COUNTER_ENABLED=1
+    volumes:
+      # RF-R3-01: 注入 smoke-counter harness（只读）
+      - ../../scripts/famp-smoke-counter.mjs:/app/scripts/famp-smoke-counter.mjs:ro
+    depends_on:
+      sop:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - famp-net
+
+networks:
+  famp-net:
+    driver: bridge
