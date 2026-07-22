@@ -1,8 +1,17 @@
 import Fastify from 'fastify';
+import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
 import { loadConfig } from './config.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestionRoutes } from './routes/ingestions.js';
+import { screenshotRoutes } from './routes/screenshots.js';
 import { IngestionService } from './services/ingestion-service.js';
+import { ScreenshotService, type ScreenshotServiceOptions } from './services/screenshot-service.js';
+import { MockOcrEngine } from './services/screenshot-ocr-adapter.js';
+import { SopScreenshotGovernanceClient } from './governance/screenshot-governance-client.js';
+import { TransactionalBatchWriter } from './business/transactional-batch-writer.js';
+import { FeishuProjectRecordWriter } from './business/project-record-writer.js';
+import { FeishuModelRecordWriter } from './business/model-record-writer.js';
 import {
   createRepositories,
 } from './repositories/repository-factory.js';
@@ -14,6 +23,7 @@ import type { PreWriteClient } from './governance/pre-write-client.js';
 import {
   SopPreWriteClient,
 } from './governance/pre-write-client.js';
+import { FeishuClient } from './feishu/feishu-client.js';
 import { CollatorError } from './domain/errors.js';
 
 export interface BuildAppOptions {
@@ -39,6 +49,16 @@ export interface BuildAppOptions {
    * When omitted in production mode (config-driven bundle), defaults to SopPreWriteClient.
    */
   preWriteClient?: PreWriteClient;
+  /**
+   * 主线 A1: 截图纵向闭环 — 截图服务选项。
+   *
+   * 测试模式可注入 mock OCR / fake governance client / fake batch writer。
+   * 生产模式（未注入时）自动装配：
+   *   - OCR: MockOcrEngine（第一阶段 mock）
+   *   - Governance: SopScreenshotGovernanceClient（调用 SOP /v1/pre-write）
+   *   - BatchWriter: 仅在 feishu 模式且有 project/model 表 ID 时装配
+   */
+  screenshotServiceOptions?: ScreenshotServiceOptions;
 }
 
 export async function buildApp(options?: BuildAppOptions) {
@@ -101,9 +121,53 @@ export async function buildApp(options?: BuildAppOptions) {
     preWriteClient
   );
 
+  // 主线 A1: 截图纵向闭环 — 装配 ScreenshotService
+  const screenshotServiceOptions: ScreenshotServiceOptions = options?.screenshotServiceOptions ?? {};
+  // 生产模式自动装配 OCR + Governance Client（测试模式由调用方注入）
+  if (!options?.screenshotServiceOptions) {
+    screenshotServiceOptions.ocrEngine = screenshotServiceOptions.ocrEngine ?? new MockOcrEngine();
+    screenshotServiceOptions.governanceClient = screenshotServiceOptions.governanceClient ?? new SopScreenshotGovernanceClient();
+    screenshotServiceOptions.writeLogRepository = screenshotServiceOptions.writeLogRepository ?? writeLogRepository;
+    // 仅在 feishu 模式且有 project/model 表 ID 时装配 batch writer
+    if (
+      !screenshotServiceOptions.batchWriter &&
+      config.taskRepository === 'feishu' &&
+      config.feishuAppId && config.feishuAppSecret && config.feishuBaseAppToken &&
+      config.feishuProjectTableId && config.feishuModelTableId
+    ) {
+      const feishuClient = new FeishuClient({
+        appId: config.feishuAppId,
+        appSecret: config.feishuAppSecret,
+        baseToken: config.feishuBaseAppToken,
+      });
+      const projectWriter = new FeishuProjectRecordWriter(feishuClient, {
+        projectTableId: config.feishuProjectTableId,
+      });
+      const modelWriter = new FeishuModelRecordWriter(feishuClient, {
+        modelTableId: config.feishuModelTableId,
+      });
+      screenshotServiceOptions.batchWriter = new TransactionalBatchWriter(
+        customerRecordWriter,
+        projectWriter,
+        modelWriter,
+        writeLogRepository
+      );
+    }
+  }
+  const screenshotService = new ScreenshotService(repository, screenshotServiceOptions);
+
   const app = Fastify({
     logger: {
       level: config.logLevel,
+    },
+  });
+
+  // 主线 A1: 注册 CORS 和 multipart 插件（供截图上传和跨域调用）
+  await app.register(cors, { origin: true });
+  await app.register(multipart, {
+    limits: {
+      fileSize: config.screenshotMaxFileSizeBytes,
+      files: config.screenshotMaxCount,
     },
   });
 
@@ -139,8 +203,11 @@ export async function buildApp(options?: BuildAppOptions) {
   await app.register(async (instance) => {
     await ingestionRoutes(instance, service);
   });
+  await app.register(async (instance) => {
+    await screenshotRoutes(instance, screenshotService);
+  });
 
-  return { app, config, service, repository, reviewRepository };
+  return { app, config, service, repository, reviewRepository, screenshotService };
 }
 
 async function main() {

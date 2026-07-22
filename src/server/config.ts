@@ -27,6 +27,16 @@ const configSchema = z.object({
   feishuReviewTableId: z.string().optional(),
   feishuWriteLogTableId: z.string().optional(),
   feishuCustomerTableId: z.string().optional(),
+  // 主线 A1: 截图纵向闭环 — Project/Model/Review Task 表 ID
+  feishuProjectTableId: z.string().optional(),
+  feishuModelTableId: z.string().optional(),
+  feishuReviewTaskTableId: z.string().optional(),
+
+  // 主线 A1: 截图闭环配置
+  screenshotUploadDir: z.string().default('./uploads'),
+  screenshotOcrEngine: z.enum(['mock', 'tesseract', 'feishu']).default('mock'),
+  screenshotMaxCount: z.coerce.number().int().positive().default(10),
+  screenshotMaxFileSizeBytes: z.coerce.number().int().positive().default(10 * 1024 * 1024),
 
   defaultTimezone: z.string().default('Asia/Shanghai'),
 }).superRefine((data, ctx) => {
@@ -77,6 +87,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     feishuReviewTableId: env.FEISHU_REVIEW_TABLE_ID,
     feishuWriteLogTableId: env.FEISHU_WRITE_LOG_TABLE_ID,
     feishuCustomerTableId: env.FEISHU_CUSTOMER_TABLE_ID,
+    feishuProjectTableId: env.FEISHU_PROJECT_TABLE_ID,
+    feishuModelTableId: env.FEISHU_MODEL_TABLE_ID,
+    feishuReviewTaskTableId: env.FEISHU_REVIEW_TASK_TABLE_ID,
+
+    screenshotUploadDir: env.SCREENSHOT_UPLOAD_DIR,
+    screenshotOcrEngine: env.SCREENSHOT_OCR_ENGINE,
+    screenshotMaxCount: env.SCREENSHOT_MAX_COUNT,
+    screenshotMaxFileSizeBytes: env.SCREENSHOT_MAX_FILE_SIZE_BYTES,
 
     defaultTimezone: env.DEFAULT_TIMEZONE,
   };
