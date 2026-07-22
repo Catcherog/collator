@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { buildApp } from '../../../../src/server/app.js';
 import { InMemoryTaskRepository } from '../../../../src/server/repositories/in-memory-task-repository.js';
 import { InMemoryReviewRepository } from '../../../../src/server/repositories/in-memory-review-repository.js';
+import { NoOpPreWriteClient } from '../../../../src/server/governance/pre-write-client.js';
 import type { PreWriteClient, PreWriteGovernanceResult } from '../../../../src/server/governance/pre-write-client.js';
 import type { CandidateV1 } from '../../../../src/contracts/candidate-v1.js';
 import type { FastifyInstance } from 'fastify';
@@ -98,10 +99,12 @@ async function setup(options?: {
   process.env.COLLATOR_WEBHOOK_SECRET = WEBHOOK_SECRET;
   const repository = new InMemoryTaskRepository();
   const reviewRepository = new InMemoryReviewRepository();
+  // RF-02: 测试 fixture 显式注入 NoOpPreWriteClient 作为默认值。
+  // 仅 PRE_WRITE 行为测试会通过 options.preWriteClient 覆盖为 Fake。
   const { app } = await buildApp({
     repository,
     reviewRepository,
-    preWriteClient: options?.preWriteClient,
+    preWriteClient: options?.preWriteClient ?? new NoOpPreWriteClient(),
   });
   return { app, repository, reviewRepository, preWriteClient: options?.preWriteClient };
 }

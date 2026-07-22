@@ -29,7 +29,6 @@ import { mapCustomerCandidate } from '../mapping/customer-candidate-mapper.js';
 import { runCleaningPipeline } from '../cleaning/pipeline/cleaning-pipeline.js';
 import { sanitizeWarningText } from '../security/redaction.js';
 import type { PreWriteClient } from '../governance/pre-write-client.js';
-import { NoOpPreWriteClient } from '../governance/pre-write-client.js';
 
 function computeIdempotencyKey(req: CreateIngestionRequest): string {
   const normalizedContent = req.content.trim();
@@ -107,19 +106,32 @@ export class IngestionService {
     private readonly writeLogRepository?: WriteLogRepository,
     /**
      * FAMP-CONTRACT-ADOPTION-GATE-01-R1 / AC-R1-02
+     * FAMP-CONTRACT-ADOPTION-GATE-01-R1-FIX / RF-02
      *
      * PRE_WRITE 治理客户端。当持续摄入入口（POST /v1/ingestions/:id/candidate-v1）
      * 收到合法 Candidate V1 后，adoptCandidateV1 调用 preWriteClient.callPreWrite
      * 做 PRE_WRITE 治理；治理结果为 BLOCKED 时 fail-closed 不持久化候选。
      *
-     * 默认 NoOpPreWriteClient（与 Task 3 占位行为一致，用于单元测试隔离）。
-     * 生产环境应通过 buildApp 注入 SopPreWriteClient。
+     * RF-02: 无默认值。调用方必须显式注入 PreWriteClient：
+     * - 生产环境：buildApp 在 config-driven 模式下注入 SopPreWriteClient
+     * - 测试环境：测试 fixture 显式注入 NoOpPreWriteClient 或 Fake
+     *
+     * 类型上保持 `?` 是因为 TypeScript 不允许 required 参数跟随 optional 参数，
+     * 但构造函数体显式拒绝 undefined（runtime required）。
      */
-    private readonly preWriteClient: PreWriteClient = new NoOpPreWriteClient()
+    private readonly preWriteClient?: PreWriteClient
   ) {
     if (Boolean(customerRecordWriter) !== Boolean(writeLogRepository)) {
       throw new Error(
         'Customer record writer and write-log repository must be configured together'
+      );
+    }
+    // RF-02: runtime required — 不允许 undefined，避免生产代码意外绕过 PRE_WRITE 治理。
+    if (!this.preWriteClient) {
+      throw new Error(
+        'IngestionService: preWriteClient is required (RF-02). ' +
+        'Inject NoOpPreWriteClient for unit tests, FakePreWriteClient for behavior tests, ' +
+        'or SopPreWriteClient for production. No silent NoOp fallback.'
       );
     }
   }
@@ -379,7 +391,8 @@ export class IngestionService {
     // 调用 SOP handlePreWrite 做 PRE_WRITE 治理（合同校验已在路由层完成，
     // 此处为 defense-in-depth + 业务规则治理占位）。
     // BLOCKED 决策 → fail-closed 不持久化候选（AC-R1-05 无副作用）。
-    const governance = await this.preWriteClient.callPreWrite(candidate);
+    // RF-02: preWriteClient 在构造时已校验非 undefined（runtime required）。
+    const governance = await this.preWriteClient!.callPreWrite(candidate);
     if (governance.decision === 'BLOCKED') {
       return {
         ingestion_id: task.ingestion_id,

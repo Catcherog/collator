@@ -32,6 +32,11 @@ import { FeishuWriteLogRepository } from '../src/server/repositories/feishu-writ
 import { FeishuCustomerRecordWriter } from '../src/server/business/customer-record-writer.js';
 import { IngestionService } from '../src/server/services/ingestion-service.js';
 import { CollatorError } from '../src/server/domain/errors.js';
+// RF-02: 显式注入 PreWriteClient。Gate D 不调用 adoptCandidateV1，
+// 但仍需注入以满足 IngestionService 构造函数要求（无 NoOp 默认 fallback）。
+// 使用 SopPreWriteClient 以保持与生产环境一致的依赖配置；
+// 实际不触发 PRE_WRITE 调用（仅 adoptCandidateV1 会调用 preWriteClient）。
+import { SopPreWriteClient } from '../src/server/governance/pre-write-client.js';
 
 interface ParsedArgs {
   outputDir: string;
@@ -314,7 +319,8 @@ async function runGateD(env: RequiredEnv, report: GateDReport): Promise<0 | 1> {
     taskRepository,
     reviewRepository,
     customerRecordWriter,
-    writeLogRepository
+    writeLogRepository,
+    new SopPreWriteClient()  // RF-02: 显式注入，gate:d 不调用 adoptCandidateV1
   );
 
   // Track IDs for finally cleanup.

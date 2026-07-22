@@ -14,6 +14,7 @@ import type {
 } from '../../src/server/business/customer-record-writer.js';
 import { FeishuApiError } from '../../src/server/feishu/feishu-errors.js';
 import type { IngestionService } from '../../src/server/services/ingestion-service.js';
+import { NoOpPreWriteClient } from '../../src/server/governance/pre-write-client.js';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
 
@@ -75,6 +76,8 @@ async function setup(options?: {
     reviewRepository,
     customerRecordWriter: writer,
     writeLogRepository,
+    // RF-02: 测试模式必须显式注入 preWriteClient（无 NoOp 默认 fallback）。
+    preWriteClient: new NoOpPreWriteClient(),
   });
   return { app, service, repository, reviewRepository, writeLogRepository, writer };
 }

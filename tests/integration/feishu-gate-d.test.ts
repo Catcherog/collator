@@ -36,6 +36,7 @@ import type { FastifyInstance } from 'fastify';
 import type { FeishuRecord } from '../../src/server/feishu/feishu-client.js';
 import type { IngestionService } from '../../src/server/services/ingestion-service.js';
 import type { CandidateCallbackRequest } from '../../src/server/domain/ingestion.js';
+import { NoOpPreWriteClient } from '../../src/server/governance/pre-write-client.js';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
 const CUSTOMER_TABLE_ID = 'tblCustomerGateD';
@@ -181,6 +182,8 @@ async function buildGateDApp(mockClient: MockFeishuClient): Promise<{
     // real create/search path. The InMemoryWriteLogRepository is used as
     // a cross-check shadow in selected assertions.
     writeLogRepository: feishuWriteLogRepository,
+    // RF-02: 测试模式必须显式注入 preWriteClient（无 NoOp 默认 fallback）。
+    preWriteClient: new NoOpPreWriteClient(),
   });
   return { app, service, repository, reviewRepository, writeLogRepository, feishuWriteLogRepository };
 }

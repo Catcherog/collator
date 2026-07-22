@@ -12,7 +12,6 @@ import type { WriteLogRepository } from './repositories/write-log-repository.js'
 import type { CustomerRecordWriter } from './business/customer-record-writer.js';
 import type { PreWriteClient } from './governance/pre-write-client.js';
 import {
-  NoOpPreWriteClient,
   SopPreWriteClient,
 } from './governance/pre-write-client.js';
 import { CollatorError } from './domain/errors.js';
@@ -30,12 +29,13 @@ export interface BuildAppOptions {
   writeLogRepository?: WriteLogRepository;
   /**
    * FAMP-CONTRACT-ADOPTION-GATE-01-R1 / AC-R1-02
+   * FAMP-CONTRACT-ADOPTION-GATE-01-R1-FIX / RF-02
    *
-   * Optional PRE_WRITE governance client. When omitted:
-   * - Test mode (explicit repository/reviewRepository injected) → NoOpPreWriteClient
-   * - Production mode (config-driven bundle) → SopPreWriteClient
+   * PRE_WRITE governance client. Required when repository/reviewRepository
+   * are explicitly injected (test mode). No silent NoOp fallback (RF-02).
+   * Tests must inject NoOpPreWriteClient, FakePreWriteClient, or SopPreWriteClient explicitly.
    *
-   * Tests may inject a custom PreWriteClient to verify BLOCKED fail-closed behavior.
+   * When omitted in production mode (config-driven bundle), defaults to SopPreWriteClient.
    */
   preWriteClient?: PreWriteClient;
 }
@@ -48,15 +48,23 @@ export async function buildApp(options?: BuildAppOptions) {
   let reviewRepository: ReviewRepository;
   let customerRecordWriter: CustomerRecordWriter | undefined;
   let writeLogRepository: WriteLogRepository | undefined;
-  // R1: PRE_WRITE 治理客户端。测试默认 NoOp（隔离），生产默认 SopPreWriteClient。
+  // R1: PRE_WRITE 治理客户端。RF-02: 测试模式必须显式注入，生产模式默认 SopPreWriteClient。
   let preWriteClient: PreWriteClient;
   if (options?.repository && options?.reviewRepository) {
     repository = options.repository;
     reviewRepository = options.reviewRepository;
     customerRecordWriter = options.customerRecordWriter;
     writeLogRepository = options.writeLogRepository;
-    // 测试模式：默认 NoOp 隔离，避免跨仓库动态 import 影响单测稳定性。
-    preWriteClient = options.preWriteClient ?? new NoOpPreWriteClient();
+    // RF-02: 测试模式必须显式注入 preWriteClient，不再提供 NoOp 默认 fallback。
+    // 测试 fixture 应通过 createTestApp() 或显式注入 NoOpPreWriteClient。
+    if (!options.preWriteClient) {
+      throw new Error(
+        'buildApp: test mode (repository injected) requires explicit preWriteClient. ' +
+        'Inject NoOpPreWriteClient for unit tests, FakePreWriteClient for PRE_WRITE behavior tests, ' +
+        'or SopPreWriteClient for integration tests. No silent NoOp fallback (RF-02).'
+      );
+    }
+    preWriteClient = options.preWriteClient;
   } else if (options?.repository) {
     // Backward-compat: caller injected only a task repository. Synthesize
     // an in-memory review repository so the service can still run.
@@ -67,7 +75,13 @@ export async function buildApp(options?: BuildAppOptions) {
     reviewRepository = new InMemoryReviewRepository();
     customerRecordWriter = options.customerRecordWriter;
     writeLogRepository = options.writeLogRepository;
-    preWriteClient = options.preWriteClient ?? new NoOpPreWriteClient();
+    // RF-02: 同样必须显式注入 preWriteClient。
+    if (!options.preWriteClient) {
+      throw new Error(
+        'buildApp: test mode (repository-only injected) requires explicit preWriteClient (RF-02).'
+      );
+    }
+    preWriteClient = options.preWriteClient;
   } else {
     const bundle = createRepositories(config);
     repository = bundle.taskRepository;

@@ -10,6 +10,8 @@ import { FeishuApiError } from '../../src/server/feishu/feishu-errors.js';
 import type { CustomerRecordWriter, CustomerRecordWriterInput, CustomerRecordWriterResult } from '../../src/server/business/customer-record-writer.js';
 import type { CreateIngestionRequest } from '../../src/server/domain/ingestion.js';
 import type { PipelineResult } from '../../src/server/cleaning/pipeline/cleaning-pipeline.js';
+// RF-02: 测试 fixture 显式注入 NoOpPreWriteClient，不再依赖构造函数默认值。
+import { NoOpPreWriteClient } from '../../src/server/governance/pre-write-client.js';
 
 // Mock the pipeline so the validation_failed path can be exercised without
 // depending on internal adapter throw behaviour. By default the mock
@@ -77,7 +79,7 @@ describe('IngestionService', () => {
   beforeEach(() => {
     repository = new InMemoryTaskRepository();
     reviewRepository = new InMemoryReviewRepository();
-    service = new IngestionService(repository, reviewRepository);
+    service = new IngestionService(repository, reviewRepository, undefined, undefined, new NoOpPreWriteClient());
     // Reset the pipeline mock between tests so each starts with the real
     // implementation. Tests that need to override use mockImplementationOnce.
     vi.mocked(runCleaningPipeline).mockImplementation(
@@ -404,7 +406,7 @@ describe('IngestionService', () => {
 
     // Build a brand-new service instance backed by the SAME repositories so
     // the in-memory state carries over. This simulates a process restart.
-    const newService = new IngestionService(repository, reviewRepository);
+    const newService = new IngestionService(repository, reviewRepository, undefined, undefined, new NoOpPreWriteClient());
     const replay = await newService.receiveCandidate(created.ingestion_id, req);
 
     expect(replay.review_record_id).toBe(first.review_record_id);
@@ -467,7 +469,7 @@ describe('IngestionService', () => {
       expect(rawCandidate.fields['customer_name']).toBe('张三');
 
       // New service instance simulates process restart.
-      const newService = new IngestionService(repository, reviewRepository);
+      const newService = new IngestionService(repository, reviewRepository, undefined, undefined, new NoOpPreWriteClient());
       const replay = await newService.receiveCandidate(created.ingestion_id, req);
       expect(replay.review_record_id).toBe(first.review_record_id);
 
@@ -594,7 +596,7 @@ describe('IngestionService', () => {
     const created = await service.createIngestion(makeRequest());
     await service.receiveCandidate(created.ingestion_id, { candidate: makeCandidate() });
 
-    const newService = new IngestionService(repository, reviewRepository);
+    const newService = new IngestionService(repository, reviewRepository, undefined, undefined, new NoOpPreWriteClient());
     const task = await newService.getIngestion(created.ingestion_id);
     expect(task.pipeline_evidence).toBeDefined();
     const evidence = task.pipeline_evidence as Record<string, unknown>;
@@ -626,7 +628,8 @@ describe('IngestionService', () => {
         repository,
         reviewRepository,
         writer,
-        writeLogRepository
+        writeLogRepository,
+        new NoOpPreWriteClient()  // RF-02: 显式注入，pre-write 不在 commit flow 测试范围
       );
     });
 
@@ -883,10 +886,10 @@ describe('IngestionService', () => {
 
     it('rejects partial commit-flow dependency injection', () => {
       expect(
-        () => new IngestionService(repository, reviewRepository, writer)
+        () => new IngestionService(repository, reviewRepository, writer, undefined, new NoOpPreWriteClient())
       ).toThrow('Customer record writer and write-log repository must be configured together');
       expect(
-        () => new IngestionService(repository, reviewRepository, undefined, writeLogRepository)
+        () => new IngestionService(repository, reviewRepository, undefined, writeLogRepository, new NoOpPreWriteClient())
       ).toThrow('Customer record writer and write-log repository must be configured together');
     });
 
@@ -902,7 +905,8 @@ describe('IngestionService', () => {
         repository,
         reviewRepository,
         writer,
-        failingWriteLogRepository
+        failingWriteLogRepository,
+        new NoOpPreWriteClient()  // RF-02
       );
       const created = await serviceWithFailingLog.createIngestion(
         makeRequest({ dry_run: false })
@@ -936,7 +940,8 @@ describe('IngestionService', () => {
         repository,
         reviewRepository,
         writer,
-        failingWriteLogRepository
+        failingWriteLogRepository,
+        new NoOpPreWriteClient()  // RF-02
       );
       const created = await serviceWithFailingLog.createIngestion(
         makeRequest({ dry_run: true })
