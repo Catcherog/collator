@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { buildApp } from '../../../../src/server/app.js';
 import { InMemoryTaskRepository } from '../../../../src/server/repositories/in-memory-task-repository.js';
 import { InMemoryReviewRepository } from '../../../../src/server/repositories/in-memory-review-repository.js';
-import { NoOpPreWriteClient } from '../../../../src/server/governance/pre-write-client.js';
+import { NoOpPreWriteClient } from '../../../fixtures/noop-pre-write-client.js';
 import type { PreWriteClient, PreWriteGovernanceResult } from '../../../../src/server/governance/pre-write-client.js';
 import type { CandidateV1 } from '../../../../src/contracts/candidate-v1.js';
 import type { FastifyInstance } from 'fastify';

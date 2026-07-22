@@ -29,11 +29,12 @@ export interface BuildAppOptions {
   writeLogRepository?: WriteLogRepository;
   /**
    * FAMP-CONTRACT-ADOPTION-GATE-01-R1 / AC-R1-02
-   * FAMP-CONTRACT-ADOPTION-GATE-01-R1-FIX / RF-02
+   * FAMP-CONTRACT-ADOPTION-GATE-01-R1-FIX / RF-02 / RF-FIX-02
    *
    * PRE_WRITE governance client. Required when repository/reviewRepository
    * are explicitly injected (test mode). No silent NoOp fallback (RF-02).
-   * Tests must inject NoOpPreWriteClient, FakePreWriteClient, or SopPreWriteClient explicitly.
+   * Tests must inject a PreWriteClient from tests/fixtures/ (e.g. NoOp fixture),
+   * FakePreWriteClient, or SopPreWriteClient explicitly.
    *
    * When omitted in production mode (config-driven bundle), defaults to SopPreWriteClient.
    */
@@ -56,12 +57,13 @@ export async function buildApp(options?: BuildAppOptions) {
     customerRecordWriter = options.customerRecordWriter;
     writeLogRepository = options.writeLogRepository;
     // RF-02: 测试模式必须显式注入 preWriteClient，不再提供 NoOp 默认 fallback。
-    // 测试 fixture 应通过 createTestApp() 或显式注入 NoOpPreWriteClient。
+    // RF-FIX-02: NoOp 实现位于 tests/fixtures/，生产源码不含 NoOp。
+    // 测试 fixture 应通过 createTestApp() 或显式注入 tests/fixtures/ 中的 NoOp。
     if (!options.preWriteClient) {
       throw new Error(
         'buildApp: test mode (repository injected) requires explicit preWriteClient. ' +
-        'Inject NoOpPreWriteClient for unit tests, FakePreWriteClient for PRE_WRITE behavior tests, ' +
-        'or SopPreWriteClient for integration tests. No silent NoOp fallback (RF-02).'
+        'Inject a NoOp fixture from tests/fixtures/ for unit tests, FakePreWriteClient for PRE_WRITE behavior tests, ' +
+        'or SopPreWriteClient for integration tests. No silent fallback (RF-02 / RF-FIX-02).'
       );
     }
     preWriteClient = options.preWriteClient;

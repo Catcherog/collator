@@ -14,7 +14,7 @@ import type {
 } from '../../src/server/business/customer-record-writer.js';
 import { FeishuApiError } from '../../src/server/feishu/feishu-errors.js';
 import type { IngestionService } from '../../src/server/services/ingestion-service.js';
-import { NoOpPreWriteClient } from '../../src/server/governance/pre-write-client.js';
+import { NoOpPreWriteClient } from '../fixtures/noop-pre-write-client.js';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
 

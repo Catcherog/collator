@@ -11,7 +11,8 @@ import type { CustomerRecordWriter, CustomerRecordWriterInput, CustomerRecordWri
 import type { CreateIngestionRequest } from '../../src/server/domain/ingestion.js';
 import type { PipelineResult } from '../../src/server/cleaning/pipeline/cleaning-pipeline.js';
 // RF-02: 测试 fixture 显式注入 NoOpPreWriteClient，不再依赖构造函数默认值。
-import { NoOpPreWriteClient } from '../../src/server/governance/pre-write-client.js';
+// RF-FIX-02: NoOp 已从生产源码移至 tests/fixtures/。
+import { NoOpPreWriteClient } from '../fixtures/noop-pre-write-client.js';
 
 // Mock the pipeline so the validation_failed path can be exercised without
 // depending on internal adapter throw behaviour. By default the mock

@@ -36,7 +36,7 @@ import type { FastifyInstance } from 'fastify';
 import type { FeishuRecord } from '../../src/server/feishu/feishu-client.js';
 import type { IngestionService } from '../../src/server/services/ingestion-service.js';
 import type { CandidateCallbackRequest } from '../../src/server/domain/ingestion.js';
-import { NoOpPreWriteClient } from '../../src/server/governance/pre-write-client.js';
+import { NoOpPreWriteClient } from '../fixtures/noop-pre-write-client.js';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
 const CUSTOMER_TABLE_ID = 'tblCustomerGateD';

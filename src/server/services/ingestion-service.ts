@@ -114,7 +114,7 @@ export class IngestionService {
      *
      * RF-02: 无默认值。调用方必须显式注入 PreWriteClient：
      * - 生产环境：buildApp 在 config-driven 模式下注入 SopPreWriteClient
-     * - 测试环境：测试 fixture 显式注入 NoOpPreWriteClient 或 Fake
+     * - 测试环境：测试 fixture 显式注入 tests/fixtures/ 中的 NoOp 或 Fake
      *
      * 类型上保持 `?` 是因为 TypeScript 不允许 required 参数跟随 optional 参数，
      * 但构造函数体显式拒绝 undefined（runtime required）。
@@ -130,8 +130,8 @@ export class IngestionService {
     if (!this.preWriteClient) {
       throw new Error(
         'IngestionService: preWriteClient is required (RF-02). ' +
-        'Inject NoOpPreWriteClient for unit tests, FakePreWriteClient for behavior tests, ' +
-        'or SopPreWriteClient for production. No silent NoOp fallback.'
+        'Inject a NoOp fixture from tests/fixtures/ for unit tests, FakePreWriteClient for behavior tests, ' +
+        'or SopPreWriteClient for production. No silent fallback (RF-02 / RF-FIX-02).'
       );
     }
   }

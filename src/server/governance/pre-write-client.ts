@@ -43,25 +43,13 @@ export interface PreWriteGovernanceResult {
 
 /**
  * PRE_WRITE 治理客户端接口
+ *
+ * RF-FIX-02: NoOp 实现已移至 tests/fixtures/noop-pre-write-client.ts。
+ * 生产源码不含 NoOp fallback（RF-02）。测试必须显式注入 PreWriteClient
+ * 实例（从 tests/fixtures/ 导入 NoOp，或使用 Fake/Sop 客户端）。
  */
 export interface PreWriteClient {
   callPreWrite(candidate: CandidateV1): Promise<PreWriteGovernanceResult>;
-}
-
-/**
- * No-op 客户端 — 测试专用
- *
- * RF-02: 不再是默认 fallback。必须由测试 fixture 显式注入。
- */
-export class NoOpPreWriteClient implements PreWriteClient {
-  async callPreWrite(candidate: CandidateV1): Promise<PreWriteGovernanceResult> {
-    return {
-      candidate_id: candidate.candidate_id,
-      decision: 'PASS',
-      write_status: 'NOT_ATTEMPTED',
-      violations_count: 0,
-    };
-  }
 }
 
 /**
