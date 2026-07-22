@@ -1,8 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { CollatorError } from '../domain/errors.js';
 import type { IngestionService } from '../services/ingestion-service.js';
-import { verifySignature } from '../security/signature.js';
 import { redactObject } from '../security/redaction.js';
 import {
   validateCandidateV1,
@@ -21,18 +19,6 @@ const createIngestionSchema = z.object({
   dry_run: z.boolean().optional(),
 });
 
-const candidateCallbackSchema = z.object({
-  candidate: z.object({
-    schema_name: z.string(),
-    schema_version: z.string(),
-    prompt_version: z.string(),
-    fields: z.record(z.unknown()),
-    field_confidence: z.record(z.number()).default({}),
-    evidence: z.record(z.string()).default({}),
-  }),
-  workflow_run_id: z.string().optional(),
-});
-
 const approveSchema = z.object({
   reviewer_id: z.string().min(1),
   review_record_id: z.string().min(1),
@@ -49,7 +35,7 @@ function redactTask(task: import('../domain/ingestion.js').IngestionTask): Recor
   return redactObject(task as unknown as Record<string, unknown>);
 }
 
-export async function ingestionRoutes(app: FastifyInstance, service: IngestionService, webhookSecret: string): Promise<void> {
+export async function ingestionRoutes(app: FastifyInstance, service: IngestionService): Promise<void> {
   app.post('/v1/ingestions', async (request, reply) => {
     const body = createIngestionSchema.parse(request.body);
     const result = await service.createIngestion(body);
@@ -62,35 +48,38 @@ export async function ingestionRoutes(app: FastifyInstance, service: IngestionSe
     return redactTask(task);
   });
 
-  app.post('/v1/internal/ingestions/:id/candidate', async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const timestamp = request.headers['x-collator-timestamp'] as string | undefined;
-    const signature = request.headers['x-collator-signature'] as string | undefined;
-    const rawBody = JSON.stringify(request.body);
-
-    const verification = verifySignature(rawBody, timestamp ?? '', signature ?? '', webhookSecret);
-    if (!verification.valid) {
-      request.log.warn({ reason: verification.reason }, 'Invalid callback signature');
-      throw new CollatorError('UNAUTHORIZED', verification.reason ?? 'Invalid signature', 401);
-    }
-
-    const body = candidateCallbackSchema.parse(request.body);
-    const result = await service.receiveCandidate(id, body);
-    return reply.status(200).send(result);
+  // FAMP-CONTRACT-ADOPTION-GATE-01-R1: Dify callback 路由正式废止
+  //
+  // 此路由原为 Dify 回调持续摄入入口，使用 CandidateRecord 形状（非 Candidate V1
+  // 合同），可经 approve 触发真实飞书客户表写入，绕过 validateCandidateV1 合同
+  // 门禁。R1 将其正式废止（410 Gone），消除合同绕过路径。
+  //
+  // 替代入口：POST /v1/ingestions/:id/candidate-v1（使用 Candidate V1 合同）
+  //
+  // 废止行为：
+  // - 不校验签名、不解析 body、不调用 service
+  // - 返回 410 Gone + CONTRACT_ADOPTION_GATE_ABOLISHED 错误码
+  // - 无副作用（不读不写 task / review 仓库）
+  app.post('/v1/internal/ingestions/:id/candidate', async (_request, reply) => {
+    return reply.status(410).send({
+      error: {
+        code: 'CONTRACT_ADOPTION_GATE_ABOLISHED',
+        message: 'Dify callback candidate intake path abolished. Use POST /v1/ingestions/:id/candidate-v1 with Candidate V1 contract.',
+      },
+    });
   });
 
-  // Task 3 Adoption Gate — Candidate V1 持续摄入入口
+  // Candidate V1 持续摄入入口（R1: 唯一合法候选摄入入口）
   //
-  // 此路由是 AC-10 Adoption Gate 的 collator 侧采用点：路由在调用任何
-  // 下游服务前，先通过 `validateCandidateV1` 校验请求体是否符合 Candidate V1
-  // 合同。校验失败时返回 HTTP 400 并附带合同错误代码（UNKNOWN_SCHEMA_VERSION /
-  // MISSING_REQUIRED_FIELD / INVALID_FIELD_TYPE），**不**调用 service，**不**
-  // 产生飞书业务写入副作用。校验通过时调用 `service.adoptCandidateV1` 持久化
-  // V1 候选作为采用证据（不触发 customer_consultation 清洗管道）。
+  // R1 变更：原 Dify callback 路由 `/v1/internal/ingestions/:id/candidate` 已废止
+  //（410 Gone），本路由成为唯一合法候选摄入入口。
   //
-  // 与现有 `/v1/internal/ingestions/:id/candidate` 路由的关系：新增路由，不修改
-  // 现有 Dify 回调链路。Dify 回调仍使用 CandidateRecord 形状，V1 合同接入是
-  // 新增路径而非重构现有路径。
+  // 调用链（R1 已全线接通）：
+  //   1. validateCandidateV1（合同校验，路由层） — 校验失败返回 HTTP 400
+  //   2. service.adoptCandidateV1（持久化前） — 内部调用 preWriteClient.callPreWrite
+  //      做 PRE_WRITE 治理（生产环境为 SopPreWriteClient，调用 SOP handlePreWrite）
+  //   3. 治理 BLOCKED → fail-closed 不持久化（AC-R1-05 无副作用）
+  //   4. 治理 PASS / NEEDS_REVIEW → 持久化候选
   app.post('/v1/ingestions/:id/candidate-v1', async (request, reply) => {
     const { id } = request.params as { id: string };
 

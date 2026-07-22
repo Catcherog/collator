@@ -6,13 +6,14 @@ import { InMemoryReviewRepository } from '../../src/server/repositories/in-memor
 import { InMemoryWriteLogRepository } from '../../src/server/repositories/in-memory-write-log-repository.js';
 import { generateSignatureHeaders } from '../../src/server/security/signature.js';
 import type { FastifyInstance } from 'fastify';
-import type { IngestionTask } from '../../src/server/domain/ingestion.js';
+import type { IngestionTask, CandidateCallbackRequest } from '../../src/server/domain/ingestion.js';
 import type {
   CustomerRecordWriter,
   CustomerRecordWriterInput,
   CustomerRecordWriterResult,
 } from '../../src/server/business/customer-record-writer.js';
 import { FeishuApiError } from '../../src/server/feishu/feishu-errors.js';
+import type { IngestionService } from '../../src/server/services/ingestion-service.js';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
 
@@ -32,6 +33,7 @@ function makeIngestionBody() {
 
 async function setup(): Promise<{
   app: FastifyInstance;
+  service: IngestionService;
   repository: InMemoryTaskRepository;
   reviewRepository: InMemoryReviewRepository;
 }>;
@@ -40,6 +42,7 @@ async function setup(options: {
   writeLogRepository?: InMemoryWriteLogRepository;
 }): Promise<{
   app: FastifyInstance;
+  service: IngestionService;
   repository: InMemoryTaskRepository;
   reviewRepository: InMemoryReviewRepository;
   writeLogRepository: InMemoryWriteLogRepository;
@@ -50,6 +53,7 @@ async function setup(options?: {
   writeLogRepository?: InMemoryWriteLogRepository;
 }): Promise<{
   app: FastifyInstance;
+  service: IngestionService;
   repository: InMemoryTaskRepository;
   reviewRepository: InMemoryReviewRepository;
   writeLogRepository?: InMemoryWriteLogRepository;
@@ -66,13 +70,13 @@ async function setup(options?: {
   const writeLogRepository = writer
     ? (options?.writeLogRepository ?? new InMemoryWriteLogRepository())
     : undefined;
-  const { app } = await buildApp({
+  const { app, service } = await buildApp({
     repository,
     reviewRepository,
     customerRecordWriter: writer,
     writeLogRepository,
   });
-  return { app, repository, reviewRepository, writeLogRepository, writer };
+  return { app, service, repository, reviewRepository, writeLogRepository, writer };
 }
 
 describe('POST /v1/ingestions', () => {
@@ -160,7 +164,79 @@ describe('GET /v1/ingestions/:id', () => {
   });
 });
 
-describe('POST /v1/internal/ingestions/:id/candidate', () => {
+describe('POST /v1/internal/ingestions/:id/candidate — AC-R1-01 Dify callback abolished', () => {
+  beforeEach(() => {
+    delete process.env.COLLATOR_WEBHOOK_SECRET;
+  });
+
+  // FAMP-CONTRACT-ADOPTION-GATE-01-R1:
+  // Dify callback route abolished (410 Gone) to eliminate contract bypass path.
+  // Replacement entry: POST /v1/ingestions/:id/candidate-v1 (Candidate V1 contract).
+  // Customer consultation flow still tested via service.receiveCandidate in
+  // P0 redaction tests and approve/reject flow tests below.
+
+  async function createTask(app: FastifyInstance) {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/ingestions',
+      payload: makeIngestionBody(),
+    });
+    return response.json().ingestion_id as string;
+  }
+
+  it('returns 410 Gone with CONTRACT_ADOPTION_GATE_ABOLISHED', async () => {
+    const { app, repository } = await setup();
+    const ingestionId = await createTask(app);
+
+    const taskBefore = await repository.findById(ingestionId);
+    const taskBeforeSnapshot = JSON.parse(JSON.stringify(taskBefore));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/internal/ingestions/${ingestionId}/candidate`,
+      payload: { candidate: { schema_name: 'customer', schema_version: '1.0.0' } },
+    });
+
+    expect(response.statusCode).toBe(410);
+    expect(response.json().error.code).toBe('CONTRACT_ADOPTION_GATE_ABOLISHED');
+
+    // No side effects: task unchanged
+    const taskAfter = await repository.findById(ingestionId);
+    expect(JSON.parse(JSON.stringify(taskAfter))).toEqual(taskBeforeSnapshot);
+  });
+
+  it('returns 410 even with valid signature (abolished route ignores auth)', async () => {
+    const { app } = await setup();
+    const ingestionId = await createTask(app);
+
+    const payload = { candidate: { schema_name: 'customer', schema_version: '1.0.0' } };
+    const rawBody = JSON.stringify(payload);
+    const { timestamp, signature } = generateSignatureHeaders(rawBody, WEBHOOK_SECRET);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/internal/ingestions/${ingestionId}/candidate`,
+      headers: {
+        'x-collator-timestamp': timestamp,
+        'x-collator-signature': signature,
+      },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(410);
+    expect(response.json().error.code).toBe('CONTRACT_ADOPTION_GATE_ABOLISHED');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0: GET response PII redaction tests.
+// FAMP-CONTRACT-ADOPTION-GATE-01-R1: migrated from abolished Dify callback HTTP
+// route to direct service.receiveCandidate calls. Tests verify PII redaction
+// in GET responses, not contract validation (which is covered in
+// tests/unit/server/routes/ingestions-candidate-v1.test.ts).
+// ---------------------------------------------------------------------------
+
+describe('P0: GET response PII redaction (via service.receiveCandidate)', () => {
   beforeEach(() => {
     delete process.env.COLLATOR_WEBHOOK_SECRET;
   });
@@ -192,183 +268,19 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
     };
   }
 
-  function signPayload(payload: unknown) {
-    const rawBody = JSON.stringify(payload);
-    return generateSignatureHeaders(rawBody, WEBHOOK_SECRET);
-  }
-
+  // FAMP-CONTRACT-ADOPTION-GATE-01-R1: Dify callback HTTP route abolished.
+  // P0 tests now call service.receiveCandidate directly to set up state.
   async function postCandidate(
-    app: FastifyInstance,
+    service: IngestionService,
     ingestionId: string,
     payload: unknown
   ) {
-    const { timestamp, signature } = signPayload(payload);
-    const response = await app.inject({
-      method: 'POST',
-      url: `/v1/internal/ingestions/${ingestionId}/candidate`,
-      headers: {
-        'x-collator-timestamp': timestamp,
-        'x-collator-signature': signature,
-      },
-      payload: payload as Record<string, unknown>,
-    });
-    return response;
+    await service.receiveCandidate(ingestionId, payload as CandidateCallbackRequest);
+    return { statusCode: 200 };
   }
 
-  it('accepts a signed candidate callback and stores the mapped review record', async () => {
-    const { app, reviewRepository } = await setup();
-    const ingestionId = await createTask(app);
-    const payload = makeCandidatePayload();
-
-    const response = await postCandidate(app, ingestionId, payload);
-
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body.status).toBe('pending_review');
-    // review_record_id is opaque (no rec_review_ prefix).
-    expect(typeof body.review_record_id).toBe('string');
-    expect(body.review_record_id.length).toBeGreaterThan(0);
-    expect(body.review_record_id.startsWith('rec_review_')).toBe(false);
-
-    // Review record persisted with the canonical Chinese candidate fields.
-    const review = await reviewRepository.findByIngestionId(ingestionId);
-    expect(review).not.toBeNull();
-    expect(review?.candidate.fields['客户姓名']).toBe('张三');
-    expect(review?.candidate.fields['联系方式']).toBe('13800138000');
-    expect(review?.candidate.fields['预算区间']).toBe('3000-5000元');
-    // Pipeline evidence persisted inside the validation object.
-    const validation = review?.validation as Record<string, unknown>;
-    expect(validation['pipelineVersion']).toBeDefined();
-    expect(validation['stages']).toBeDefined();
-  });
-
-  it('produces Chinese normalized_fields from an English-keyed candidate', async () => {
-    const { app } = await setup();
-    const ingestionId = await createTask(app);
-    const payload = makeCandidatePayload({ customer_name: '李四' });
-
-    const response = await postCandidate(app, ingestionId, payload);
-    expect(response.statusCode).toBe(200);
-
-    const taskResponse = await app.inject({
-      method: 'GET',
-      url: `/v1/ingestions/${ingestionId}`,
-    });
-    const task = taskResponse.json();
-    // The English candidate key customer_name was mapped to the canonical
-    // Chinese field 客户姓名 before being persisted on the task.
-    expect(task.candidate.fields['客户姓名']).toBe('李四');
-    expect(task.candidate.fields['customer_name']).toBeUndefined();
-    expect(task.normalized_fields['客户姓名']).toBe('李四');
-  });
-
-  it('replays return the same opaque review_record_id', async () => {
-    const { app } = await setup();
-    const ingestionId = await createTask(app);
-    const payload = makeCandidatePayload();
-
-    const first = await postCandidate(app, ingestionId, payload);
-    const second = await postCandidate(app, ingestionId, payload);
-
-    expect(first.statusCode).toBe(200);
-    expect(second.statusCode).toBe(200);
-    expect(second.json().review_record_id).toBe(first.json().review_record_id);
-  });
-
-  it('records UNMAPPED_CANDIDATE_FIELD warnings on the task', async () => {
-    const { app } = await setup();
-    const ingestionId = await createTask(app);
-    const payload = makeCandidatePayload({ unknown_field: 'dropped' });
-
-    const response = await postCandidate(app, ingestionId, payload);
-    expect(response.statusCode).toBe(200);
-
-    const taskResponse = await app.inject({
-      method: 'GET',
-      url: `/v1/ingestions/${ingestionId}`,
-    });
-    const task = taskResponse.json();
-    const unmapped = task.warnings.find(
-      (w: { code: string }) => w.code === 'UNMAPPED_CANDIDATE_FIELD'
-    );
-    expect(unmapped).toBeDefined();
-    expect(unmapped.field).toBe('unknown_field');
-    // Unknown field never reaches normalized_fields.
-    expect(task.normalized_fields['unknown_field']).toBeUndefined();
-  });
-
-  it('returns validation_failed with no review when the pipeline fails', async () => {
-    const { app, reviewRepository } = await setup();
-    const ingestionId = await createTask(app);
-    // Use a candidate that the rules adapter will reject as unsupported to
-    // force the pipeline into a failure path.
-    const payload = {
-      candidate: {
-        schema_name: 'customer',
-        schema_version: '1.0.0',
-        prompt_version: '1.0.0',
-        fields: { 客户姓名: '' }, // empty value triggers rules validation failure
-        field_confidence: {},
-        evidence: {},
-      },
-    };
-
-    const response = await postCandidate(app, ingestionId, payload);
-
-    // Either the pipeline passed (status pending_review) or failed
-    // (status validation_failed). Both are acceptable HTTP 200 outcomes;
-    // what matters is that no review record is created on failure.
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    if (body.status === 'validation_failed') {
-      expect(body.review_record_id).toBe('');
-      const review = await reviewRepository.findByIngestionId(ingestionId);
-      expect(review).toBeNull();
-      expect(reviewRepository.size()).toBe(0);
-    } else {
-      // If the pipeline did not fail on this input, the test still passes —
-      // the validation_failed path is covered by unit tests in
-      // tests/unit/ingestion-service.test.ts.
-      expect(body.status).toBe('pending_review');
-    }
-  });
-
-  it('rejects unsigned callback', async () => {
-    const { app } = await setup();
-    const ingestionId = await createTask(app);
-
-    const response = await app.inject({
-      method: 'POST',
-      url: `/v1/internal/ingestions/${ingestionId}/candidate`,
-      payload: makeCandidatePayload(),
-    });
-
-    expect(response.statusCode).toBe(401);
-    expect(response.json().error.code).toBe('UNAUTHORIZED');
-  });
-
-  it('rejects callback with invalid signature', async () => {
-    const { app } = await setup();
-    const ingestionId = await createTask(app);
-    const payload = makeCandidatePayload();
-    const rawBody = JSON.stringify(payload);
-    const { timestamp } = generateSignatureHeaders(rawBody, WEBHOOK_SECRET);
-
-    const response = await app.inject({
-      method: 'POST',
-      url: `/v1/internal/ingestions/${ingestionId}/candidate`,
-      headers: {
-        'x-collator-timestamp': timestamp,
-        'x-collator-signature': 'invalid',
-      },
-      payload,
-    });
-
-    expect(response.statusCode).toBe(401);
-  });
-
   it('P0-01: GET response redacts nested Candidate PII (phone in fields and evidence) without mutating stored task', async () => {
-    const { app, repository, reviewRepository } = await setup();
+    const { app, service, repository, reviewRepository } = await setup();
     const ingestionId = await createTask(app);
     // Candidate carries a phone number in fields and evidence. The unknown
     // field key is intentionally benign so the response-wide "no original
@@ -381,7 +293,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
       budget: '预算3000元左右',
     };
 
-    const callbackResponse = await postCandidate(app, ingestionId, payload);
+    const callbackResponse = await postCandidate(service, ingestionId, payload);
     expect(callbackResponse.statusCode).toBe(200);
 
     const getResponse = await app.inject({
@@ -418,7 +330,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
   });
 
   it('P0-01 (residual): GET response redacts non-phone WeChat IDs under contact / 联系方式 without mutating stored evidence', async () => {
-    const { app, repository, reviewRepository } = await setup();
+    const { app, service, repository, reviewRepository } = await setup();
     const ingestionId = await createTask(app);
     // Candidate carries a non-phone WeChat ID in `contact`. The mapper
     // canonicalizes `contact` to `联系方式` for `candidate.fields`, but
@@ -428,7 +340,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
       contact: 'wechat_secret_01',
     });
 
-    const callbackResponse = await postCandidate(app, ingestionId, payload);
+    const callbackResponse = await postCandidate(service, ingestionId, payload);
     expect(callbackResponse.statusCode).toBe(200);
 
     const getResponse = await app.inject({
@@ -464,7 +376,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
   });
 
   it('P0-01A: GET response redacts mixed phone+wechat contact string (fail closed) without mutating stored evidence', async () => {
-    const { app, repository, reviewRepository } = await setup();
+    const { app, service, repository, reviewRepository } = await setup();
     const ingestionId = await createTask(app);
     // Mixed phone + WeChat ID in a single contact string. redactContactValue
     // must fail closed: no residual `wechat_secret_01` may cross the GET
@@ -474,7 +386,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
       contact: mixedContact,
     });
 
-    const callbackResponse = await postCandidate(app, ingestionId, payload);
+    const callbackResponse = await postCandidate(service, ingestionId, payload);
     expect(callbackResponse.statusCode).toBe(200);
 
     const getResponse = await app.inject({
@@ -508,7 +420,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
   });
 
   it('P0-01B: GET response redacts contact array elements without mutating stored evidence', async () => {
-    const { app, repository, reviewRepository } = await setup();
+    const { app, service, repository, reviewRepository } = await setup();
     const ingestionId = await createTask(app);
     // `fields.contact` as an array of strings. Recursion must propagate
     // contact context to each element so non-phone WeChat IDs are masked
@@ -518,7 +430,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
       contact: contactArray,
     });
 
-    const callbackResponse = await postCandidate(app, ingestionId, payload);
+    const callbackResponse = await postCandidate(service, ingestionId, payload);
     expect(callbackResponse.statusCode).toBe(200);
 
     const getResponse = await app.inject({
@@ -550,7 +462,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
   });
 
   it('P0-01C: GET response redacts nested sensitive child key under contact parent (parent mode wins) without mutating stored evidence', async () => {
-    const { app, repository, reviewRepository } = await setup();
+    const { app, service, repository, reviewRepository } = await setup();
     const ingestionId = await createTask(app);
     // Candidate carries a nested object under the `wechat` contact key
     // whose child key (`content`) would normally select content redaction
@@ -563,7 +475,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
       wechat: nestedWechat,
     });
 
-    const callbackResponse = await postCandidate(app, ingestionId, payload);
+    const callbackResponse = await postCandidate(service, ingestionId, payload);
     expect(callbackResponse.statusCode).toBe(200);
 
     const getResponse = await app.inject({
@@ -651,7 +563,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
   });
 
   it('P0-01D: GET upgrades nested contact semantics beneath content without mutating evidence', async () => {
-    const { app, repository, reviewRepository } = await setup();
+    const { app, service, repository, reviewRepository } = await setup();
     const ingestionId = await createTask(app);
     // `fields.content` is an unknown Candidate field (kept verbatim in
     // raw_candidate, dropped from canonical normalized_fields). The
@@ -663,7 +575,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
     const nested = { contact: 'wechat_secret_01' };
     const payload = makeCandidatePayload({ content: nested });
 
-    const callback = await postCandidate(app, ingestionId, payload);
+    const callback = await postCandidate(service, ingestionId, payload);
     expect(callback.statusCode).toBe(200);
 
     const response = await app.inject({
@@ -689,7 +601,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
   });
 
   it('P0-04B: GET redacts wrapped phones in unknown fields and evidence without mutating evidence', async () => {
-    const { app, repository, reviewRepository } = await setup();
+    const { app, service, repository, reviewRepository } = await setup();
     const ingestionId = await createTask(app);
     // Attacker-controlled unknown Candidate/evidence strings that match
     // `<alpha>_<alphanumeric>` must NOT be treated as trusted structural
@@ -705,7 +617,7 @@ describe('POST /v1/internal/ingestions/:id/candidate', () => {
       unknown_field: wrappedEvidence,
     };
 
-    const callback = await postCandidate(app, ingestionId, payload);
+    const callback = await postCandidate(service, ingestionId, payload);
     expect(callback.statusCode).toBe(200);
 
     const response = await app.inject({
@@ -743,7 +655,10 @@ describe('POST /v1/ingestions/:id/approve and /reject', () => {
     delete process.env.COLLATOR_WEBHOOK_SECRET;
   });
 
-  async function createTaskWithCandidate(app: FastifyInstance) {
+  async function createTaskWithCandidate(
+    app: FastifyInstance,
+    service: IngestionService
+  ) {
     const created = await app.inject({
       method: 'POST',
       url: '/v1/ingestions',
@@ -751,6 +666,8 @@ describe('POST /v1/ingestions/:id/approve and /reject', () => {
     });
     const ingestionId = created.json().ingestion_id as string;
 
+    // FAMP-CONTRACT-ADOPTION-GATE-01-R1: Dify callback HTTP route abolished (410 Gone).
+    // Test helper now calls service.receiveCandidate directly.
     const payload = {
       candidate: {
         schema_name: 'customer',
@@ -761,28 +678,18 @@ describe('POST /v1/ingestions/:id/approve and /reject', () => {
         evidence: {},
       },
     };
-    const rawBody = JSON.stringify(payload);
-    const { timestamp, signature } = generateSignatureHeaders(rawBody, WEBHOOK_SECRET);
 
-    const candidateResponse = await app.inject({
-      method: 'POST',
-      url: `/v1/internal/ingestions/${ingestionId}/candidate`,
-      headers: {
-        'x-collator-timestamp': timestamp,
-        'x-collator-signature': signature,
-      },
-      payload,
-    });
+    const result = await service.receiveCandidate(ingestionId, payload);
 
     return {
       ingestionId,
-      reviewRecordId: candidateResponse.json().review_record_id as string,
+      reviewRecordId: result.review_record_id as string,
     };
   }
 
   it('approves an ingestion', async () => {
-    const { app } = await setup();
-    const { ingestionId, reviewRecordId } = await createTaskWithCandidate(app);
+    const { app, service } = await setup();
+    const { ingestionId, reviewRecordId } = await createTaskWithCandidate(app, service);
 
     const response = await app.inject({
       method: 'POST',
@@ -800,8 +707,8 @@ describe('POST /v1/ingestions/:id/approve and /reject', () => {
   });
 
   it('rejects an ingestion', async () => {
-    const { app } = await setup();
-    const { ingestionId } = await createTaskWithCandidate(app);
+    const { app, service } = await setup();
+    const { ingestionId } = await createTaskWithCandidate(app, service);
 
     const response = await app.inject({
       method: 'POST',
@@ -841,6 +748,7 @@ describe('TASK-003: POST /v1/ingestions/:id/approve commit flow', () => {
 
   async function createPendingReviewTask(
     app: FastifyInstance,
+    service: IngestionService,
     options: { dryRun?: boolean } = {}
   ): Promise<{ ingestionId: string; reviewRecordId: string }> {
     const created = await app.inject({
@@ -850,6 +758,9 @@ describe('TASK-003: POST /v1/ingestions/:id/approve commit flow', () => {
     });
     const ingestionId = created.json().ingestion_id as string;
 
+    // FAMP-CONTRACT-ADOPTION-GATE-01-R1: Dify callback HTTP route abolished (410 Gone).
+    // Test helper now calls service.receiveCandidate directly to set up
+    // pending-review state for the approve flow tests, bypassing the HTTP layer.
     const payload = {
       candidate: {
         schema_name: 'customer',
@@ -860,22 +771,12 @@ describe('TASK-003: POST /v1/ingestions/:id/approve commit flow', () => {
         evidence: {},
       },
     };
-    const rawBody = JSON.stringify(payload);
-    const { timestamp, signature } = generateSignatureHeaders(rawBody, WEBHOOK_SECRET);
 
-    const candidateResponse = await app.inject({
-      method: 'POST',
-      url: `/v1/internal/ingestions/${ingestionId}/candidate`,
-      headers: {
-        'x-collator-timestamp': timestamp,
-        'x-collator-signature': signature,
-      },
-      payload,
-    });
+    const result = await service.receiveCandidate(ingestionId, payload);
 
     return {
       ingestionId,
-      reviewRecordId: candidateResponse.json().review_record_id as string,
+      reviewRecordId: result.review_record_id as string,
     };
   }
 
@@ -884,9 +785,9 @@ describe('TASK-003: POST /v1/ingestions/:id/approve commit flow', () => {
       business_record_id: `rec_customer_${input.ingestionId.slice(-6)}`,
       created: true,
     }));
-    const { app, writeLogRepository } = await setup({ writer });
+    const { app, service, writeLogRepository } = await setup({ writer });
 
-    const { ingestionId, reviewRecordId } = await createPendingReviewTask(app);
+    const { ingestionId, reviewRecordId } = await createPendingReviewTask(app, service);
 
     const response = await app.inject({
       method: 'POST',
@@ -922,9 +823,9 @@ describe('TASK-003: POST /v1/ingestions/:id/approve commit flow', () => {
     const { writer } = makeWriter(async () => {
       throw new FeishuApiError(1254045, 'permission denied phone 13800138000');
     });
-    const { app, writeLogRepository } = await setup({ writer });
+    const { app, service, writeLogRepository } = await setup({ writer });
 
-    const { ingestionId, reviewRecordId } = await createPendingReviewTask(app);
+    const { ingestionId, reviewRecordId } = await createPendingReviewTask(app, service);
 
     const response = await app.inject({
       method: 'POST',
@@ -962,9 +863,9 @@ describe('TASK-003: POST /v1/ingestions/:id/approve commit flow', () => {
     const { writer, write } = makeWriter(async () => {
       throw new Error('writer should not be called on dry_run=true');
     });
-    const { app, writeLogRepository } = await setup({ writer });
+    const { app, service, writeLogRepository } = await setup({ writer });
 
-    const { ingestionId, reviewRecordId } = await createPendingReviewTask(app, {
+    const { ingestionId, reviewRecordId } = await createPendingReviewTask(app, service, {
       dryRun: true,
     });
 
@@ -993,9 +894,9 @@ describe('TASK-003: POST /v1/ingestions/:id/approve commit flow', () => {
       created: false,
     }));
     write.mockRejectedValueOnce(new FeishuApiError(1254045, 'transient'));
-    const { app, writeLogRepository } = await setup({ writer });
+    const { app, service, writeLogRepository } = await setup({ writer });
 
-    const { ingestionId, reviewRecordId } = await createPendingReviewTask(app);
+    const { ingestionId, reviewRecordId } = await createPendingReviewTask(app, service);
 
     const firstResponse = await app.inject({
       method: 'POST',
