@@ -28,6 +28,8 @@ import { FeishuApiError } from '../feishu/feishu-errors.js';
 import { mapCustomerCandidate } from '../mapping/customer-candidate-mapper.js';
 import { runCleaningPipeline } from '../cleaning/pipeline/cleaning-pipeline.js';
 import { sanitizeWarningText } from '../security/redaction.js';
+import type { PreWriteClient } from '../governance/pre-write-client.js';
+import { NoOpPreWriteClient } from '../governance/pre-write-client.js';
 
 function computeIdempotencyKey(req: CreateIngestionRequest): string {
   const normalizedContent = req.content.trim();
@@ -102,7 +104,18 @@ export class IngestionService {
      * present this must also be present so the audit trail is persisted.
      * Partial dependency injection is rejected by the constructor.
      */
-    private readonly writeLogRepository?: WriteLogRepository
+    private readonly writeLogRepository?: WriteLogRepository,
+    /**
+     * FAMP-CONTRACT-ADOPTION-GATE-01-R1 / AC-R1-02
+     *
+     * PRE_WRITE 治理客户端。当持续摄入入口（POST /v1/ingestions/:id/candidate-v1）
+     * 收到合法 Candidate V1 后，adoptCandidateV1 调用 preWriteClient.callPreWrite
+     * 做 PRE_WRITE 治理；治理结果为 BLOCKED 时 fail-closed 不持久化候选。
+     *
+     * 默认 NoOpPreWriteClient（与 Task 3 占位行为一致，用于单元测试隔离）。
+     * 生产环境应通过 buildApp 注入 SopPreWriteClient。
+     */
+    private readonly preWriteClient: PreWriteClient = new NoOpPreWriteClient()
   ) {
     if (Boolean(customerRecordWriter) !== Boolean(writeLogRepository)) {
       throw new Error(
@@ -323,6 +336,11 @@ export class IngestionService {
   /**
    * Task 3 Adoption Gate — 持续摄入入口的 V1 候选采用方法。
    *
+   * FAMP-CONTRACT-ADOPTION-GATE-01-R1 / AC-R1-02:
+   * 调用链 `validateCandidateV1（合同校验，路由层）→ preWriteClient.callPreWrite
+   *（PRE_WRITE 治理，本方法）→ 持久化`。治理结果为 BLOCKED 时 fail-closed
+   * 不持久化候选，task 保持原状态，无飞书写入副作用。
+   *
    * 与 `receiveCandidate` 的关键区别：
    * - **不**调用 `mapCustomerCandidate`（V1 是 project 实体，不是 customer）
    * - **不**调用 `runCleaningPipeline`（清洗管道是 customer_consultation 专用）
@@ -334,6 +352,10 @@ export class IngestionService {
    *
    * 幂等性：同一 ingestion 重复调用 adoptCandidateV1 返回首次结果（基于
    * `task.raw_candidate` 存在性判断，与 receiveCandidate 的幂等策略一致）。
+   *
+   * Fail-closed 行为（AC-R1-05）：
+   * - PRE_WRITE 返回 BLOCKED → 不持久化 candidate / raw_candidate，task 保持原状态
+   * - PRE_WRITE 返回 PASS / NEEDS_REVIEW → 持久化候选（NEEDS_REVIEW 仍持久化以便人工复核）
    */
   async adoptCandidateV1(
     ingestionId: string,
@@ -350,6 +372,19 @@ export class IngestionService {
         ingestion_id: task.ingestion_id,
         candidate_id: (task.raw_candidate.fields as { candidate_id: string }).candidate_id,
         status: 'candidate_received',
+      };
+    }
+
+    // R1 / AC-R1-02: PRE_WRITE 治理门禁
+    // 调用 SOP handlePreWrite 做 PRE_WRITE 治理（合同校验已在路由层完成，
+    // 此处为 defense-in-depth + 业务规则治理占位）。
+    // BLOCKED 决策 → fail-closed 不持久化候选（AC-R1-05 无副作用）。
+    const governance = await this.preWriteClient.callPreWrite(candidate);
+    if (governance.decision === 'BLOCKED') {
+      return {
+        ingestion_id: task.ingestion_id,
+        candidate_id: candidate.candidate_id,
+        status: 'candidate_blocked',
       };
     }
 

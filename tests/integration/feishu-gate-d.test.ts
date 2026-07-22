@@ -32,9 +32,10 @@ import { InMemoryWriteLogRepository } from '../../src/server/repositories/in-mem
 import { FeishuCustomerRecordWriter } from '../../src/server/business/customer-record-writer.js';
 import { FeishuWriteLogRepository } from '../../src/server/repositories/feishu-write-log-repository.js';
 import { FeishuClient } from '../../src/server/feishu/feishu-client.js';
-import { generateSignatureHeaders } from '../../src/server/security/signature.js';
 import type { FastifyInstance } from 'fastify';
 import type { FeishuRecord } from '../../src/server/feishu/feishu-client.js';
+import type { IngestionService } from '../../src/server/services/ingestion-service.js';
+import type { CandidateCallbackRequest } from '../../src/server/domain/ingestion.js';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
 const CUSTOMER_TABLE_ID = 'tblCustomerGateD';
@@ -154,6 +155,7 @@ class MockFeishuClient {
 
 async function buildGateDApp(mockClient: MockFeishuClient): Promise<{
   app: FastifyInstance;
+  service: IngestionService;
   repository: InMemoryTaskRepository;
   reviewRepository: InMemoryReviewRepository;
   writeLogRepository: InMemoryWriteLogRepository;
@@ -171,7 +173,7 @@ async function buildGateDApp(mockClient: MockFeishuClient): Promise<{
     mockClient as unknown as FeishuClient,
     { customerTableId: CUSTOMER_TABLE_ID }
   );
-  const { app } = await buildApp({
+  const { app, service } = await buildApp({
     repository,
     reviewRepository,
     customerRecordWriter,
@@ -180,7 +182,7 @@ async function buildGateDApp(mockClient: MockFeishuClient): Promise<{
     // a cross-check shadow in selected assertions.
     writeLogRepository: feishuWriteLogRepository,
   });
-  return { app, repository, reviewRepository, writeLogRepository, feishuWriteLogRepository };
+  return { app, service, repository, reviewRepository, writeLogRepository, feishuWriteLogRepository };
 }
 
 function makeGateDIngestionBody() {
@@ -211,14 +213,10 @@ function makeGateDCandidateFields() {
   };
 }
 
-function signPayload(payload: unknown) {
-  const rawBody = JSON.stringify(payload);
-  return generateSignatureHeaders(rawBody, WEBHOOK_SECRET);
-}
-
 describe('TASK-003 Gate D (mock): customer-table commit flow acceptance', () => {
   let mockClient: MockFeishuClient;
   let app: FastifyInstance;
+  let service: IngestionService;
   let repository: InMemoryTaskRepository;
   let reviewRepository: InMemoryReviewRepository;
   let feishuWriteLogRepository: FeishuWriteLogRepository;
@@ -227,6 +225,7 @@ describe('TASK-003 Gate D (mock): customer-table commit flow acceptance', () => 
     mockClient = new MockFeishuClient();
     const built = await buildGateDApp(mockClient);
     app = built.app;
+    service = built.service;
     repository = built.repository;
     reviewRepository = built.reviewRepository;
     feishuWriteLogRepository = built.feishuWriteLogRepository;
@@ -247,6 +246,8 @@ describe('TASK-003 Gate D (mock): customer-table commit flow acceptance', () => 
     const ingestionId = created.json().ingestion_id as string;
 
     // Step 2: candidate callback with Gate D synthetic fields.
+    // FAMP-CONTRACT-ADOPTION-GATE-01-R1: Dify callback HTTP route abolished (410 Gone).
+    // Test now calls service.receiveCandidate directly.
     const candidatePayload = {
       candidate: {
         schema_name: 'customer',
@@ -257,18 +258,11 @@ describe('TASK-003 Gate D (mock): customer-table commit flow acceptance', () => 
         evidence: {},
       },
     };
-    const { timestamp, signature } = signPayload(candidatePayload);
-    const candidateResponse = await app.inject({
-      method: 'POST',
-      url: `/v1/internal/ingestions/${ingestionId}/candidate`,
-      headers: {
-        'x-collator-timestamp': timestamp,
-        'x-collator-signature': signature,
-      },
-      payload: candidatePayload,
-    });
-    expect(candidateResponse.statusCode).toBe(200);
-    const reviewRecordId = candidateResponse.json().review_record_id as string;
+    const candidateResult = await service.receiveCandidate(
+      ingestionId,
+      candidatePayload as CandidateCallbackRequest
+    );
+    const reviewRecordId = candidateResult.review_record_id as string;
     expect(reviewRecordId).toBeTruthy();
 
     // Step 3: approve — triggers the full commit flow.
@@ -352,14 +346,12 @@ describe('TASK-003 Gate D (mock): customer-table commit flow acceptance', () => 
         evidence: {},
       },
     };
-    const { timestamp, signature } = signPayload(candidatePayload);
-    const candidateResponse = await app.inject({
-      method: 'POST',
-      url: `/v1/internal/ingestions/${ingestionId}/candidate`,
-      headers: { 'x-collator-timestamp': timestamp, 'x-collator-signature': signature },
-      payload: candidatePayload,
-    });
-    const reviewRecordId = candidateResponse.json().review_record_id as string;
+    // FAMP-CONTRACT-ADOPTION-GATE-01-R1: Dify callback HTTP route abolished.
+    const candidateResult = await service.receiveCandidate(
+      ingestionId,
+      candidatePayload as CandidateCallbackRequest
+    );
+    const reviewRecordId = candidateResult.review_record_id as string;
 
     const firstApprove = await app.inject({
       method: 'POST',
@@ -412,13 +404,12 @@ describe('TASK-003 Gate D (mock): customer-table commit flow acceptance', () => 
         evidence: {},
       },
     };
-    const { timestamp, signature } = signPayload(candidatePayload);
-    await app.inject({
-      method: 'POST',
-      url: `/v1/internal/ingestions/${ingestionId}/candidate`,
-      headers: { 'x-collator-timestamp': timestamp, 'x-collator-signature': signature },
-      payload: candidatePayload,
-    });
+    // FAMP-CONTRACT-ADOPTION-GATE-01-R1: Dify callback HTTP route abolished (410 Gone).
+    // Test now calls service.receiveCandidate directly.
+    await service.receiveCandidate(
+      ingestionId,
+      candidatePayload as CandidateCallbackRequest
+    );
 
     const getResponse = await app.inject({
       method: 'GET',
