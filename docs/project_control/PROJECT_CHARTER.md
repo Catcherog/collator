@@ -1,27 +1,28 @@
 <!-- AUTHORITY_MARKER_START -->
 > **权威仓库标记（AUTHORITY REPOSITORY）**
-> 本文件是 Project ID `FEISHU-AI-MIDDLE-PLATFORM` 总章程 v1.1 的唯一权威副本。
+> 本文件是 Project ID `FEISHU-AI-MIDDLE-PLATFORM` 总章程 v1.2 的唯一权威副本。
 > 权威仓库：`collator`（远程 https://github.com/Catcherog/collator.git，分支 `phase/3-feishu-integration`）
 > 权威路径：`collator/docs/project_control/PROJECT_CHARTER.md`
 > 其他仓库（SOP）仅保留非权威同步副本或引用。
-> v1.0 中关于写入边界的旧定义已被 v1.1 第 0.2 节明确废止。
+> v1.2 引入"2 主线 + 1 辅线"执行架构（A 截图纵向闭环 / B 智能录入台 / C 机器人通知），不改变 v1.1 核心架构事实。
+> v1.0 中关于写入边界的旧定义已被 v1.1 第 0.2 节明确废止，v1.2 保持该废止。
 > 标记时间：2026-07-22
-> 标记任务：FAMP-PROJECT-CHARTER-V1.1-01
+> 标记任务：FAMP-CHARTER-V1.2-ADOPTION-01
 <!-- AUTHORITY_MARKER_END -->
 
-# 飞书智能业务数据中台项目总章程 v1.1
+# 飞书智能业务数据中台项目总章程 v1.2
 
 > 文档性质：GPT 与 Trae 的项目级最高协作章程（权威副本，由 collator 仓库维护）  
 > Project ID：`FEISHU-AI-MIDDLE-PLATFORM`  
 > Project Name：飞书智能业务数据中台  
 > 核心仓库：`collator`、`feishu-v2 / SOP`  
 > 展示仓库：`jaelchen-portfolio`  
-> 当前阶段：集成闭环与求职展示收口  
-> 章程版本：v1.1  
+> 当前阶段：交互与截图纵向切片（INTERACTION_AND_SCREENSHOT_VERTICAL_SLICE）  
+> 章程版本：v1.2  
 > 生效日期：2026-07-22  
 > 维护方式：单一事实源（SSOT）  
-> 默认执行路由：GPT 规划 → Trae 执行 → GPT 证据审查  
-> Codex：非默认参与者，仅在触发升级条件时介入
+> 默认执行路由：R2（GPT 规划 → Trae 执行 → GPT 证据审查）  
+> Codex：`NOT_REQUIRED_BY_DEFAULT`，仅在触发升级条件时介入
 
 ---
 
@@ -56,6 +57,33 @@
 > 用户仍可直接在飞书表格中写入。  
 > SOP 是统一治理门禁和流程执行引擎，但不是唯一物理写入通道。  
 > 飞书是权威业务数据库。
+
+---
+
+# 0A. v1.2 修订声明
+
+本版本在 v1.1 基础上引入新的执行架构，不改变 v1.1 第 0.1 节确立的 8 条核心架构事实、BR-01 ~ BR-06 业务规则不变量、双入口治理、字段权威等级和分层幂等。v1.1 的架构事实全部延续有效。
+
+## 0A.1 v1.2 新增执行原则
+
+1. **先完成 v1.2 章程采用，再启动功能分支。**
+2. 采用"2 主线 + 1 辅线"执行架构：
+   - **主线 A**：核心截图纵向闭环（Collator / Candidate / SOP / 正式写入 / 业务幂等）。
+   - **主线 B**：智能录入台 MVP（Portal 页面 / 前端状态 / API Client / 契约 Mock）。
+   - **辅线 C**：机器人、卡片和通知调查；核心 API 未冻结前不得改核心业务代码。
+3. **A 拥有** Collator、Candidate、SOP、正式写入和业务幂等语义。
+4. **B 只拥有** Portal 页面、前端状态、API Client 和契约 Mock。
+5. **C 只拥有** 机器人 Adapter、消息卡片、通知和回调协议。
+6. **B/C 不得复制** 客片、样片、Customer、Model 等业务规则。
+7. **不引入 Dify 作为主链路依赖**；不使用 Dify 时链路仍可运行。
+8. 每个仓库只在交付前执行一次全量回归；开发阶段优先运行定向测试。
+9. 不为每个小步骤生成独立完成包；每条执行线最终仅输出一个紧凑完成包。
+10. 不创建无必要的 SHA backfill 或纯状态提交；状态文件随功能结果一起提交。
+11. 未经授权不 force push，不提交 Secret、PII、真实客户截图和真实飞书资源标识。
+
+## 0A.2 v1.2 废止的旧任务批次
+
+v1.1 第 29A 节的首批任务（Task 1 章程 v1.1 入库、Task 2 双入口只读调查）已全部完成并关闭。v1.2 第 29B 节定义新任务批次，取代 v1.1 旧任务队列。Candidate Contract v1.1 升级（`FAMP-CANDIDATE-CONTRACT-V1.1-01`）被新主线 A 吸收，不再作为独立前置任务。
 
 ---
 
@@ -936,9 +964,9 @@ Trae 是：
 
 状态：
 
-`NEXT`
+`DONE`
 
-## Phase 1：跨仓库合同冻结
+## Phase 1：跨仓库合同冻结 — ADOPTED
 
 目标：
 
@@ -950,69 +978,68 @@ Trae 是：
 
 状态：
 
-`PLANNED`
+`ADOPTED`（合同已冻结，Adoption Gate 已关闭，GPT EVIDENCE_REVIEW_PASS）
 
-## Phase 2：Project 结构化纵向切片
+## Phase 2：交互与截图纵向切片（INTERACTION_AND_SCREENSHOT_VERTICAL_SLICE）— IN_PROGRESS
 
-必须覆盖：
+v1.2 将 v1.1 的 Phase 2（Project 结构化纵向切片）与 Phase 3（图片 OCR 最小切片）合并为统一纵向闭环，采用"2 主线 + 1 辅线"并行执行：
 
-1. 合法客片 + Customer。
-2. 合法样片 + Model。
-3. 客片缺 Customer。
-4. 项目类型为空。
-5. 第二次重复执行。
+### 主线 A：客户聊天截图核心纵向闭环
+
+Task ID: `FAMP-CHAT-SCREENSHOT-VERTICAL-SLICE-01`
+
+必须实现：
+- 1～10 张匿名截图输入，按稳定顺序处理多图
+- OCR 原文和字段级证据
+- Candidate 生成，人工修正值标记为 CONFIRMED
+- SOP PRE_WRITE 治理
+- 合法客片 + Customer / 合法样片 + Model（Customer 为空合法）/ 类型缺失进入 NEEDS_REVIEW
+- Customer / Project 最小创建和关联
+- Review Task 创建或复用 + Audit Log
+- 返回受控飞书记录引用
+- 重复上传和重复确认幂等
+- Provider 失败 fail closed 或转人工
+
+详见第 29B 节任务卡。
+
+### 主线 B：智能录入台 MVP
+
+Task ID: `FAMP-SMART-INTAKE-PORTAL-MVP-01`
+
+只拥有 Portal 页面、前端状态、API Client 和契约 Mock，不得修改 Collator 核心逻辑、SOP 业务规则或核心合同权威定义。
+
+### 辅线 C：机器人与主动通知
+
+Task ID: `FAMP-FEISHU-BOT-AUTOMATION-MVP-01`
+
+只做只读调查和协议产物，核心 API 未冻结前不得改核心业务代码。只拥有机器人 Adapter、消息卡片、通知和回调协议。
 
 状态：
 
-`PLANNED`
+`IN_PROGRESS`（v1.2 章程采用后立即启动 A 和 B）
 
-## Phase 3：图片 OCR 最小切片
+## Phase 3：短音频 ASR 最小切片 — DEFERRED
+
+v1.2 将短音频 ASR 降级为 DEFERRED，不阻塞 PORTFOLIO_READY 目标。仅在主线 A/B 闭环完成且有余力时考虑。
+
+## Phase 4：官网、简历和演示发布
+
+开始条件：集成 Gate 通过，或机器人真实 Gate 被明确标记为外部权限阻塞但 Portal 核心闭环通过。
 
 目标：
-
-- 匿名需求截图；
-- OCR 原文；
-- 候选字段；
-- SOP 校验；
-- 人工确认；
-- 正式写入；
-- 幂等复验。
-
-状态：
-
-`PLANNED`
-
-## Phase 4：短音频 ASR 最小切片
-
-目标：
-
-- 60 秒以内；
-- 普通话；
-- 候选字段；
-- 默认人工确认；
-- SOP 写入。
+- 五层架构图 / 产品模块图
+- 智能录入台截图 / 候选和证据对照截图
+- 飞书记录和审计截图 / 机器人卡片截图
+- 正常、复核、重复提交三条流程
+- 中文项目描述 / 英文项目描述 / 两分钟演示脚本
+- 技术栈和产品取舍 / 测试与真实集成证据摘要
+- 明确 `PORTFOLIO_READY` 不等于 `PRODUCTION_READY`
 
 状态：
 
 `PLANNED`
 
-## Phase 5：官网、简历和演示发布
-
-目标：
-
-- 统一案例页；
-- 架构图；
-- 流程图；
-- 四张关键截图；
-- 两分钟演示；
-- 简历中文和英文描述；
-- 证据摘要。
-
-状态：
-
-`PLANNED`
-
-## Phase 6：长期增强
+## Phase 5：长期增强
 
 状态：
 
@@ -1031,29 +1058,25 @@ Trae 是：
 
 ---
 
-# 15. 当前任务优先级
+# 15. 当前任务优先级（v1.2）
 
-## P0
+## 立即执行
 
-1. 项目总章程入库。
-2. Candidate V1 合同。
-3. Project 结构化纵向切片。
-4. 跨项目幂等验证。
+1. Task 0：章程 v1.2 采用（R0 / LOW，完成后不单独等待审查）。
+2. 主线 A + 主线 B 同时启动。
+3. 辅线 C：有空闲窗口做调查、卡片协议和通知去重；无窗口则等待 A0。
 
-## P1
+## A 发布 API 契约后
 
-1. OCR Adapter。
-2. 人工复核表。
-3. AI 异常解释。
-4. 官网案例页。
-5. 两分钟演示。
+B/C 只允许适配 API Client，不得要求 A 修改业务语义迎合界面。
 
-## P2
+## 三线完成后
 
-1. 短音频 ASR。
-2. 单页 PDF。
-3. 简历英文版。
-4. 运行统计。
+只进行一次统一证据审查。
+
+## 集成 Gate 通过后
+
+立即发布官网，不等待 P1 查询、ASR、PDF 或生产级基础设施。
 
 ## Deferred
 
@@ -1062,6 +1085,8 @@ Trae 是：
 3. 多页复杂 PDF。
 4. 通用 SaaS。
 5. 新后台 UI。
+6. 短音频 ASR（v1.2 降级）。
+7. 登录权限中心 / 通用后台 / 表单搭建器 / Dify / PDF / 业务查询 / 全量历史任务管理（Portal 第一阶段不实现）。
 
 ---
 
@@ -1678,67 +1703,193 @@ OCR 更适合当前工作室业务场景，也更容易形成官网演示。
 ---
 
 
-# 29A. v1.1 首批任务
+# 29A. v1.1 首批任务（已完成，由 v1.2 第 29B 节取代）
 
-## Task 1：章程 v1.1 入库
+> 以下任务均已完成并关闭。保留作为历史记录。
 
-Project ID: `FEISHU-AI-MIDDLE-PLATFORM`  
-Task ID: `FAMP-PROJECT-CHARTER-V1.1-01`  
-Risk Level: LOW  
-Recommended Owner: Trae  
-Recommended Route: R1
+## Task 1：章程 v1.1 入库 — DONE
 
-Objective:
+- Task ID: `FAMP-PROJECT-CHARTER-V1.1-01`
+- Status: `DONE`
 
-使用本章程替换 v1.0，并将“飞书数据库 + Collator 主写但非唯一入口 + SOP 双模式治理”设为权威架构。
+## Task 2：双入口架构只读调查 — DONE
 
-Acceptance Criteria:
+- Task ID: `FAMP-DUAL-WRITE-BOUNDARY-AUDIT-01`
+- Status: `DONE`
 
-- AC-01：权威文件版本为 v1.1。
-- AC-02：v1.0 写入边界被明确废止。
-- AC-03：控制文件引用 v1.1。
-- AC-04：另一仓库无冲突章程。
-- AC-05：记录两仓库分支、HEAD 和工作区。
-- AC-06：无生产代码变更。
-- AC-07：无 Secret 和真实资源标识。
+## Task 3：合同采用门禁（Adoption Gate）— CLOSED
 
-Status: `READY_FOR_TRAE_EXECUTION`
-
-## Task 2：双入口架构只读调查
-
-Project ID: `FEISHU-AI-MIDDLE-PLATFORM`  
-Task ID: `FAMP-DUAL-WRITE-BOUNDARY-AUDIT-01`  
-Risk Level: MEDIUM  
-Recommended Owner: Trae  
-Recommended Route: R2
-
-Objective:
-
-只读调查两个仓库当前写入入口、事件触发、幂等键、复核表和审计结构，为 Candidate Contract v1.1 建立真实仓库基线。
-
-Acceptance Criteria:
-
-- AC-01：列出 Collator 全部物理写入入口。
-- AC-02：列出 SOP 全部物理写入入口。
-- AC-03：列出人工直写后的可用触发路径。
-- AC-04：列出现有摄入级和业务级幂等实现。
-- AC-05：识别循环触发风险。
-- AC-06：识别人工值覆盖风险。
-- AC-07：给出 Candidate v1.1 最小落点。
-- AC-08：不修改生产代码。
-- AC-09：提供文件路径和符号级证据。
-- AC-10：判断是否需要 Codex。
-
-Status: `BLOCKED_BY_FAMP-PROJECT-CHARTER-V1.1-01`
+- Task ID: `FAMP-CONTRACT-ADOPTION-GATE-01`
+- Status: `CLOSED`（GPT EVIDENCE_REVIEW_PASS，AC-10 关闭）
 
 ---
 
-# 30. 当前项目状态
+# 29B. v1.2 任务批次
+
+## Task 0：章程 v1.2 采用
+
+Project ID: `FEISHU-AI-MIDDLE-PLATFORM`
+Task ID: `FAMP-CHARTER-V1.2-ADOPTION-01`
+Risk Level: LOW
+Recommended Owner: Trae 主窗口
+Recommended Route: R0
+
+Objective: 将 v1.2 正式写入项目控制体系，并冻结三条执行线的仓库和文件边界。
+
+In Scope:
+- 将 v1.2 写入权威 PROJECT_CHARTER.md
+- 更新 STATUS.yaml / CURRENT_STATE.md / DECISIONS.md / ROADMAP.md / TASK_QUEUE.md / SESSION_HANDOFF.md
+- 标记 Phase 0 已完成、Phase 1 已采用
+- 标记 A/B 为立即执行，C 为辅助并行
+- 记录 Dify 非必需、Portal/Bot 不得复制规则
+- 核对三个仓库路径、分支、HEAD 和 git status
+- 输出三条执行线的文件所有权矩阵
+
+Out of Scope: 任何生产代码修改、合同升级、业务规则修改、大规模历史文档清理。
+
+Acceptance Criteria:
+- AC-0-01：PROJECT_CHARTER.md 内容为 v1.2。
+- AC-0-02：STATUS.yaml 的 current_phase 为 INTERACTION_AND_SCREENSHOT_VERTICAL_SLICE。
+- AC-0-03：TASK_QUEUE.md 包含 A/B/C 和最终集成 Gate。
+- AC-0-04：三个仓库路径、HEAD、工作区状态已记录。
+- AC-0-05：A/B/C 文件边界不存在已知冲突。
+- AC-0-06：没有生产代码变更。
+- AC-0-07：状态文件之间不存在版本、阶段或 next owner 冲突。
+
+Status: `READY_FOR_TRAE_EXECUTION`（完成后立即启动 A 和 B，不等待 GPT 单独审查 Task 0；Task 0 证据合并到后续总完成包）
+
+## 主线 A：客户聊天截图核心纵向闭环
+
+Project ID: `FEISHU-AI-MIDDLE-PLATFORM`
+Task ID: `FAMP-CHAT-SCREENSHOT-VERTICAL-SLICE-01`
+Risk Level: MEDIUM-HIGH
+Recommended Owner: Trae 主窗口 A
+Recommended Route: R2
+
+Owned Scope:
+- collator 核心摄入、文件处理、OCR Adapter、Candidate 和确认入口
+- SOP PRE_WRITE、Customer/Project/Model 关系治理
+- Review Task、Audit Log、正式写入和业务幂等
+- 对外受控 API 契约
+
+Phase A0（只读调查和接口冻结）：开始修改前输出当前文件上传入口、Intake/Tool API、OCR Adapter 落点、Candidate 持久化和确认入口、SOP 持续运行入口、Customer/Project/Model 写入器、Review Task 和 Audit Log 是否存在、跨实体写入部分成功风险、当前幂等层级、推荐最小实现文件清单、提供给 B/C 的 API 契约和示例响应。
+
+API 最少包含：1.创建截图提交 2.查询处理状态 3.获取 OCR 证据和 Candidate 4.提交人工修正 5.确认写入 6.转人工复核 7.获取最终治理和写入结果。优先复用 Candidate V1、Governance Result V1 和 Interaction Envelope，不得为 Portal 单独创建第二套业务合同。
+
+Phase A1（实现最小闭环）必须实现：1～10 张匿名截图输入、按稳定顺序处理多图、OCR 原文和字段级证据、Candidate 生成、人工修正值标记 CONFIRMED、SOP PRE_WRITE、合法客片+Customer、合法样片+Model（Customer 为空合法）、类型缺失进入 NEEDS_REVIEW、Customer/Project 最小创建和关联、Review Task 创建或复用、Audit Log、返回受控飞书记录引用、重复上传和重复确认幂等、Provider 失败 fail closed 或转人工。
+
+关键 Acceptance Criteria:
+- AC-A01：支持 1 和 10 张截图边界。
+- AC-A02：字段候选可追踪到原文或图片证据。
+- AC-A03：人工修改不会被后续 AI 候选覆盖。
+- AC-A04：合法客片写入并关联 Customer。
+- AC-A05：合法样片写入并关联 Model。
+- AC-A06：客片缺 Customer 创建或复用复核任务。
+- AC-A07：项目类型缺失不得猜测写入。
+- AC-A08：重复上传不创建重复正式记录。
+- AC-A09：重复确认不创建重复关系或任务。
+- AC-A10：写入失败不会错误报告 SUCCEEDED。
+- AC-A11：未知合同版本 fail closed。
+- AC-A12：原有合同、富文本、分类和写入测试无回归。
+
+Stop Conditions: 出现不可解释的跨实体部分成功 / 并发重试可能产生重复正式记录 / 需要破坏 Candidate 或 Governance Result 兼容性 / 需要将业务规则放入 Portal 或机器人 / 需要明文 Secret / 当前修改会与 B/C 修改同一核心文件。
+
+Codex Escalation: 仅在事务、补偿、并发幂等、不可逆部分成功或安全权限风险无法通过局部实现关闭时升级。
+
+Status: `BLOCKED_BY_FAMP-CHARTER-V1.2-ADOPTION-01`
+
+## 主线 B：智能录入台 MVP
+
+Project ID: `FEISHU-AI-MIDDLE-PLATFORM`
+Task ID: `FAMP-SMART-INTAKE-PORTAL-MVP-01`
+Risk Level: MEDIUM
+Recommended Owner: Trae 并行窗口 B
+Recommended Route: R2
+
+Owned Scope: Portal 页面、前端组件、上传状态、Candidate/证据展示、表单编辑状态、API Client、契约 Mock、匿名演示数据。
+
+不得修改: Collator 核心逻辑、SOP 业务规则、Customer/Project/Model 关系判断、正式飞书写入器、核心合同权威定义。
+
+执行顺序: 调查 jaelchen-portfolio 或现有 Next.js/React 工程 → 隔离应用或路由 → 使用 A0 冻结的 API 契约（A0 未完成前使用本地 Mock）→ UI 完成后仅替换 API Client → 准备匿名公开截图和演示路径。
+
+Acceptance Criteria:
+- AC-B01：支持选择、预览、删除、重新排序 1～10 张截图。
+- AC-B02：显示上传、OCR、候选、治理、写入阶段。
+- AC-B03：候选字段可查看对应证据。
+- AC-B04：人工修改字段有明确视觉标记。
+- AC-B05：具有确认写入和转人工复核操作。
+- AC-B06：显示四类核心结果状态（PASS/NEEDS_REVIEW/BLOCKED/DUPLICATE_SKIPPED）。
+- AC-B07：失败后保留用户修改，可重试。
+- AC-B08：重复点击在客户端被禁用，服务端仍以幂等为准。
+- AC-B09：浏览器中不存在飞书 Secret 或正式写入 Token。
+- AC-B10：前端不存在客片/样片关系规则。
+- AC-B11：常见手机宽度和桌面宽度可用。
+- AC-B12：匿名合成数据可生成官网截图。
+
+Status: `BLOCKED_BY_FAMP-CHARTER-V1.2-ADOPTION-01`
+
+## 辅线 C：机器人与主动通知
+
+Project ID: `FEISHU-AI-MIDDLE-PLATFORM`
+Task ID: `FAMP-FEISHU-BOT-AUTOMATION-MVP-01`
+Risk Level: MEDIUM-HIGH
+Recommended Owner: Trae 并行窗口 C；资源不足时延后
+Recommended Route: R2
+
+第一阶段先做只读调查和协议产物，不得等待外部权限后才开始：当前飞书应用机器人能力、事件订阅、消息卡片版本、卡片回调和签名校验、所需权限清单、公网回调落点、Review Task 是否包含通知目标、通知去重键、与 A API 的调用协议、卡片 JSON 模板、回调 Payload fixture、重复投递测试设计、P1 查询和提醒命令草案。
+
+C 的第一可交付切片：NEEDS_REVIEW → 创建或复用 Review Task → 生成通知事件 → 发送候选/复核消息卡片 → 用户确认或转复核 → 调用 A 的受控 API → 返回结果卡片。截图直接发送给机器人可在 A API 稳定后接入，不得在机器人中重复实现 OCR。
+
+Acceptance Criteria:
+- AC-C01：权限、事件、回调和部署要求明确。
+- AC-C02：卡片展示关键字段、错误原因和证据摘要。
+- AC-C03：卡片确认、修改和转复核只调用受控 API。
+- AC-C04：相同 action_id 重复回调不重复执行。
+- AC-C05：相同 Review Task 状态不重复通知。
+- AC-C06：消息发送失败有审计状态和有限重试边界。
+- AC-C07：机器人不持有独立业务规则。
+- AC-C08：不使用 Dify 时链路仍可运行。
+- AC-C09：没有权限时输出 BLOCKED_USER_ACTION 清单，不伪造真实 Gate。
+- AC-C10：提供 P1 查询、跟进、拍摄前检查和逾期提醒的受控合同草案。
+
+Stop Conditions: 涉及回调签名、Token 权限、并发重复投递或复杂通知状态机时停止，交 GPT 判断是否升级 Codex。
+
+Status: `BLOCKED_BY_FAMP-CHARTER-V1.2-ADOPTION-01`（资源不足时可延后至 A0 完成后启动）
+
+## 集成 Gate
+
+Project ID: `FEISHU-AI-MIDDLE-PLATFORM`
+Task ID: `FAMP-END-TO-END-INTEGRATION-GATE-01`
+Owner: Trae 主窗口
+
+开始条件：A 目标 API 和真实核心路径完成 + B 已接真实 API + C 至少完成 NEEDS_REVIEW 消息卡片闭环（或明确记录外部权限阻塞）。
+
+必须验证三条公开演示流程：
+1. Flow 1 正常写入：匿名聊天截图 → OCR 和证据 → 人工确认 → SOP PASS → Customer/Project/Model 关系 → 飞书记录引用
+2. Flow 2 人工复核：类型缺失或客片缺 Customer → NEEDS_REVIEW → Review Task → 飞书通知卡片 → 人工确认 → 重试成功
+3. Flow 3 重复处理：同一截图重复上传或同一按钮重复点击 → DUPLICATE_SKIPPED / NOTIFICATION_ALREADY_SENT → 不产生重复正式记录、关系、任务或通知
+
+Status: `BLOCKED_BY_A_AND_B_COMPLETION`
+
+## 官网发布
+
+Project ID: `FEISHU-AI-MIDDLE-PLATFORM`
+Task ID: `FAMP-PORTFOLIO-RELEASE-01`
+
+开始条件：集成 Gate 通过，或机器人真实 Gate 被明确标记为外部权限阻塞但 Portal 核心闭环通过。
+
+交付：五层架构图 / 产品模块图 / 智能录入台截图 / 候选和证据对照截图 / 飞书记录和审计截图 / 机器人卡片截图（没有真实 Gate 时必须标为 Prototype）/ 正常/复核/重复提交三条流程 / 中文项目描述 / 英文项目描述 / 两分钟演示脚本 / 技术栈和产品取舍 / 测试与真实集成证据摘要 / 明确 PORTFOLIO_READY 不等于 PRODUCTION_READY。
+
+Status: `BLOCKED_BY_FAMP-END-TO-END-INTEGRATION-GATE-01`
+
+---
+
+# 30. 当前项目状态（v1.2）
 
 ```yaml
 project_id: FEISHU-AI-MIDDLE-PLATFORM
 project_name: 飞书智能业务数据中台
-charter_version: v1.1
+charter_version: v1.2
 authoritative_database: feishu_bitable
 collator_role: primary_intelligent_write_entry_but_not_exclusive
 direct_feishu_editing_allowed: true
@@ -1751,22 +1902,24 @@ field_authority_levels:
   - CANDIDATE
   - CONFIRMED
   - AUTHORITATIVE
-current_phase: CHARTER_V1_1_PENDING_REPOSITORY_ADOPTION
+current_phase: INTERACTION_AND_SCREENSHOT_VERTICAL_SLICE
 product_target: PORTFOLIO_READY
 default_route: R2
 next_owner: Trae
-next_task: FAMP-PROJECT-CHARTER-V1.1-01
+next_task: FAMP-CHAT-SCREENSHOT-VERTICAL-SLICE-01
 codex_required: false
+dify_required: false
+execution_lines:
+  - line_A: FAMP-CHAT-SCREENSHOT-VERTICAL-SLICE-01
+  - line_B: FAMP-SMART-INTAKE-PORTAL-MVP-01
+  - line_C: FAMP-FEISHU-BOT-AUTOMATION-MVP-01
 execution_order:
-  - charter_v1_1
-  - dual_write_boundary_audit
-  - candidate_contract_v1_1
-  - pre_write_vertical_slice
-  - post_write_vertical_slice
-  - loop_and_idempotency_validation
-  - image_ocr_adapter
-  - short_audio_asr_adapter
-  - reconciliation
+  - charter_v1_2_adoption
+  - line_A_phase_A0_investigation
+  - line_A_phase_A1_implementation
+  - line_B_portal_mvp
+  - line_C_bot_investigation
+  - end_to_end_integration_gate
   - portfolio_release
 status: READY_FOR_TRAE_EXECUTION
 ```
