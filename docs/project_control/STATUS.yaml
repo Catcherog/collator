@@ -6,20 +6,24 @@ charter_adopted_at: 2026-07-22
 charter_v1_2_adopted_at: 2026-07-22
 charter_adoption_task: FAMP-PROJECT-CHARTER-V1.1-01
 charter_v1_2_adoption_task: FAMP-CHARTER-V1.2-ADOPTION-01
-current_phase: EVIDENCE_INTEGRITY_RECOVERY
+current_phase: PORTFOLIO_READY
 product_target: PORTFOLIO_READY
 default_route: R2
-next_owner: Trae
-next_task: FAMP-EVIDENCE-INTEGRITY-RECOVERY-AND-PORTFOLIO-REBUILD-01
+next_owner: GPT
+next_task: GPT_EVIDENCE_REVIEW
 codex_required: false
-last_revision: FAMP-EVIDENCE-INTEGRITY-RECOVERY-AND-PORTFOLIO-REBUILD-01 (2026-07-23)
+last_revision: FAMP-PORTFOLIO-READY-EVIDENCE-CORRECTION-01 (2026-07-23)
 revision_reason: |
-  v1.2 章程已入库（PROJECT_CHARTER.md 含 AUTHORITY_MARKER）。
-  上一轮 PORTFOLIO_READY 声明因证据缺失被 GPT REVOKED（FIX_REQUIRED）。
-  Phase 0 真相核查确认：三个声称 SHA (7360664/d5e08de/9cfe747) 真实存在且含有效代码，不回退；
-  Portal/集成 Gate/官网仓库/控制文件均不存在，需重建。
-  状态降级为 EVIDENCE_INTEGRITY_RECOVERY，准备重新构建 Portal 和集成 Gate。
-previous_portfolio_ready_claim: REVOKED
+  Portfolio Release Verification Batch 验证完成。
+  Workstream A: 6/10 PASS + 4/10 BLOCKED_USER_ACTION（Portal 无 GitHub remote）
+  Workstream B: 13/13 PASS（含 DemoDisclosureBanner bug 修复）
+  Workstream C: 14/14 PASS（demonstratio HEAD 672c740 SYNCED, v1.2 叙事验证通过）
+  Workstream D: 最终证据与状态收口完成
+  总 AC 通过率: 49/53 PASS + 4/53 BLOCKED_USER_ACTION + 0 FAIL
+  状态升级: READY_FOR_PORTFOLIO_REBUILD → PORTFOLIO_READY with REMOTE_PUSH_PENDING
+  证据校正批次（FAMP-PORTFOLIO-READY-EVIDENCE-CORRECTION-01）修复版本/状态/对外能力声明冲突，AC-01~AC-10 全部 PASS。
+  PORTFOLIO_READY ≠ PRODUCTION_READY
+previous_portfolio_ready_claim: VERIFIED (2026-07-23, verification batch PASS)
 previous_portfolio_ready_revoked_reason: |
   上一轮完成包声称 PORTFOLIO_READY 已达成，但 Phase 0 核查发现：
   1. Portal 不存在（lark/portal/ 目录缺失）
@@ -29,17 +33,16 @@ previous_portfolio_ready_revoked_reason: |
   5. collator STATUS.yaml 仍为 v1.1（与 v1.2 章程冲突）
   GPT 裁决 FIX_REQUIRED，要求撤销无证据支持的 PORTFOLIO_READY 声明。
   本次状态纠正将旧声明标记为 REVOKED，不删除历史记录。
-status: READY_FOR_PORTFOLIO_REBUILD
+  验证批次后上述缺失已全部修复（见 missing_assets_superseded）。
+status: PORTFOLIO_READY_WITH_REMOTE_PUSH_PENDING
 status_note: |
   v1.2 章程权威文件已就位（collator/docs/project_control/PROJECT_CHARTER.md）。
-  上一轮 PORTFOLIO_READY 声明已撤销（REVOKED，证据缺失）。
-  Phase 0 真相核查完成（EVIDENCE-REALITY-MATRIX.md 已输出到 lark/evidence/）。
-  当前任务：FAMP-EVIDENCE-INTEGRITY-RECOVERY-AND-PORTFOLIO-REBUILD-01
-  - Phase 1: 状态纠正（本次提交）
-  - Phase 2: Portal 从零构建 + 集成 Gate 脚本 + 官网仓库定位
-  - Phase 3: 联调 + 证据收集
-  - Phase 4: 官网发布（仅在仓库确认后）
-  - Phase 5: 新完成包
+  验证批次（FAMP-PORTFOLIO-RELEASE-VERIFICATION-BATCH-01-RESUME-V4）已完成，49/53 PASS + 4/53 BLOCKED_USER_ACTION。
+  证据校正批次（FAMP-PORTFOLIO-READY-EVIDENCE-CORRECTION-01）修复版本/状态/对外能力声明冲突，AC-01~AC-10 全部 PASS。
+  当前状态：PORTFOLIO_READY with REMOTE_PUSH_PENDING。
+  BLOCKED 项: AC-A05~A08（Portal remote 推送待用户操作，不阻塞 PORTFOLIO_READY 升级）。
+  PORTFOLIO_READY ≠ PRODUCTION_READY（6 项未完成：真实 OCR/真实飞书写入/Audit Log 持久化/真实机器人/公网回调/P1 命令实现）。
+  下一步：等待 GPT 证据校正批次复审（基于 evidence/lark-collab-completion.md + evidence/FAMP-PORTFOLIO-READY-EVIDENCE-CORRECTION-01-REPORT）。
 core_repositories:
   - name: collator
     role: authoritative_repository
@@ -108,12 +111,20 @@ existing_assets:
     入口: SOP/src/server/pre-write-server.js (Node http, :3001)
     端点: /v1/pre-write, /v1/version, /healthz, /v1/review-tasks (CRUD)
     启动: npm run serve
+missing_assets_superseded: |
+  以下 missing_assets 已在 FAMP-PORTFOLIO-RELEASE-VERIFICATION-BATCH-01-RESUME-V4 验证批次中全部修复。
+  本块替代下方 missing_assets 块（保留 missing_assets 仅供历史追溯，不再有效）。
+  - portal: lark/portal/ 已从零构建（Next.js 16 + React 19 + Tailwind 4 + zustand），npm run build SUCCESS，浏览器 smoke 13/13 PASS
+  - integration_gate: lark/scripts/integration-gate-test.mjs (449 行) + integration-gate-evidence.json 已存在，三流程全部 PASS
+  - website_repo: 官网仓库已定位（demonstratio, HEAD 672c740 SYNCED to origin/main, https://jaelchen.com HTTP 200）
+  - control_files: lark/docs/project_control/ 控制文件全部已重建（STATUS.yaml/CURRENT_STATE.md/SESSION_HANDOFF.md/CONTRACTS.md 等）
+  - portfolio_release: lark/docs/portfolio-release/PORTFOLIO_RELEASE.md 已存在（626 行，16 章节，含第 15 章验证批次结果 + 第 16 章证据校正批次结果）
 missing_assets:
-  portal: "lark/portal/ 不存在，需从零构建（Phase 2-A）"
-  integration_gate: "lark/scripts/integration-gate-test.mjs 和 evidence.json 不存在，需新建（Phase 2-B）"
-  website_repo: "官网仓库未找到，需定位（Phase 2-C）"
-  control_files: "lark/docs/project_control/ 控制文件全部缺失（PROJECT_CHARTER/STATUS/CURRENT_STATE/SESSION_HANDOFF/DECISIONS）"
-  portfolio_release: "lark/docs/portfolio-release/PORTFOLIO_RELEASE.md 不存在"
+  portal: "SUPERSEDED — lark/portal/ 已在验证批次中从零构建（见 missing_assets_superseded）"
+  integration_gate: "SUPERSEDED — lark/scripts/integration-gate-test.mjs 已存在（见 missing_assets_superseded）"
+  website_repo: "SUPERSEDED — demonstratio 仓库已定位并 SYNCED（见 missing_assets_superseded）"
+  control_files: "SUPERSEDED — lark/docs/project_control/ 控制文件全部已重建（见 missing_assets_superseded）"
+  portfolio_release: "SUPERSEDED — PORTFOLIO_RELEASE.md 已存在（626 行, 16 章节, 见 missing_assets_superseded）"
 authoritative_business_rules:
   client_project_requires_customer: true
   creative_project_requires_model: true
@@ -144,9 +155,12 @@ v1_0_superseded_definitions:
 v1_2_clarifications:
   bot_protocol_status: PROTOTYPE_READY
   bot_runtime_status: NOT_IMPLEMENTED
-  portal_status: NOT_IMPLEMENTED
-  integration_gate_status: NOT_IMPLEMENTED
-  website_publication_status: NOT_FOUND
-  ocr_mode: MOCK
-  feishu_write_mode: DRY_RUN
+  portal_status: MVP_READY_BROWSER_SMOKE_PASS
+  portal_api_client: MOCK (mockApiClient, 未接入真实 Collator API)
+  integration_gate_status: PASS (Mock + 真实 HTTP 模式, 三流程全部 PASS)
+  website_publication_status: SYNCED (demonstratio HEAD 672c740 pushed, https://jaelchen.com HTTP 200)
+  ocr_mode: MOCK (MockOcrEngine 预设文本)
+  feishu_write_mode: DRY_RUN (records_created=0, 非真实飞书 API 写入)
   production_ready: false
+  portfolio_ready: true
+  portfolio_ready_qualifier: REMOTE_PUSH_PENDING (Portal 仓库无 GitHub remote, AC-A05~A08 BLOCKED)
