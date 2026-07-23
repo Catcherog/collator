@@ -1,63 +1,126 @@
 project_id: FEISHU-AI-MIDDLE-PLATFORM
 project_name: 飞书智能业务数据中台
-charter_version: v1.1
+charter_version: v1.2
 charter_authority: collator/docs/project_control/PROJECT_CHARTER.md
 charter_adopted_at: 2026-07-22
+charter_v1_2_adopted_at: 2026-07-22
 charter_adoption_task: FAMP-PROJECT-CHARTER-V1.1-01
-current_phase: CHARTER_V1_1_ADOPTED
+charter_v1_2_adoption_task: FAMP-CHARTER-V1.2-ADOPTION-01
+current_phase: EVIDENCE_INTEGRITY_RECOVERY
 product_target: PORTFOLIO_READY
 default_route: R2
 next_owner: Trae
-next_task: FAMP-DUAL-WRITE-BOUNDARY-AUDIT-01
+next_task: FAMP-EVIDENCE-INTEGRITY-RECOVERY-AND-PORTFOLIO-REBUILD-01
 codex_required: false
-last_revision: FAMP-PROJECT-CHARTER-V1.1-01 (2026-07-22)
+last_revision: FAMP-EVIDENCE-INTEGRITY-RECOVERY-AND-PORTFOLIO-REBUILD-01 (2026-07-23)
 revision_reason: |
-  v1.1 章程入库：废止 v1.0 写入边界，确立飞书为权威业务数据库、
-  Collator 为主智能写入入口（非唯一）、SOP 为双模式治理引擎（PRE_WRITE + POST_WRITE）。
-  权威章程文件落户 collator 仓库，SOP 仓库保留非权威同步副本。
+  v1.2 章程已入库（PROJECT_CHARTER.md 含 AUTHORITY_MARKER）。
+  上一轮 PORTFOLIO_READY 声明因证据缺失被 GPT REVOKED（FIX_REQUIRED）。
+  Phase 0 真相核查确认：三个声称 SHA (7360664/d5e08de/9cfe747) 真实存在且含有效代码，不回退；
+  Portal/集成 Gate/官网仓库/控制文件均不存在，需重建。
+  状态降级为 EVIDENCE_INTEGRITY_RECOVERY，准备重新构建 Portal 和集成 Gate。
+previous_portfolio_ready_claim: REVOKED
+previous_portfolio_ready_revoked_reason: |
+  上一轮完成包声称 PORTFOLIO_READY 已达成，但 Phase 0 核查发现：
+  1. Portal 不存在（lark/portal/ 目录缺失）
+  2. 集成 Gate 脚本和证据文件不存在
+  3. 官网发布文档不存在，官网仓库未找到
+  4. lark/docs/project_control/ 控制文件全部缺失
+  5. collator STATUS.yaml 仍为 v1.1（与 v1.2 章程冲突）
+  GPT 裁决 FIX_REQUIRED，要求撤销无证据支持的 PORTFOLIO_READY 声明。
+  本次状态纠正将旧声明标记为 REVOKED，不删除历史记录。
+status: READY_FOR_PORTFOLIO_REBUILD
+status_note: |
+  v1.2 章程权威文件已就位（collator/docs/project_control/PROJECT_CHARTER.md）。
+  上一轮 PORTFOLIO_READY 声明已撤销（REVOKED，证据缺失）。
+  Phase 0 真相核查完成（EVIDENCE-REALITY-MATRIX.md 已输出到 lark/evidence/）。
+  当前任务：FAMP-EVIDENCE-INTEGRITY-RECOVERY-AND-PORTFOLIO-REBUILD-01
+  - Phase 1: 状态纠正（本次提交）
+  - Phase 2: Portal 从零构建 + 集成 Gate 脚本 + 官网仓库定位
+  - Phase 3: 联调 + 证据收集
+  - Phase 4: 官网发布（仅在仓库确认后）
+  - Phase 5: 新完成包
 core_repositories:
   - name: collator
     role: authoritative_repository
     path: collator/
     branch: phase/3-feishu-integration
-    head: 3e6085ab2b390e3948587c1c240aae97cde0f38f
+    head: 73606641714965e0b8948b8bc428a0df8ea2b458
     pushed: true
     push_target: https://github.com/Catcherog/collator.git
     workspace_status: |
-      clean for charter task files;
       预存未跟踪文件保留（docs/ai/collator-collab-completion.md, docs/dify/, src/scripts/temp/create-draft-pr.ps1, src/scripts/temp/draft-pr-body.txt）
-    charter_task_changes:
-      - docs/project_control/PROJECT_CHARTER.md (新建, v1.1 权威章程, 含权威仓库标记)
-      - docs/project_control/STATUS.yaml (新建, 精简版仓库状态)
+      本任务修改：docs/project_control/STATUS.yaml（v1.1 → v1.2 + 状态纠正）
+    last_commit_content: |
+      7360664 feat: screenshot vertical slice (A1) - 7 APIs + OCR + writers + transaction
+      15 files, 3458 insertions. 含 7 个 screenshot API + MockOcrEngine + TransactionalBatchWriter
+      测试声称: 504/504 passed（Phase 3 待复验）
   - name: SOP
     role: non_authoritative_mirror
     path: SOP/
     branch: master
-    head: b3e15d2af8a42ea7c3b939de00d016cdba1e42f7
+    head: d5e08def745b0096c47b312768bb4a4af6f557e0
     pushed: false
     push_target: null
-    push_blocker: SOP 仓库未配置 git remote，无法 push；章程任务 commit 已完成，用户可决定是否配置远程仓库
+    push_blocker: SOP 仓库未配置 git remote，无法 push；用户可决定是否配置远程仓库
     workspace_status: |
-      预存修改和未跟踪文件保留（.trae/rules/_experience.md / _file_management.md / _gpt_audit.md / _memory.md / _temp_script.md / docs/ai/REVIEW_POLICY.md / docs/ai/TRAE_COLLABORATION_GUIDE.md / docs/ai/templates/* / .trae/rules/_execution_role.md / docs/ai/CODEX_EXECUTION_PROTOCOL.md / docs/ai/tasks/TASK-*.md）
-    charter_task_changes:
-      - docs/project_control/PROJECT_CHARTER.md (新建, v1.1 非权威同步副本, 含非权威标记)
+      预存修改和未跟踪文件保留（.trae/rules/* / docs/ai/*）
+    last_commit_content: |
+      d5e08de feat: BR-01~BR-06 business rules + review tasks (A1)
+      6 files, 1359 insertions. 含 pre-write-handler BR-01~06 + review-task-handler + pre-write-server
+      测试声称: 91/91 passed（Phase 3 待复验）
+  - name: feishu-v2
+    role: nested_repository
+    path: SOP/feishu-v2/
+    branch: master
+    head: 9cfe747bae0231bc5424e8e521215d636b921de8
+    pushed: true
+    push_target: https://github.com/Catcherog/feishu.git
+    workspace_status: |
+      未跟踪 reports/ 文件
+    last_commit_content: |
+      9cfe747 fix(R2): RF-FIX-03 Stage B executable CLI entry
+      3 files, 271 insertions. 含 stage-b-run.js CLI
+      测试声称: 239/239 passed（Phase 3 待复验）
 lark_root:
   git_tracked: false
   role: coordination_center
   note: lark 根目录不是 git 仓库，控制文件作为非 git 协调副本存在；权威章程在 collator 仓库
-  charter_task_changes:
-    - docs/project_control/PROJECT_CHARTER.md (更新为 v1.1, 含协调副本标记)
-    - docs/project_control/STATUS.yaml (更新为 v1.1 采用状态)
-    - docs/project_control/SESSION_HANDOFF.md (更新会话交接)
-    - docs/project_control/CURRENT_STATE.md (更新当前状态)
-    - docs/project_control/TASK_QUEUE.md (更新任务队列)
+  v1_2_charter_location: |
+    根目录: lark/FEISHU_AI_MIDDLE_PLATFORM_PROJECT_CHARTER_V1.2.md（v1.2 协调副本）
+    权威: collator/docs/project_control/PROJECT_CHARTER.md（v1.2，含 AUTHORITY_MARKER）
+    注意：lark/docs/project_control/ 目录不存在（上一轮声称的控制文件均缺失）
+existing_assets:
+  bot_protocol: |
+    lark/bot-protocol/ 6 个协议文件存在（PROTOTYPE_READY，非运行时机器人）：
+    - BOT_API_CONTRACT.md
+    - BOT_CAPABILITY_INVESTIGATION.md
+    - CALLBACK_FIXTURES.json
+    - CARD_TEMPLATES.json
+    - NOTIFICATION_DEDUP.md
+    - P1_COMMANDS.md
+  collator_http: |
+    入口: collator/src/server/app.ts (Fastify, :8787)
+    路由: healthRoutes + ingestionRoutes + screenshotRoutes (7 个 API)
+    默认: dryRun=true, taskRepository=memory, screenshotOcrEngine=mock
+    必填: COLLATOR_WEBHOOK_SECRET
+  sop_http: |
+    入口: SOP/src/server/pre-write-server.js (Node http, :3001)
+    端点: /v1/pre-write, /v1/version, /healthz, /v1/review-tasks (CRUD)
+    启动: npm run serve
+missing_assets:
+  portal: "lark/portal/ 不存在，需从零构建（Phase 2-A）"
+  integration_gate: "lark/scripts/integration-gate-test.mjs 和 evidence.json 不存在，需新建（Phase 2-B）"
+  website_repo: "官网仓库未找到，需定位（Phase 2-C）"
+  control_files: "lark/docs/project_control/ 控制文件全部缺失（PROJECT_CHARTER/STATUS/CURRENT_STATE/SESSION_HANDOFF/DECISIONS）"
+  portfolio_release: "lark/docs/portfolio-release/PORTFOLIO_RELEASE.md 不存在"
 authoritative_business_rules:
   client_project_requires_customer: true
   creative_project_requires_model: true
   creative_project_customer_optional: true
   missing_project_type_requires_review: true
   llm_has_final_write_authority: false
-v1_1_architecture_facts:
+v1_2_architecture_facts:
   feishu_is_authoritative_database: true
   collator_is_primary_intelligent_write_entry: true
   collator_is_not_exclusive_write_entry: true
@@ -69,11 +132,21 @@ v1_1_architecture_facts:
   sop_responsible_for_business_idempotency: true
   collator_self_trigger_loop_protection_required: true
   data_quality_vs_business_rule_review_distinguishable: true
+  five_layer_architecture: true
+  two_main_lines_one_aux_line: true
+  main_line_a_screenshot_vertical_slice: true
+  main_line_b_portal_mvp: true
+  aux_line_c_bot_protocol_prototype: true
 v1_0_superseded_definitions:
   - "Collator 不负责正式业务表写入" (已废止)
   - "SOP 是正式业务数据唯一写入入口" (已废止)
   - "用户应当只通过 Collator 或 SOP 修改飞书数据" (已废止)
-status: READY_FOR_NEXT_TASK
-status_note: |
-  v1.1 章程已入库 collator 权威仓库，SOP 保留非权威副本。
-  下一任务：FAMP-DUAL-WRITE-BOUNDARY-AUDIT-01（双入口只读调查）。
+v1_2_clarifications:
+  bot_protocol_status: PROTOTYPE_READY
+  bot_runtime_status: NOT_IMPLEMENTED
+  portal_status: NOT_IMPLEMENTED
+  integration_gate_status: NOT_IMPLEMENTED
+  website_publication_status: NOT_FOUND
+  ocr_mode: MOCK
+  feishu_write_mode: DRY_RUN
+  production_ready: false
