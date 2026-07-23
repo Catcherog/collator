@@ -155,6 +155,33 @@ describe('FeishuProjectRecordWriter', () => {
       expect(fields['风格要求']).toEqual(['复古旗袍', '现代简约']);
     });
 
+    it('wraps a single record_id into an array for relation fields (AC-C07)', async () => {
+      await writer.write({
+        ingestionId: 'ing_test_001',
+        normalizedFields: {
+          客户关联: 'rec_customer_abc',
+          模特关联: 'rec_model_xyz',
+        },
+      });
+
+      const [, fields] = client.createRecord.mock.calls[0];
+      // Feishu link fields require an array of record_id strings.
+      expect(fields['客户关联']).toEqual(['rec_customer_abc']);
+      expect(fields['模特关联']).toEqual(['rec_model_xyz']);
+    });
+
+    it('passes through relation arrays unchanged (AC-C07)', async () => {
+      await writer.write({
+        ingestionId: 'ing_test_001',
+        normalizedFields: {
+          客户关联: ['rec_customer_abc', 'rec_customer_def'],
+        },
+      });
+
+      const [, fields] = client.createRecord.mock.calls[0];
+      expect(fields['客户关联']).toEqual(['rec_customer_abc', 'rec_customer_def']);
+    });
+
     it('throws FeishuCommitFailedError on FeishuApiError', async () => {
       client.searchRecords = vi.fn(async () => {
         throw new FeishuApiError(1254063, 'FieldConvFail');

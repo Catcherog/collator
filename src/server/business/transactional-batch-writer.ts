@@ -215,24 +215,23 @@ export class TransactionalBatchWriter {
     let rolledBack = 0;
     let fullRollback = true;
 
-    // 反向回滚
+    // 反向回滚（Model → Project → Customer）
     for (let i = createdRecords.length - 1; i >= 0; i--) {
       const { type, recordId } = createdRecords[i];
       try {
-        if (type === 'customer' && this.customerWriter) {
-          // CustomerRecordWriter 没有 deleteRecord 方法（保持兼容性）
-          // 在事务中，customer 记录的回滚通过 Project/Model 的反向操作即可
-          // 实际生产环境应扩展 CustomerRecordWriter 接口
-          fullRollback = false;
-          continue;
-        }
-        if (type === 'project' && this.projectWriter) {
+        // AC-C10: 回滚一律按精确 record_id 删除，绝不按名称匹配。
+        if (type === 'customer' && this.customerWriter?.deleteRecord) {
+          await this.customerWriter.deleteRecord(recordId);
+          rolledBack++;
+        } else if (type === 'project' && this.projectWriter) {
           await this.projectWriter.deleteRecord(recordId);
           rolledBack++;
-        }
-        if (type === 'model' && this.modelWriter) {
+        } else if (type === 'model' && this.modelWriter) {
           await this.modelWriter.deleteRecord(recordId);
           rolledBack++;
+        } else {
+          // 对应 writer 未配置或不支持 deleteRecord → 无法回滚该记录 → partial
+          fullRollback = false;
         }
       } catch {
         // 回滚失败 → partial 状态

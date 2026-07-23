@@ -36,6 +36,18 @@ const DATETIME_FIELDS = new Set<string>(['拍摄日期']);
  */
 const MULTISELECT_FIELDS = new Set<string>(['风格要求']);
 
+/**
+ * 关联（Link）字段集合 — Feishu 关联字段要求 record_id 字符串数组。
+ *
+ * AC-C07: 关联字段必须使用真实 record_id，不得使用展示名称。
+ * 本写入器不做「名称 → record_id」解析（那需要额外查询且有安全风险），
+ * 调用方 MUST 在 normalizedFields 中提供真实 Feishu record_id。单个
+ * record_id 字符串会被包装成单元素数组；数组原样透传；非字符串/非数组
+ * 值原样透传交由飞书拒绝（ surfaced 为 FEISHU_COMMIT_FAILED），避免静默
+ * 把展示名当作 record_id 写入。
+ */
+const RELATION_FIELDS = new Set<string>(['客户关联', '模特关联']);
+
 export interface ProjectRecordWriterResult {
   business_record_id: string;
   created: boolean;
@@ -143,6 +155,10 @@ export class FeishuProjectRecordWriter implements ProjectRecordWriter {
         const ms = Date.parse(value);
         fields[key] = Number.isNaN(ms) ? value : ms;
       } else if (MULTISELECT_FIELDS.has(key)) {
+        fields[key] = Array.isArray(value) ? value : [value];
+      } else if (RELATION_FIELDS.has(key)) {
+        // AC-C07: 关联字段必须为 record_id 数组。单个 record_id 包装成
+        // 单元素数组；数组原样透传；其余值原样透传交由飞书拒绝。
         fields[key] = Array.isArray(value) ? value : [value];
       } else {
         fields[key] = value;

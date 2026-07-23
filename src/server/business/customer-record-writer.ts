@@ -87,6 +87,17 @@ export interface CustomerRecordWriterInput {
  */
 export interface CustomerRecordWriter {
   write(input: CustomerRecordWriterInput): Promise<CustomerRecordWriterResult>;
+  /**
+   * Delete a customer record by its exact Feishu record_id. Used for
+   * transactional rollback / cleanup compensation (AC-C10). Implementations
+   * MUST delete only by exact record_id and MUST NEVER search by name.
+   *
+   * Optional on the interface for backward compatibility with test doubles
+   * that only stub `write`; the concrete `FeishuCustomerRecordWriter`
+   * implements it. Callers MUST guard (`if (writer.deleteRecord)`) before
+   * invoking.
+   */
+  deleteRecord?(recordId: string): Promise<void>;
 }
 
 export interface FeishuCustomerRecordWriterOptions {
@@ -166,6 +177,21 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
       business_record_id: recordId,
       created: true,
     };
+  }
+
+  /**
+   * Delete a customer record by its exact Feishu record_id (AC-C10).
+   *
+   * Deletes ONLY by record_id — never searches by name or any other field.
+   * Any FeishuClient error is wrapped in `FeishuCommitFailedError` with
+   * sanitised messaging (no app_secret / PII leakage).
+   */
+  async deleteRecord(recordId: string): Promise<void> {
+    try {
+      await this.client.deleteRecord(this.options.customerTableId, recordId);
+    } catch (e) {
+      throw this.toCommitFailed(e);
+    }
   }
 
   /**
