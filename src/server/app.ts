@@ -7,7 +7,7 @@ import { ingestionRoutes } from './routes/ingestions.js';
 import { screenshotRoutes } from './routes/screenshots.js';
 import { IngestionService } from './services/ingestion-service.js';
 import { ScreenshotService, type ScreenshotServiceOptions } from './services/screenshot-service.js';
-import { MockOcrEngine } from './services/screenshot-ocr-adapter.js';
+import { createOcrEngineFromEnv } from '../ocr/ocr-engine-factory.js';
 import { SopScreenshotGovernanceClient } from './governance/screenshot-governance-client.js';
 import { TransactionalBatchWriter } from './business/transactional-batch-writer.js';
 import { FeishuProjectRecordWriter } from './business/project-record-writer.js';
@@ -54,7 +54,7 @@ export interface BuildAppOptions {
    *
    * 测试模式可注入 mock OCR / fake governance client / fake batch writer。
    * 生产模式（未注入时）自动装配：
-   *   - OCR: MockOcrEngine（第一阶段 mock）
+   *   - OCR: createOcrEngineFromEnv（fail-closed，amendment 3）
    *   - Governance: SopScreenshotGovernanceClient（调用 SOP /v1/pre-write）
    *   - BatchWriter: 仅在 feishu 模式且有 project/model 表 ID 时装配
    */
@@ -125,7 +125,11 @@ export async function buildApp(options?: BuildAppOptions) {
   const screenshotServiceOptions: ScreenshotServiceOptions = options?.screenshotServiceOptions ?? {};
   // 生产模式自动装配 OCR + Governance Client（测试模式由调用方注入）
   if (!options?.screenshotServiceOptions) {
-    screenshotServiceOptions.ocrEngine = screenshotServiceOptions.ocrEngine ?? new MockOcrEngine();
+    // Workstream B/E: 真实 OCR 引擎由工厂装配（amendment 3 fail-closed）。
+    // createOcrEngineFromEnv 缺失/非法 SCREENSHOT_OCR_ENGINE → 抛 OcrConfigError，
+    // 进程启动失败，不退化为 mock。测试须显式设置 SCREENSHOT_OCR_ENGINE=mock。
+    screenshotServiceOptions.ocrEngine =
+      screenshotServiceOptions.ocrEngine ?? createOcrEngineFromEnv(process.env);
     screenshotServiceOptions.governanceClient = screenshotServiceOptions.governanceClient ?? new SopScreenshotGovernanceClient();
     screenshotServiceOptions.writeLogRepository = screenshotServiceOptions.writeLogRepository ?? writeLogRepository;
     // 仅在 feishu 模式且有 project/model 表 ID 时装配 batch writer
