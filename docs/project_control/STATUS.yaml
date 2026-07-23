@@ -102,7 +102,7 @@ lark_root:
   v1_2_charter_location: |
     根目录: lark/FEISHU_AI_MIDDLE_PLATFORM_PROJECT_CHARTER_V1.2.md（v1.2 协调副本）
     权威: collator/docs/project_control/PROJECT_CHARTER.md（v1.2，含 AUTHORITY_MARKER）
-    注意：lark/docs/project_control/ 目录不存在（上一轮声称的控制文件均缺失）
+    历史说明：该目录曾在上一轮 Phase 0 核查时缺失，现已在验证批次中重建；当前状态见 missing_assets_superseded
 existing_assets:
   bot_protocol: |
     lark/bot-protocol/ 6 个协议文件存在（PROTOTYPE_READY，非运行时机器人）：
