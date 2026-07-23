@@ -12,7 +12,7 @@ default_route: R2
 next_owner: GPT
 next_task: GPT_EVIDENCE_REVIEW
 codex_required: false
-last_revision: FAMP-PORTFOLIO-READY-EVIDENCE-CORRECTION-01 (2026-07-23)
+last_revision: FAMP-PORTFOLIO-READY-EVIDENCE-CORRECTION-01 (2026-07-23, round 2 SHA 语义修正)
 revision_reason: |
   Portfolio Release Verification Batch 验证完成。
   Workstream A: 6/10 PASS + 4/10 BLOCKED_USER_ACTION（Portal 无 GitHub remote）
@@ -20,8 +20,10 @@ revision_reason: |
   Workstream C: 14/14 PASS（demonstratio HEAD 672c740 SYNCED, v1.2 叙事验证通过）
   Workstream D: 最终证据与状态收口完成
   总 AC 通过率: 49/53 PASS + 4/53 BLOCKED_USER_ACTION + 0 FAIL
-  状态升级: READY_FOR_PORTFOLIO_REBUILD → PORTFOLIO_READY with REMOTE_PUSH_PENDING
+  状态升级: READY_FOR_PORTFOLIO_REBUILD → PORTFOLIO_READY_WITH_REMOTE_PUSH_PENDING
   证据校正批次（FAMP-PORTFOLIO-READY-EVIDENCE-CORRECTION-01）修复版本/状态/对外能力声明冲突，AC-01~AC-10 全部 PASS。
+  Round 2 SHA 语义修正：废弃模糊的 head 字段，改为 implementation_baseline_sha（7360664，screenshot vertical slice）+ latest_verified_remote_head_before_this_status_update（418ffd5）。
+  避免自引用问题：committed STATUS 文件不声称记录包含自身的最终 commit SHA。
   PORTFOLIO_READY ≠ PRODUCTION_READY
 previous_portfolio_ready_claim: VERIFIED (2026-07-23, verification batch PASS)
 previous_portfolio_ready_revoked_reason: |
@@ -39,7 +41,7 @@ status_note: |
   v1.2 章程权威文件已就位（collator/docs/project_control/PROJECT_CHARTER.md）。
   验证批次（FAMP-PORTFOLIO-RELEASE-VERIFICATION-BATCH-01-RESUME-V4）已完成，49/53 PASS + 4/53 BLOCKED_USER_ACTION。
   证据校正批次（FAMP-PORTFOLIO-READY-EVIDENCE-CORRECTION-01）修复版本/状态/对外能力声明冲突，AC-01~AC-10 全部 PASS。
-  当前状态：PORTFOLIO_READY with REMOTE_PUSH_PENDING。
+  当前状态：PORTFOLIO_READY_WITH_REMOTE_PUSH_PENDING。
   BLOCKED 项: AC-A05~A08（Portal remote 推送待用户操作，不阻塞 PORTFOLIO_READY 升级）。
   PORTFOLIO_READY ≠ PRODUCTION_READY（6 项未完成：真实 OCR/真实飞书写入/Audit Log 持久化/真实机器人/公网回调/P1 命令实现）。
   下一步：等待 GPT 证据校正批次复审（基于 evidence/lark-collab-completion.md + evidence/FAMP-PORTFOLIO-READY-EVIDENCE-CORRECTION-01-REPORT）。
@@ -48,14 +50,22 @@ core_repositories:
     role: authoritative_repository
     path: collator/
     branch: phase/3-feishu-integration
-    head: 73606641714965e0b8948b8bc428a0df8ea2b458
+    # 语义化 SHA 字段（避免自引用问题：committed STATUS 文件无法记录包含自身的最终 commit SHA）
+    implementation_baseline_sha: 73606641714965e0b8948b8bc428a0df8ea2b458
+    implementation_baseline_description: screenshot_vertical_slice (A1) - 7 APIs + OCR + writers + transaction
+    latest_verified_remote_head_before_this_status_update: 418ffd5a7a3ade3733b060d32505cc849260e316
+    latest_verified_remote_head_description: FAMP-PORTFOLIO-READY-EVIDENCE-CORRECTION-01 状态校正（docs-only）
+    # 注意：head 字段已废弃。本 STATUS 文件被 commit 后，包含自身的最终 commit SHA 必然变化，
+    # 因此本文件不声称记录「当前权威 HEAD」。请用 git ls-remote origin refs/heads/phase/3-feishu-integration 获取最新 HEAD。
     pushed: true
     push_target: https://github.com/Catcherog/collator.git
     workspace_status: |
       预存未跟踪文件保留（docs/ai/collator-collab-completion.md, docs/dify/, src/scripts/temp/create-draft-pr.ps1, src/scripts/temp/draft-pr-body.txt）
-      本任务修改：docs/project_control/STATUS.yaml（v1.1 → v1.2 + 状态纠正）
+      本任务修改：docs/project_control/STATUS.yaml（v1.1 → v1.2 + 状态纠正 + SHA 语义化）
     last_commit_content: |
-      7360664 feat: screenshot vertical slice (A1) - 7 APIs + OCR + writers + transaction
+      418ffd5 docs(status): FAMP-PORTFOLIO-READY-EVIDENCE-CORRECTION-01 状态校正
+      1 file changed. 修改 docs/project_control/STATUS.yaml，无核心生产代码变更。
+      implementation_baseline_sha 7360664: feat: screenshot vertical slice (A1) - 7 APIs + OCR + writers + transaction
       15 files, 3458 insertions. 含 7 个 screenshot API + MockOcrEngine + TransactionalBatchWriter
       测试声称: 504/504 passed（Phase 3 待复验）
   - name: SOP
@@ -164,3 +174,12 @@ v1_2_clarifications:
   production_ready: false
   portfolio_ready: true
   portfolio_ready_qualifier: REMOTE_PUSH_PENDING (Portal 仓库无 GitHub remote, AC-A05~A08 BLOCKED)
+  round_2_sha_semantic_fix:
+    trigger: GPT FIX_REQUIRED verdict on AC-08 (head 字段自引用歧义)
+    scope: docs-only (no src/ changes)
+    changes:
+      - collator/docs/project_control/STATUS.yaml: 废弃 head 字段，改为 implementation_baseline_sha (7360664) + latest_verified_remote_head_before_this_status_update (418ffd5)
+      - lark/docs/project_control/STATUS.yaml: 同步语义化字段 + status_note 修正
+      - evidence/lark-collab-completion.md: 顶部状态统一为 PORTFOLIO_READY_WITH_REMOTE_PUSH_PENDING + 第 4/9 节 SHA 语义修正
+    self_reference_note: committed STATUS 文件无法记录包含自身的最终 commit SHA；最终 remote HEAD 请用 git ls-remote 获取
+    ac_08_fix: 7360664 从「当前权威 HEAD」改为「生产实现基线」（implementation_baseline_sha）
