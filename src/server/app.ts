@@ -13,6 +13,8 @@ import { createFileAuditRepository, type AuditLogger } from './repositories/audi
 import type { AuditLogRepository } from '../audit/audit-log-repository.js';
 import { SopScreenshotGovernanceClient } from './governance/screenshot-governance-client.js';
 import { TransactionalBatchWriter } from './business/transactional-batch-writer.js';
+import { GuardedBatchWriter } from './business/guarded-batch-writer.js';
+import { loadFeishuWriteConfig } from './config/feishu-write-config.js';
 import { FeishuProjectRecordWriter } from './business/project-record-writer.js';
 import { FeishuModelRecordWriter } from './business/model-record-writer.js';
 import {
@@ -178,12 +180,24 @@ export async function buildApp(options?: BuildAppOptions) {
       const modelWriter = new FeishuModelRecordWriter(feishuClient, {
         modelTableId: config.feishuModelTableId,
       });
-      screenshotServiceOptions.batchWriter = new TransactionalBatchWriter(
+      const innerWriter = new TransactionalBatchWriter(
         customerRecordWriter,
         projectWriter,
         modelWriter,
         writeLogRepository
       );
+      // Workstream C/E: 用 GuardedBatchWriter 包裹 TransactionalBatchWriter，
+      // 在 Create Record 前执行双层放行门（Amendment 6）。默认配置下门禁全部
+      // fail-closed（6 条件任一不满足即 blocked，绝不调用 Create Record API）。
+      const gateConfig = loadFeishuWriteConfig();
+      screenshotServiceOptions.batchWriter = new GuardedBatchWriter(gateConfig, innerWriter);
+      // 透传写入门禁上下文（目标 Base/Table ID）供 GuardedBatchWriter 校验白名单。
+      screenshotServiceOptions.feishuWriteContext = {
+        targetBaseToken: config.feishuBaseAppToken,
+        customerTableId: config.feishuCustomerTableId,
+        projectTableId: config.feishuProjectTableId,
+        modelTableId: config.feishuModelTableId,
+      };
     }
   }
   const screenshotService = new ScreenshotService(repository, screenshotServiceOptions);

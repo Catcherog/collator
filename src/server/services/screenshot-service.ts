@@ -45,7 +45,7 @@ import type {
 } from '../../contracts/screenshot-api-v1.js';
 import type { ScreenshotOcrEngine, OcrResult, OcrTextBlock } from './screenshot-ocr-adapter.js';
 import type { ScreenshotGovernanceClient, FullGovernanceResult } from '../governance/screenshot-governance-client.js';
-import type { BatchWriterPort } from '../business/transactional-batch-writer.js';
+import type { GuardedWriteBatchInput } from '../business/guarded-batch-writer.js';
 import { createAuditEvent, type AuditLogRepository, type AuditEventType } from '../../audit/audit-log-repository.js';
 
 // ============================================================================
@@ -283,11 +283,55 @@ function buildCandidateV1FromOcr(
 // ScreenshotService
 // ============================================================================
 
+// ============================================================================
+// Workstream C/E: 截图服务批量写入器端口
+// ============================================================================
+
+/**
+ * 写入结果视图。接受 TransactionalBatchWriterResult 与 GuardedBatchWriterResult
+ * 的公共字段；`status` 放宽为 string（GuardedBatchWriter 可能返回 'blocked'）。
+ * confirmWrite 将任何非 'committed' 状态（含 'blocked'）视为 write_failed。
+ */
+interface BatchWriterResultView {
+  write_results: WriteResult[];
+  transaction_snapshot_id: string;
+  status: string;
+  records_created: number;
+  records_rolled_back: number;
+  error_code?: string;
+}
+
+/**
+ * 截图服务批量写入器端口。接受 TransactionalBatchWriter 与 GuardedBatchWriter
+ * （Amendment 6 双层放行门）。writeBatch 入参为 GuardedWriteBatchInput（含治理决定
+ * 与目标 Base/Table），透传给门控写入器校验；普通写入器/测试 Fake 忽略额外字段。
+ *
+ * 类型说明：方法签名采用 bivariant 检查，故 FakeBatchWriter
+ * (writeBatch(TransactionalBatchWriterInput): TransactionalBatchWriterResult)
+ * 与 GuardedBatchWriter (writeBatch(GuardedWriteBatchInput): GuardedBatchWriterResult)
+ * 均可赋值给此端口。
+ */
+interface ScreenshotBatchWriter {
+  writeBatch(input: GuardedWriteBatchInput): Promise<BatchWriterResultView>;
+}
+
 export interface ScreenshotServiceOptions {
   ocrEngine?: ScreenshotOcrEngine;
   governanceClient?: ScreenshotGovernanceClient;
-  batchWriter?: BatchWriterPort;
+  batchWriter?: ScreenshotBatchWriter;
   writeLogRepository?: WriteLogRepository;
+  /**
+   * Workstream C/E: 写入门禁上下文。confirmWrite 将这些值透传给
+   * GuardedBatchWriter.writeBatch，供双层放行门（Amendment 6）校验目标
+   * Base/Table 白名单。仅在 feishu 模式下由 buildApp 从 config 注入。
+   * 缺省时 targetBaseToken/tableId 为 undefined → 门禁白名单不命中 → blocked（安全默认）。
+   */
+  feishuWriteContext?: {
+    targetBaseToken?: string;
+    customerTableId?: string;
+    projectTableId?: string;
+    modelTableId?: string;
+  };
   /**
    * Workstream D/E: 可选审计日志仓库。覆盖截图垂直闭环的状态迁移
    * （ingestion_received / ocr_completed / governance_passed|reviewed|rejected /
@@ -414,7 +458,7 @@ export class ScreenshotService {
     // 同步触发 OCR（mock 引擎即时返回）
     try {
       await this.runOcrAndBuildCandidate(ingestionId, imageBuffer, imageHash);
-    } catch (err) {
+    } catch {
       // OCR 失败不阻止创建，状态保持 received，可后续重试
       const currentTask = await this.repository.findById(ingestionId);
       if (currentTask) {
@@ -750,17 +794,29 @@ export class ScreenshotService {
       await this.auditRecord(task.ingestion_id, 'write_started', 'committing', {
         target_tables: req.target_tables ?? ['customer', 'project', 'model'],
       });
+      // Workstream C/E: 透传双层放行门所需上下文（governanceDecision +
+      // targetBaseToken + 各表 ID）。GuardedBatchWriter 在 Create Record 前校验
+      // 6 条件（Amendment 6）；普通写入器/Fake 忽略额外字段。
+      const ctx = this.options.feishuWriteContext;
       const batchResult = await this.options.batchWriter.writeBatch({
         ingestionId: task.ingestion_id,
         normalizedFields: state.candidate_v1.normalized_fields as Record<string, unknown>,
         targetTables: req.target_tables,
         dryRun: req.dry_run ?? task.dry_run,
+        governanceDecision: { decision: state.governance_result_v1?.decision ?? 'PASS' },
+        targetBaseToken: ctx?.targetBaseToken,
+        customerTableId: ctx?.customerTableId,
+        projectTableId: ctx?.projectTableId,
+        modelTableId: ctx?.modelTableId,
       });
 
       state.write_results = batchResult.write_results;
+      // BatchWriterResultView.status 为 string（GuardedBatchWriter 可能返回 'blocked'）。
+      // 下方 status !== 'committed' 检查会将 'blocked' 等非 committed 状态路由到
+      // write_failed 分支并提前返回；此处的 cast 仅用于诊断快照持久化，安全。
       state.transaction_snapshot = {
         snapshot_id: batchResult.transaction_snapshot_id,
-        status: batchResult.status,
+        status: batchResult.status as 'committed' | 'rolled_back' | 'partial',
         records_created: batchResult.records_created,
         records_rolled_back: batchResult.records_rolled_back,
       };
