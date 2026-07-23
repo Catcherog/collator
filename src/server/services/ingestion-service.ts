@@ -29,6 +29,7 @@ import { mapCustomerCandidate } from '../mapping/customer-candidate-mapper.js';
 import { runCleaningPipeline } from '../cleaning/pipeline/cleaning-pipeline.js';
 import { sanitizeWarningText } from '../security/redaction.js';
 import type { PreWriteClient } from '../governance/pre-write-client.js';
+import { createAuditEvent, type AuditLogRepository } from '../../audit/audit-log-repository.js';
 
 function computeIdempotencyKey(req: CreateIngestionRequest): string {
   const normalizedContent = req.content.trim();
@@ -119,7 +120,16 @@ export class IngestionService {
      * 类型上保持 `?` 是因为 TypeScript 不允许 required 参数跟随 optional 参数，
      * 但构造函数体显式拒绝 undefined（runtime required）。
      */
-    private readonly preWriteClient?: PreWriteClient
+    private readonly preWriteClient?: PreWriteClient,
+    /**
+     * Workstream D/E: 可选审计日志仓库。覆盖完整垂直闭环的状态迁移
+     * （ingestion_received / write_started / write_succeeded / write_failed …）。
+     *
+     * 向后兼容：现有 5 参调用方（含 scripts/run-gate-d.ts）无需改动即可编译。
+     * 缺省 undefined 时，所有 record() 调用被 `if (this.auditLogRepository)` 守卫
+     * 跳过，既有测试行为不变。生产模式由 buildApp 注入 FileAuditRepository。
+     */
+    private readonly auditLogRepository?: AuditLogRepository
   ) {
     if (Boolean(customerRecordWriter) !== Boolean(writeLogRepository)) {
       throw new Error(
@@ -198,6 +208,22 @@ export class IngestionService {
     };
 
     await this.repository.save(task);
+
+    // Workstream D/E: 审计 — 记录接收迁移（仅新记录，幂等重放在上方已提前返回）。
+    if (this.auditLogRepository) {
+      await this.auditLogRepository.record(
+        createAuditEvent({
+          ingestion_id: ingestionId,
+          event_type: 'ingestion_received',
+          result_status: 'received',
+          details: {
+            source_system: req.source_system,
+            target_domain: req.target_domain,
+            dry_run: req.dry_run ?? true,
+          },
+        }),
+      );
+    }
 
     return {
       ingestion_id: ingestionId,
@@ -576,6 +602,18 @@ export class IngestionService {
     };
     await this.repository.save(completedTask);
 
+    // Workstream D/E: 审计 — dry_run 写入成功（skipped_dry_run）。
+    if (this.auditLogRepository) {
+      await this.auditLogRepository.record(
+        createAuditEvent({
+          ingestion_id: completedTask.ingestion_id,
+          event_type: 'write_succeeded',
+          result_status: 'skipped_dry_run',
+          details: { target_table_id: 'dry_run', dry_run: true },
+        }),
+      );
+    }
+
     return completedTask;
   }
 
@@ -600,6 +638,18 @@ export class IngestionService {
       updated_at: nowIso(),
     };
     await this.repository.save(committingTask);
+
+    // Workstream D/E: 审计 — 写入开始（committing）。
+    if (this.auditLogRepository) {
+      await this.auditLogRepository.record(
+        createAuditEvent({
+          ingestion_id: committingTask.ingestion_id,
+          event_type: 'write_started',
+          result_status: 'committing',
+          details: { target_table_id: targetTableId },
+        }),
+      );
+    }
 
     // Stage 3: try customer write.
     let businessRecordId: string;
@@ -641,6 +691,23 @@ export class IngestionService {
         });
       } catch {
         // Write-log failure must not mask the original commit failure.
+      }
+
+      // Workstream D/E: 审计 — 写入失败。包在 try/catch 中：审计失败不得掩盖
+      // 原始提交错误（原始错误决定 HTTP 502 语义；审计缺口由运维补救审计文件）。
+      if (this.auditLogRepository) {
+        try {
+          await this.auditLogRepository.record(
+            createAuditEvent({
+              ingestion_id: failedTask.ingestion_id,
+              event_type: 'write_failed',
+              result_status: 'failed',
+              details: { error_code: failedTask.error_code ?? 'COMMIT_FAILED' },
+            }),
+          );
+        } catch {
+          // 审计失败不掩盖原始 commit 失败。
+        }
       }
 
       // Re-throw FeishuCommitFailedError as-is; wrap unknown errors so
@@ -686,6 +753,23 @@ export class IngestionService {
       updated_at: completedAt,
     };
     await this.repository.save(completedTask);
+
+    // Workstream D/E: 审计 — 写入成功。业务写入已落库，审计失败应 fail-closed
+    // 暴露审计缺口（INTEGRATION.md §3.3）。
+    if (this.auditLogRepository) {
+      await this.auditLogRepository.record(
+        createAuditEvent({
+          ingestion_id: completedTask.ingestion_id,
+          event_type: 'write_succeeded',
+          result_status: 'succeeded',
+          details: {
+            target_table_id: targetTableId,
+            dry_run: false,
+            business_record_id: businessRecordId,
+          },
+        }),
+      );
+    }
 
     return completedTask;
   }

@@ -46,6 +46,7 @@ import type {
 import type { ScreenshotOcrEngine, OcrResult, OcrTextBlock } from './screenshot-ocr-adapter.js';
 import type { ScreenshotGovernanceClient, FullGovernanceResult } from '../governance/screenshot-governance-client.js';
 import type { BatchWriterPort } from '../business/transactional-batch-writer.js';
+import { createAuditEvent, type AuditLogRepository, type AuditEventType } from '../../audit/audit-log-repository.js';
 
 // ============================================================================
 // 截图状态存储类型（存储在 IngestionTask.pipeline_evidence 中）
@@ -287,6 +288,15 @@ export interface ScreenshotServiceOptions {
   governanceClient?: ScreenshotGovernanceClient;
   batchWriter?: BatchWriterPort;
   writeLogRepository?: WriteLogRepository;
+  /**
+   * Workstream D/E: 可选审计日志仓库。覆盖截图垂直闭环的状态迁移
+   * （ingestion_received / ocr_completed / governance_passed|reviewed|rejected /
+   * write_started / write_succeeded / write_failed）。
+   *
+   * 缺省 undefined 时，所有 record() 调用被 `if (this.options.auditLogRepository)`
+   * 守卫跳过，既有测试行为不变。生产模式由 buildApp 注入 FileAuditRepository。
+   */
+  auditLogRepository?: AuditLogRepository;
 }
 
 export class ScreenshotService {
@@ -294,6 +304,29 @@ export class ScreenshotService {
     private readonly repository: TaskRepository,
     private readonly options: ScreenshotServiceOptions = {}
   ) {}
+
+  /**
+   * Workstream D/E: 审计记录守卫辅助。auditLogRepository 缺省（测试模式）时为 no-op，
+   * 既有测试行为不变；生产模式由 buildApp 注入 FileAuditRepository。
+   * 默认 fail-closed：record() 失败时向上冒泡（AC-D03）。
+   */
+  private async auditRecord(
+    ingestionId: string,
+    eventType: AuditEventType,
+    resultStatus?: string,
+    details?: Record<string, unknown>,
+  ): Promise<void> {
+    if (this.options.auditLogRepository) {
+      await this.options.auditLogRepository.record(
+        createAuditEvent({
+          ingestion_id: ingestionId,
+          event_type: eventType,
+          result_status: resultStatus,
+          details,
+        }),
+      );
+    }
+  }
 
   // ==========================================================================
   // 1. POST /v1/screenshots — 创建截图提交
@@ -372,6 +405,12 @@ export class ScreenshotService {
 
     await this.repository.save(task);
 
+    // Workstream D/E: 审计 — 截图接收（仅新记录；幂等重放在上方已提前返回）。
+    await this.auditRecord(ingestionId, 'ingestion_received', 'received', {
+      source_system: req.source_system,
+      image_content_hash: imageHash,
+    });
+
     // 同步触发 OCR（mock 引擎即时返回）
     try {
       await this.runOcrAndBuildCandidate(ingestionId, imageBuffer, imageHash);
@@ -424,6 +463,12 @@ export class ScreenshotService {
     state.ocr_task_id = `ocr_${randomUUID().replace(/-/g, '')}`;
     state.screenshot_status = 'ocr_completed';
     await this.repository.save(withScreenshotState(task, state));
+
+    // Workstream D/E: 审计 — OCR 完成。
+    await this.auditRecord(ingestionId, 'ocr_completed', 'ocr_completed', {
+      ocr_task_id: state.ocr_task_id,
+      confidence: ocrResult.confidence,
+    });
 
     // 构建 Candidate V1
     const candidate = buildCandidateV1FromOcr(
@@ -658,6 +703,10 @@ export class ScreenshotService {
       if (governance.decision === 'BLOCKED') {
         state.screenshot_status = 'governance_blocked';
         await this.repository.save(withScreenshotState(task, state));
+        // Workstream D/E: 审计 — 治理拒绝（BLOCKED）。
+        await this.auditRecord(task.ingestion_id, 'governance_rejected', 'BLOCKED', {
+          rule_version: governance.rule_version,
+        });
         return {
           screenshot_id: task.ingestion_id,
           ingestion_id: task.ingestion_id,
@@ -670,6 +719,10 @@ export class ScreenshotService {
       if (governance.decision === 'NEEDS_REVIEW') {
         state.screenshot_status = 'governance_needs_review';
         await this.repository.save(withScreenshotState(task, state));
+        // Workstream D/E: 审计 — 治理转复核（NEEDS_REVIEW）。
+        await this.auditRecord(task.ingestion_id, 'governance_reviewed', 'NEEDS_REVIEW', {
+          review_task_id: governance.review.review_task_id,
+        });
         return {
           screenshot_id: task.ingestion_id,
           ingestion_id: task.ingestion_id,
@@ -682,6 +735,10 @@ export class ScreenshotService {
       // PASS → 继续写入
       state.screenshot_status = 'governance_passed';
       await this.repository.save(withScreenshotState(task, state));
+      // Workstream D/E: 审计 — 治理通过（PASS）。
+      await this.auditRecord(task.ingestion_id, 'governance_passed', 'PASS', {
+        rule_version: governance.rule_version,
+      });
     } else {
       // 无治理客户端（测试模式）→ 直接通过
       state.screenshot_status = 'governance_passed';
@@ -689,6 +746,10 @@ export class ScreenshotService {
 
     // AC-A10: 写入失败不会错误报告 SUCCEEDED
     if (this.options.batchWriter) {
+      // Workstream D/E: 审计 — 写入开始。
+      await this.auditRecord(task.ingestion_id, 'write_started', 'committing', {
+        target_tables: req.target_tables ?? ['customer', 'project', 'model'],
+      });
       const batchResult = await this.options.batchWriter.writeBatch({
         ingestionId: task.ingestion_id,
         normalizedFields: state.candidate_v1.normalized_fields as Record<string, unknown>,
@@ -709,6 +770,15 @@ export class ScreenshotService {
       if (hasFailure || batchResult.status !== 'committed') {
         state.screenshot_status = 'write_failed';
         await this.repository.save(withScreenshotState(task, state));
+        // Workstream D/E: 审计 — 写入失败。包在 try/catch 中：审计失败不得掩盖
+        // 写入失败响应（写入失败状态已持久化；审计缺口由运维补救）。
+        try {
+          await this.auditRecord(task.ingestion_id, 'write_failed', 'failed', {
+            error_code: batchResult.error_code ?? 'WRITE_FAILED',
+          });
+        } catch {
+          // 审计失败不掩盖写入失败响应。
+        }
         return {
           screenshot_id: task.ingestion_id,
           ingestion_id: task.ingestion_id,
@@ -733,6 +803,11 @@ export class ScreenshotService {
     }
 
     await this.repository.save(withScreenshotState(task, state));
+
+    // Workstream D/E: 审计 — 写入成功。业务写入已落库，审计失败应 fail-closed。
+    await this.auditRecord(task.ingestion_id, 'write_succeeded', 'succeeded', {
+      transaction_snapshot_id: state.transaction_snapshot?.snapshot_id,
+    });
 
     return {
       screenshot_id: task.ingestion_id,

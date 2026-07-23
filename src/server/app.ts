@@ -8,6 +8,9 @@ import { screenshotRoutes } from './routes/screenshots.js';
 import { IngestionService } from './services/ingestion-service.js';
 import { ScreenshotService, type ScreenshotServiceOptions } from './services/screenshot-service.js';
 import { createOcrEngineFromEnv } from '../ocr/ocr-engine-factory.js';
+import { loadAuditConfig } from './config/audit-config.js';
+import { createFileAuditRepository, type AuditLogger } from './repositories/audit/file-audit-repository.js';
+import type { AuditLogRepository } from '../audit/audit-log-repository.js';
 import { SopScreenshotGovernanceClient } from './governance/screenshot-governance-client.js';
 import { TransactionalBatchWriter } from './business/transactional-batch-writer.js';
 import { FeishuProjectRecordWriter } from './business/project-record-writer.js';
@@ -63,6 +66,28 @@ export interface BuildAppOptions {
 
 export async function buildApp(options?: BuildAppOptions) {
   const config = loadConfig();
+
+  // Workstream D/E: create Fastify early so app.log (pino) is available for
+  // the audit repository adapter before services are constructed.
+  const app = Fastify({
+    logger: {
+      level: config.logLevel,
+    },
+  });
+
+  // Workstream D/E: 审计日志仓库（文件后端，无外部凭据依赖，AC-D01）。
+  // 仅在生产/config-driven 模式（未注入 repository）下创建，避免测试写盘。
+  // 服务以 `if (this.auditLogRepository)` 守卫 record() 调用，故测试模式不受影响。
+  let auditLogRepository: AuditLogRepository | undefined;
+  if (!options?.repository) {
+    const auditConfig = loadAuditConfig(process.env);
+    // pino warn(obj, msg) 与 AuditLogger.warn(msg, extra) 形参顺序不同，需适配。
+    const auditLogger: AuditLogger = {
+      warn: (msg, extra) => app.log.child({ module: 'audit' }).warn(extra ?? {}, msg),
+    };
+    auditLogRepository = createFileAuditRepository(auditConfig, auditLogger);
+  }
+
   // Production wiring: build the matching task+review bundle from config.
   // Tests can pass explicit repositories to bypass config-driven selection.
   let repository: TaskRepository;
@@ -118,7 +143,8 @@ export async function buildApp(options?: BuildAppOptions) {
     reviewRepository,
     customerRecordWriter,
     writeLogRepository,
-    preWriteClient
+    preWriteClient,
+    auditLogRepository
   );
 
   // 主线 A1: 截图纵向闭环 — 装配 ScreenshotService
@@ -132,6 +158,8 @@ export async function buildApp(options?: BuildAppOptions) {
       screenshotServiceOptions.ocrEngine ?? createOcrEngineFromEnv(process.env);
     screenshotServiceOptions.governanceClient = screenshotServiceOptions.governanceClient ?? new SopScreenshotGovernanceClient();
     screenshotServiceOptions.writeLogRepository = screenshotServiceOptions.writeLogRepository ?? writeLogRepository;
+    // Workstream D/E: 审计仓库透传到截图服务。
+    screenshotServiceOptions.auditLogRepository = screenshotServiceOptions.auditLogRepository ?? auditLogRepository;
     // 仅在 feishu 模式且有 project/model 表 ID 时装配 batch writer
     if (
       !screenshotServiceOptions.batchWriter &&
@@ -159,12 +187,6 @@ export async function buildApp(options?: BuildAppOptions) {
     }
   }
   const screenshotService = new ScreenshotService(repository, screenshotServiceOptions);
-
-  const app = Fastify({
-    logger: {
-      level: config.logLevel,
-    },
-  });
 
   // 主线 A1: 注册 CORS 和 multipart 插件（供截图上传和跨域调用）
   await app.register(cors, { origin: true });
