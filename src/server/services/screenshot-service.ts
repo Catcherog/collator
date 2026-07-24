@@ -459,14 +459,19 @@ export class ScreenshotService {
     // 同步触发 OCR（mock 引擎即时返回）
     try {
       await this.runOcrAndBuildCandidate(ingestionId, imageBuffer, imageHash);
-    } catch {
-      // OCR 失败不阻止创建，状态保持 received，可后续重试
+    } catch (err) {
+      // OCR 失败：标记为 ocr_failed（而非 ocr_processing），使轮询方能立即检测
+      // 终态而非超时。之前错误设为 ocr_processing 导致 poller 永远等不到终态。
       const currentTask = await this.repository.findById(ingestionId);
       if (currentTask) {
         const state = extractScreenshotState(currentTask);
-        state.screenshot_status = 'ocr_processing';
+        state.screenshot_status = 'ocr_failed';
+        state.ocr_evidence = undefined;
         await this.repository.save(withScreenshotState(currentTask, state));
       }
+      await this.auditRecord(ingestionId, 'ocr_failed', 'ocr_failed', {
+        error_message: err instanceof Error ? err.message : String(err),
+      });
     }
 
     const finalTask = await this.repository.findById(ingestionId);
