@@ -46,6 +46,7 @@ import type {
 import type { ScreenshotOcrEngine, OcrResult, OcrTextBlock } from './screenshot-ocr-adapter.js';
 import type { ScreenshotGovernanceClient, FullGovernanceResult } from '../governance/screenshot-governance-client.js';
 import type { GuardedWriteBatchInput } from '../business/guarded-batch-writer.js';
+import { computeWritePlan } from '../business/write-plan.js';
 import { createAuditEvent, type AuditLogRepository, type AuditEventType } from '../../audit/audit-log-repository.js';
 
 // ============================================================================
@@ -788,11 +789,20 @@ export class ScreenshotService {
       state.screenshot_status = 'governance_passed';
     }
 
+    // RF-01: 按 project_type 构建显式写入计划。调用方显式 override（req.target_tables）
+    // 优先；否则由 computeWritePlan 根据治理后的 project_type + customer_ref + model_ref
+    // 决定写入哪些业务表。修复前无条件写入 ['customer','project','model']，导致客片
+    // 无条件创建 Model、样片无条件创建 Customer，违反 BR-01/BR-02 实体关联语义。
+    const effectiveTargetTables = req.target_tables ?? computeWritePlan(
+      state.candidate_v1,
+      state.governance_result_v1
+    );
+
     // AC-A10: 写入失败不会错误报告 SUCCEEDED
     if (this.options.batchWriter) {
       // Workstream D/E: 审计 — 写入开始。
       await this.auditRecord(task.ingestion_id, 'write_started', 'committing', {
-        target_tables: req.target_tables ?? ['customer', 'project', 'model'],
+        target_tables: effectiveTargetTables,
       });
       // Workstream C/E: 透传双层放行门所需上下文（governanceDecision +
       // targetBaseToken + 各表 ID）。GuardedBatchWriter 在 Create Record 前校验
@@ -801,7 +811,7 @@ export class ScreenshotService {
       const batchResult = await this.options.batchWriter.writeBatch({
         ingestionId: task.ingestion_id,
         normalizedFields: state.candidate_v1.normalized_fields as Record<string, unknown>,
-        targetTables: req.target_tables,
+        targetTables: effectiveTargetTables,
         dryRun: req.dry_run ?? task.dry_run,
         governanceDecision: { decision: state.governance_result_v1?.decision ?? 'PASS' },
         targetBaseToken: ctx?.targetBaseToken,
@@ -848,7 +858,7 @@ export class ScreenshotService {
       state.screenshot_status = 'write_succeeded';
     } else {
       // 无 batch writer（测试模式）→ 干运行
-      state.write_results = (req.target_tables ?? ['customer', 'project', 'model']).map((table) => ({
+      state.write_results = effectiveTargetTables.map((table) => ({
         entity_type: table,
         target_table_id: table,
         business_record_id: null,

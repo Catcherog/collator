@@ -72,10 +72,10 @@ export class MockOcrEngine implements ScreenshotOcrEngine {
       };
     }
 
-    // 默认 mock：模拟客户咨询聊天的典型内容
+    // 默认 mock：模拟客户咨询聊天的典型内容（客片项目）
     const text_blocks: OcrTextBlock[] = [
       { type: 'name', text: '李女士', line: 1, confidence: 0.92 },
-      { type: 'text', text: '你好，我想咨询一下拍摄套餐', line: 2, confidence: 0.95 },
+      { type: 'text', text: '你好，我想咨询一下客片拍摄套餐', line: 2, confidence: 0.95 },
       { type: 'date', text: '2026年8月15日', line: 3, confidence: 0.88 },
       { type: 'price', text: '预算5000-8000元', line: 4, confidence: 0.90 },
       { type: 'phone', text: '138****8888', line: 5, confidence: 0.85 },
