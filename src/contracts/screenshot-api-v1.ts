@@ -54,7 +54,7 @@ export interface ApiErrorResponse {
 }
 
 /** 写入结果状态 */
-export type WriteResultStatus = 'succeeded' | 'failed' | 'rolled_back' | 'not_attempted';
+export type WriteResultStatus = 'succeeded' | 'failed' | 'rolled_back' | 'not_attempted' | 'unknown';
 
 /** 单实体写入结果 */
 export interface WriteResult {

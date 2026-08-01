@@ -17,7 +17,7 @@ import type {
   ProductionPilotRunManifest,
 } from '../repositories/run-manifest-repository.js';
 import { RunManifestStateError } from '../repositories/run-manifest-repository.js';
-import { FeishuCommitFailedError } from '../domain/errors.js';
+import { FeishuCommitFailedError, InternalWriteResultUnknownError } from '../domain/errors.js';
 import type { WriteResult } from '../../contracts/screenshot-api-v1.js';
 import { PostWriteVerificationError } from './post-write-verification.js';
 import {
@@ -65,6 +65,13 @@ export interface TransactionalBatchWriterInput {
     status: 'completed' | 'failed',
     recordCount: number
   ) => Promise<void>;
+  /** Internal-controlled writes preserve partial/unknown records for manual action. */
+  compensationPolicy?: 'automatic' | 'manual';
+  internalControlledWrite?: boolean;
+  internalPreviewId?: string;
+  candidateId?: string;
+  requestedCandidateId?: string;
+  humanConfirmed?: boolean;
 }
 
 export interface TransactionalBatchWriterResult {
@@ -86,6 +93,7 @@ export interface TransactionalBatchWriterResult {
  */
 export interface BatchWriterPort {
   writeBatch(input: TransactionalBatchWriterInput): Promise<TransactionalBatchWriterResult>;
+  findByIngestionId?(entity: 'customer' | 'project' | 'model', ingestionId: string): Promise<string[]>;
   recoverPendingCompensations?(hooks?: {
     onCompensationStarted?: (recordCount: number) => Promise<void>;
     onCompensationCompleted?: (status: 'completed' | 'failed', recordCount: number) => Promise<void>;
@@ -116,6 +124,18 @@ export class TransactionalBatchWriter {
     private readonly writeLogRepository?: WriteLogRepository,
     private readonly runManifestRepository?: RunManifestRepository
   ) {}
+
+  async findByIngestionId(
+    entity: 'customer' | 'project' | 'model',
+    ingestionId: string,
+  ): Promise<string[]> {
+    const writer = entity === 'customer'
+      ? this.customerWriter
+      : entity === 'project'
+        ? this.projectWriter
+        : this.modelWriter;
+    return writer?.findByIngestionId ? writer.findByIngestionId(ingestionId) : [];
+  }
 
   async writeBatch(input: TransactionalBatchWriterInput): Promise<TransactionalBatchWriterResult> {
     const snapshotId = `txn_${input.ingestionId}_${Date.now()}`;
@@ -189,7 +209,30 @@ export class TransactionalBatchWriter {
             // the process failed while persisting that boundary.
           }
         }
-        // 写入失败 → 反向回滚已创建的记录（AC-A10）
+        // Internal-controlled mode never guesses whether a remote write
+        // happened and never auto-deletes a partial/unknown result.
+        if (input.compensationPolicy === 'manual') {
+          if (!input.internalControlledWrite) {
+            try {
+              await this.persistWriteLogs(input, results, 'failed');
+            } catch {
+              // Preserve the historical manual-compensation behavior for
+              // non-internal callers.
+            }
+          }
+          return {
+            write_results: results,
+            transaction_snapshot_id: snapshotId,
+            status: 'partial',
+            records_created: recordsCreated,
+            records_rolled_back: 0,
+            error_code: result.error_code ?? 'INTERNAL_WRITE_PARTIAL',
+            post_write_verified: false,
+            compensation_events_emitted: false,
+          };
+        }
+
+        // Legacy/test path: 写入失败 → 反向回滚已创建的记录（AC-A10）
         const rollbackResult = await this.rollback(
           createdRecords,
           input,
@@ -222,7 +265,11 @@ export class TransactionalBatchWriter {
 
     // 全部成功 → 持久化成功日志
     try {
-      await this.persistWriteLogs(input, results, 'succeeded');
+      // Internal-controlled writes use the dedicated redacted journal owned
+      // by ScreenshotService; the legacy log schema contains raw table IDs.
+      if (!input.internalControlledWrite) {
+        await this.persistWriteLogs(input, results, 'succeeded');
+      }
     } catch {
       const rollbackResult = await this.rollback(
         createdRecords,
@@ -277,6 +324,7 @@ export class TransactionalBatchWriter {
         const result = await this.customerWriter.write({
           ingestionId: input.ingestionId,
           normalizedFields: input.normalizedFields,
+          internalWriteKey: this.internalWriteKey(input, table),
           createLifecycle: this.createLifecycle(
             table,
             tableId,
@@ -301,6 +349,7 @@ export class TransactionalBatchWriter {
         const result = await this.projectWriter.write({
           ingestionId: input.ingestionId,
           normalizedFields,
+          internalWriteKey: this.internalWriteKey(input, table),
           createLifecycle: this.createLifecycle(
             table,
             tableId,
@@ -325,6 +374,7 @@ export class TransactionalBatchWriter {
         const result = await this.modelWriter.write({
           ingestionId: input.ingestionId,
           normalizedFields: input.normalizedFields,
+          internalWriteKey: this.internalWriteKey(input, table),
           createLifecycle: this.createLifecycle(
             table,
             tableId,
@@ -349,13 +399,18 @@ export class TransactionalBatchWriter {
         ? { ...baseResult, status: 'failed', error_code: 'WRITER_NOT_CONFIGURED' }
         : baseResult;
     } catch (e) {
+      if (input.internalControlledWrite && (e instanceof InternalWriteResultUnknownError || (e as { resultUnknown?: unknown }).resultUnknown === true)) {
+        throw new InternalWriteResultUnknownError();
+      }
       if (e instanceof PostWriteVerificationError) {
         return {
           ...baseResult,
           business_record_id: e.recordId,
           created: e.created,
           status: 'failed',
-          error_code: e.code,
+          error_code: input.internalControlledWrite && table === 'project'
+            ? 'RELATION_VERIFICATION_FAILED'
+            : e.code,
         };
       }
       if (e instanceof CreateLifecyclePersistenceError) {
@@ -435,6 +490,14 @@ export class TransactionalBatchWriter {
       // audit path. The caller receives only the stable error code above.
       throw new PostWriteVerificationError(recordId, created);
     }
+  }
+
+  private internalWriteKey(
+    input: TransactionalBatchWriterInput,
+    table: 'customer' | 'project' | 'model',
+  ): string | undefined {
+    if (!input.internalControlledWrite || !input.internalPreviewId) return undefined;
+    return `internal-write:${input.ingestionId}:${input.internalPreviewId}:${table}`;
   }
 
   /**

@@ -100,3 +100,25 @@ export function computeWritePlan(
   // unknown / 任何无法判定的值：不生成正写入计划（fail-safe）。
   return [];
 }
+
+/**
+ * Authoritative plan for the explicitly named internal-controlled lane.
+ *
+ * This intentionally does not inherit the optional-reference behavior of the
+ * legacy/test plan above.  A client write is exactly Customer + Project; a
+ * creative write is exactly Model + Project; an unknown type is a zero-write
+ * plan.  The caller owns the resulting plan and never accepts a client table
+ * list as an override.
+ */
+export function computeInternalControlledWritePlan(
+  candidate: WritePlanCandidate,
+  governance?: WritePlanGovernance | null,
+): WriteTable[] {
+  const projectType =
+    governance?.classification?.project_type ??
+    candidate?.normalized_fields?.project_type ??
+    'unknown';
+  if (projectType === 'client') return ['customer', 'project'];
+  if (projectType === 'creative') return ['model', 'project'];
+  return [];
+}

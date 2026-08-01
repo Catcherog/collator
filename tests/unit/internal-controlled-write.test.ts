@@ -1,0 +1,455 @@
+import { describe, expect, it, vi } from 'vitest';
+import { InMemoryTaskRepository } from '../../src/server/repositories/in-memory-task-repository.js';
+import { InMemoryAuditLogRepository } from '../../src/server/repositories/audit/in-memory-audit-repository.js';
+import {
+  InMemoryInternalWriteRepository,
+} from '../../src/server/repositories/internal-write-repository.js';
+import {
+  isInternalControlledWriteAllowed,
+  loadFeishuWriteConfig,
+  type FeishuWriteConfig,
+} from '../../src/server/config/feishu-write-config.js';
+import { computeInternalControlledWritePlan } from '../../src/server/business/write-plan.js';
+import { InternalWriteQueue } from '../../src/server/business/internal-write-queue.js';
+import { ScreenshotService } from '../../src/server/services/screenshot-service.js';
+import { MockOcrEngine } from '../../src/server/services/screenshot-ocr-adapter.js';
+import type {
+  FullGovernanceResult,
+  ScreenshotGovernanceClient,
+} from '../../src/server/governance/screenshot-governance-client.js';
+import type { GuardedWriteBatchInput } from '../../src/server/business/guarded-batch-writer.js';
+import {
+  InternalWriteResultUnknownError,
+} from '../../src/server/domain/errors.js';
+
+const BASE = 'base_internal_test';
+const TABLES = {
+  customer: 'tbl_internal_customer',
+  project: 'tbl_internal_project',
+  model: 'tbl_internal_model',
+} as const;
+
+function internalConfig(overrides: Record<string, string> = {}): FeishuWriteConfig {
+  return loadFeishuWriteConfig({
+    TASK_REPOSITORY: 'feishu',
+    DRY_RUN: 'false',
+    ENABLE_REAL_FEISHU_WRITE: 'true',
+    FEISHU_WRITE_ENV: 'internal-controlled',
+    ENABLE_INTERNAL_CONTROLLED_WRITE: 'true',
+    INTERNAL_WRITE_MAX_CONCURRENCY: '1',
+    INTERNAL_WRITE_REQUIRE_HUMAN_CONFIRMATION: 'true',
+    INTERNAL_WRITE_AUTO_RETRY_CREATE: 'false',
+    INTERNAL_WRITE_RECONCILIATION_ENABLED: 'true',
+    FEISHU_INTERNAL_CONTROLLED_BASE_APP_TOKEN: BASE,
+    FEISHU_INTERNAL_CONTROLLED_TABLE_IDS: Object.values(TABLES).join(','),
+    FEISHU_CUSTOMER_WRITE_KEY_FIELD: 'Collator 摄入 ID',
+    FEISHU_PROJECT_WRITE_KEY_FIELD: 'Collator 摄入 ID',
+    FEISHU_MODEL_WRITE_KEY_FIELD: 'Collator 摄入 ID',
+    ...overrides,
+  });
+}
+
+function passGovernance(candidateId: string): FullGovernanceResult {
+  const now = new Date().toISOString();
+  return {
+    schema_version: 'v1',
+    candidate_id: candidateId,
+    decision: 'PASS',
+    classification: { entity_type: 'project', project_type: 'client', confidence: 0.99 },
+    rule_version: 'internal-test-rules',
+    violations: [],
+    write: { status: 'NOT_ATTEMPTED', target_table: 'project', target_record_id: null },
+    review: { status: 'NOT_REQUIRED', review_task_id: null },
+    audit: {
+      audit_id: 'audit_internal_test',
+      timestamp: now,
+      source_record_id: 'source_internal_test',
+      idempotency_key: 'idem_internal_test',
+      rule_version: 'internal-test-rules',
+    },
+  };
+}
+
+class PassGovernanceClient implements ScreenshotGovernanceClient {
+  async callPreWriteFull(candidate: Parameters<ScreenshotGovernanceClient['callPreWriteFull']>[0]): Promise<FullGovernanceResult> {
+    return passGovernance(candidate.candidate_id);
+  }
+}
+
+type WriterMode = 'success' | 'unknown' | 'partial';
+
+class FakeInternalBatchWriter {
+  calls = 0;
+  active = 0;
+  maxActive = 0;
+  delayMs = 5;
+  readonly inputs: GuardedWriteBatchInput[] = [];
+  mode: WriterMode = 'success';
+  readonly findByIngestionId = vi.fn(async (_entity: string, _ingestionId: string) => [] as string[]);
+
+  async preflight(input: GuardedWriteBatchInput): Promise<{ allowed: boolean; reason: string }> {
+    this.inputs.push(input);
+    return { allowed: true, reason: 'fake internal preflight allowed' };
+  }
+
+  async writeBatch(input: GuardedWriteBatchInput): Promise<{
+    write_results: Array<{
+      entity_type: 'customer' | 'project' | 'model';
+      target_table_id: string;
+      business_record_id: string | null;
+      created: boolean;
+      status: 'succeeded' | 'failed' | 'unknown';
+      error_code?: string;
+    }>;
+    transaction_snapshot_id: string;
+    status: 'committed' | 'partial' | 'unknown';
+    records_created: number;
+    records_rolled_back: number;
+    post_write_verified: boolean;
+    error_code?: string;
+  }> {
+    this.calls += 1;
+    this.active += 1;
+    this.maxActive = Math.max(this.maxActive, this.active);
+    try {
+      if (this.mode === 'unknown') {
+        throw new InternalWriteResultUnknownError();
+      }
+      await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+      const tables = input.targetTables ?? [];
+      const writeResults = tables.map((entity_type, index) => ({
+        entity_type,
+        target_table_id: TABLES[entity_type],
+        business_record_id: this.mode === 'partial' && index === tables.length - 1
+          ? null
+          : `rec_${entity_type}_${this.calls}_${index}`,
+        created: !(this.mode === 'partial' && index === tables.length - 1),
+        status: this.mode === 'partial' && index === tables.length - 1
+          ? 'failed' as const
+          : 'succeeded' as const,
+        ...(this.mode === 'partial' && index === tables.length - 1
+          ? { error_code: 'RELATION_VERIFICATION_FAILED' }
+          : {}),
+      }));
+      return {
+        write_results: writeResults,
+        transaction_snapshot_id: `txn_internal_${this.calls}`,
+        status: this.mode === 'partial' ? 'partial' : 'committed',
+        records_created: writeResults.filter((result) => result.created).length,
+        records_rolled_back: 0,
+        post_write_verified: this.mode !== 'partial',
+        ...(this.mode === 'partial' ? { error_code: 'RELATION_VERIFICATION_FAILED' } : {}),
+      };
+    } finally {
+      this.active -= 1;
+    }
+  }
+}
+
+async function createInternalContext(mode: WriterMode = 'success', internalWriteTimeoutMs?: number) {
+  const repository = new InMemoryTaskRepository();
+  const internalWriteRepository = new InMemoryInternalWriteRepository();
+  const writer = new FakeInternalBatchWriter();
+  writer.mode = mode;
+  const service = new ScreenshotService(repository, {
+    ocrEngine: new MockOcrEngine(),
+    governanceClient: new PassGovernanceClient(),
+    batchWriter: writer,
+    auditLogRepository: new InMemoryAuditLogRepository(),
+    internalWriteRepository,
+    internalWriteQueue: new InternalWriteQueue(),
+    internalWriteConfig: internalConfig(),
+    internalWriteTimeoutMs,
+    feishuWriteContext: {
+      targetBaseToken: BASE,
+      customerTableId: TABLES.customer,
+      projectTableId: TABLES.project,
+      modelTableId: TABLES.model,
+    },
+  });
+  const created = await service.createScreenshot({
+    source_system: 'internal-test',
+    source_record_id: `source_${Math.random()}`,
+    submitted_at: new Date().toISOString(),
+    image_base64: Buffer.from(`internal-${Math.random()}`).toString('base64'),
+  });
+  const evidence = await service.getScreenshotEvidence(created.ingestion_id);
+  return {
+    service,
+    repository,
+    internalWriteRepository,
+    writer,
+    ingestionId: created.ingestion_id,
+    candidateId: evidence.candidate_v1.candidate_id,
+  };
+}
+
+async function authorize(context: Awaited<ReturnType<typeof createInternalContext>>) {
+  const preview = await context.service.createInternalWritePreview(
+    context.ingestionId,
+    { candidate_v1_id: context.candidateId },
+    'operator-internal',
+  );
+  await context.service.confirmInternalWritePreview(
+    preview.preview_id,
+    { nonce: preview.nonce, candidate_v1_id: context.candidateId },
+    'operator-internal',
+  );
+  return preview;
+}
+
+describe('internal-controlled configuration and authoritative plan', () => {
+  it('defaults disabled and rejects unsafe concurrency/retry settings', () => {
+    const config = loadFeishuWriteConfig({});
+    expect(config.internalControlledWrite?.enabled).toBe(false);
+    expect(config.internalControlledWrite?.maxConcurrency).toBe(1);
+    expect(config.internalControlledWrite?.requireHumanConfirmation).toBe(true);
+    expect(config.internalControlledWrite?.autoRetryCreate).toBe(false);
+
+    expect(() => loadFeishuWriteConfig({
+      FEISHU_WRITE_ENV: 'internal-controlled',
+      ENABLE_INTERNAL_CONTROLLED_WRITE: 'true',
+      INTERNAL_WRITE_MAX_CONCURRENCY: '2',
+    })).toThrow(/INTERNAL_WRITE_MAX_CONCURRENCY/);
+  });
+
+  it('uses exact internal plans: client customer+project, creative model+project, unknown zero writes', () => {
+    expect(computeInternalControlledWritePlan(
+      { normalized_fields: { project_type: 'client', customer_ref: '客户', model_ref: '模特' } },
+    )).toEqual(['customer', 'project']);
+    expect(computeInternalControlledWritePlan(
+      { normalized_fields: { project_type: 'creative', customer_ref: '客户', model_ref: '模特' } },
+    )).toEqual(['model', 'project']);
+    expect(computeInternalControlledWritePlan(
+      { normalized_fields: { project_type: 'unknown', customer_ref: '客户', model_ref: '模特' } },
+    )).toEqual([]);
+  });
+
+  it('blocks before Create when confirmation, operator, or plan binding is missing', () => {
+    const config = internalConfig();
+    const base = {
+      governanceDecision: 'PASS' as const,
+      targetBaseToken: BASE,
+      targetTableId: TABLES.customer,
+      targetTables: ['customer', 'project'] as const,
+      targetTableIds: TABLES,
+      candidateId: 'candidate_001',
+      requestedCandidateId: 'candidate_001',
+      candidateDigest: 'candidate_digest',
+      governanceDigest: 'governance_digest',
+      authoritativePlanDigest: 'plan_digest',
+      operator: 'operator-internal',
+      humanConfirmed: true,
+      dryRun: false,
+      preview: {
+        status: 'confirmed' as const,
+        candidateDigest: 'candidate_digest',
+        governanceDigest: 'governance_digest',
+        authoritativePlanDigest: 'plan_digest',
+        operator: 'operator-internal',
+      },
+    };
+    expect(isInternalControlledWriteAllowed(config, { ...base, humanConfirmed: false }).allowed).toBe(false);
+    expect(isInternalControlledWriteAllowed(config, { ...base, operator: 'spoofed' }).allowed).toBe(false);
+    expect(isInternalControlledWriteAllowed(config, { ...base, requestedCandidateId: 'other' }).allowed).toBe(false);
+  });
+});
+
+describe('InternalWriteQueue', () => {
+  it('serializes writes and continues after a failed operation', async () => {
+    const queue = new InternalWriteQueue();
+    const events: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+    const run = (name: string, fail = false) => queue.run(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      events.push(`${name}:start`);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      events.push(`${name}:end`);
+      if (fail) throw new Error('expected queue failure');
+      return name;
+    });
+
+    await expect(run('first', true)).rejects.toThrow('expected queue failure');
+    await expect(Promise.all([run('second'), run('third')])).resolves.toEqual(['second', 'third']);
+    expect(maxActive).toBe(1);
+    expect(events).toEqual([
+      'first:start', 'first:end',
+      'second:start', 'second:end',
+      'third:start', 'third:end',
+    ]);
+  });
+});
+
+describe('ScreenshotService internal-controlled write flow', () => {
+  it('requires authenticated human confirmation and never calls the writer early', async () => {
+    const context = await createInternalContext();
+    const preview = await context.service.createInternalWritePreview(
+      context.ingestionId,
+      { candidate_v1_id: context.candidateId },
+      'operator-internal',
+    );
+
+    await expect(context.service.executeInternalControlledWrite(
+      preview.preview_id,
+      { nonce: preview.nonce, candidate_v1_id: context.candidateId },
+      'operator-internal',
+    )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_REQUIRES_HUMAN_CONFIRMATION' });
+    expect(context.writer.calls).toBe(0);
+
+    await expect(context.service.confirmInternalWritePreview(
+      preview.preview_id,
+      { nonce: preview.nonce, candidate_v1_id: context.candidateId },
+      'spoofed-operator',
+    )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_OPERATOR_MISMATCH' });
+    await expect(context.service.confirmInternalWritePreview(
+      preview.preview_id,
+      { nonce: 'wrong-nonce', candidate_v1_id: context.candidateId },
+      'operator-internal',
+    )).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(context.writer.calls).toBe(0);
+  });
+
+  it('rejects a stale preview after candidate correction without writing', async () => {
+    const context = await createInternalContext();
+    const preview = await authorize(context);
+    await context.service.submitCorrections(context.ingestionId, {
+      reviewer_id: 'operator-internal',
+      corrections: { 客户姓名: '已修正' },
+    });
+
+    await expect(context.service.executeInternalControlledWrite(
+      preview.preview_id,
+      { nonce: preview.nonce, candidate_v1_id: context.candidateId },
+      'operator-internal',
+    )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_PREVIEW_STALE' });
+    expect(context.writer.calls).toBe(0);
+  });
+
+  it('serializes same-preview double click and replays success without another write', async () => {
+    const context = await createInternalContext();
+    const preview = await authorize(context);
+    const request = { nonce: preview.nonce, candidate_v1_id: context.candidateId };
+    const first = context.service.executeInternalControlledWrite(preview.preview_id, request, 'operator-internal');
+    const second = context.service.executeInternalControlledWrite(preview.preview_id, request, 'operator-internal');
+
+    await expect(second).rejects.toMatchObject({ code: 'INTERNAL_WRITE_ALREADY_IN_PROGRESS' });
+    const firstResult = await first;
+    expect(firstResult.status).toBe('succeeded');
+    expect(context.writer.calls).toBe(1);
+
+    const replay = await context.service.executeInternalControlledWrite(preview.preview_id, request, 'operator-internal');
+    expect(replay.status).toBe('succeeded');
+    expect(context.writer.calls).toBe(1);
+    expect(replay.write_results).toEqual(firstResult.write_results);
+  });
+
+  it('preserves unknown results and never retries Create automatically', async () => {
+    const context = await createInternalContext('unknown');
+    const preview = await authorize(context);
+    const result = await context.service.executeInternalControlledWrite(
+      preview.preview_id,
+      { nonce: preview.nonce, candidate_v1_id: context.candidateId },
+      'operator-internal',
+    );
+
+    expect(result.status).toBe('result_unknown');
+    expect(result.error_code).toBe('INTERNAL_WRITE_RESULT_UNKNOWN');
+    expect(context.writer.calls).toBe(1);
+    const stored = await context.internalWriteRepository.findPreview(preview.preview_id);
+    expect(stored?.status).toBe('result_unknown');
+  });
+
+  it('persists result_unknown at timeout while the single queue slot drains', async () => {
+    const context = await createInternalContext('success', 10);
+    context.writer.delayMs = 40;
+    const preview = await authorize(context);
+    const result = await context.service.executeInternalControlledWrite(
+      preview.preview_id,
+      { nonce: preview.nonce, candidate_v1_id: context.candidateId },
+      'operator-internal',
+    );
+
+    expect(result.status).toBe('result_unknown');
+    expect(result.error_code).toBe('INTERNAL_WRITE_RESULT_UNKNOWN');
+    expect(context.writer.calls).toBe(1);
+    expect(context.writer.active).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(context.writer.active).toBe(0);
+    const stored = await context.internalWriteRepository.findPreview(preview.preview_id);
+    expect(stored?.status).toBe('result_unknown');
+    expect(stored?.result?.status).toBe('result_unknown');
+  });
+
+  it('reconciles a unique marker match without creating or deleting a record', async () => {
+    const context = await createInternalContext('unknown');
+    const preview = await authorize(context);
+    await context.service.executeInternalControlledWrite(
+      preview.preview_id,
+      { nonce: preview.nonce, candidate_v1_id: context.candidateId },
+      'operator-internal',
+    );
+    context.writer.findByIngestionId.mockResolvedValue(['rec_reconciled_customer']);
+
+    const result = await context.service.reconcileInternalControlledWrite(
+      preview.preview_id,
+      'operator-internal',
+    );
+    expect(result.status).toBe('succeeded');
+    expect(result.additional_create_calls).toBe(0);
+    expect(result.write_results.some((item) => item.business_record_id === 'rec_reconciled_customer')).toBe(true);
+    expect(context.writer.calls).toBe(1);
+  });
+
+  it('keeps partial record IDs and does not automatically delete business records', async () => {
+    const context = await createInternalContext('partial');
+    const preview = await authorize(context);
+    const result = await context.service.executeInternalControlledWrite(
+      preview.preview_id,
+      { nonce: preview.nonce, candidate_v1_id: context.candidateId },
+      'operator-internal',
+    );
+
+    expect(result.status).toBe('partial');
+    expect(result.error_code).toBe('INTERNAL_WRITE_PARTIAL');
+    expect(result.write_results[0]?.business_record_id).toMatch(/^rec_customer_/);
+    expect(context.writer.calls).toBe(1);
+  });
+});
+
+describe('internal preview repository', () => {
+  it('stores preview and write-log state without raw table ids in logs', async () => {
+    const repository = new InMemoryInternalWriteRepository();
+    const preview = await repository.createPreview({
+      preview_id: 'preview_repository_001',
+      nonce: 'nonce_repository_001',
+      ingestion_id: 'ing_repository_001',
+      candidate_id: 'candidate_repository_001',
+      candidate_digest: 'a'.repeat(64),
+      governance_digest: 'b'.repeat(64),
+      authoritative_plan_digest: 'c'.repeat(64),
+      operator: 'operator-repository',
+      target_tables: ['customer', 'project'],
+      target_table_digests: { customer: 'd'.repeat(64), project: 'e'.repeat(64) },
+      created_at: '2026-08-02T00:00:00.000Z',
+      expires_at: '2026-08-02T01:00:00.000Z',
+    });
+    expect(preview.status).toBe('preview_generated');
+    expect(JSON.stringify(preview)).not.toContain(TABLES.customer);
+    await repository.appendWriteLog({
+      ingestion_id: preview.ingestion_id,
+      preview_id: preview.preview_id,
+      entity_type: 'customer',
+      logical_write_key: 'f'.repeat(64),
+      target_table_id_digest: 'd'.repeat(64),
+      business_record_id: null,
+      request_started_at: '2026-08-02T00:00:01.000Z',
+      operator: 'operator-repository',
+      status: 'intent',
+    });
+    const serialized = JSON.stringify(await repository.findWriteLogs(preview.preview_id));
+    expect(serialized).not.toContain(TABLES.customer);
+  });
+});

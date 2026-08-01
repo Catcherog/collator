@@ -65,6 +65,18 @@ const confirmProductionPilotPreviewSchema = z.object({
   nonce: z.string().uuid(),
 }).strict();
 
+const internalPreviewSchema = z.object({
+  screenshot_id: z.string().min(1),
+  candidate_v1_id: z.string().min(1),
+}).strict();
+
+const internalConfirmationSchema = z.object({
+  nonce: z.string().min(1),
+  candidate_v1_id: z.string().min(1),
+}).strict();
+
+const internalReconciliationSchema = z.object({}).strict();
+
 const escalateReviewSchema = z.object({
   reviewer_id: z.string().min(1),
   reason_code: z.string().min(1),
@@ -131,6 +143,59 @@ export async function screenshotRoutes(
   app.post('/production-pilot/previews', createPilotPreview);
   app.post('/v1/production-pilot/previews/:id/confirm', confirmPilotPreview);
   app.post('/production-pilot/previews/:id/confirm', confirmPilotPreview);
+
+  const createInternalPreview = async (
+    request: { body?: unknown; headers: Record<string, string | string[] | undefined> },
+    reply: { send: (body: unknown) => unknown },
+  ) => {
+    const body = internalPreviewSchema.parse(request.body);
+    const operator = await getAuthenticatedOperator(request as FastifyRequest, options);
+    const result = await service.createInternalWritePreview(
+      body.screenshot_id,
+      { candidate_v1_id: body.candidate_v1_id },
+      operator,
+    );
+    return reply.send(result);
+  };
+  const confirmInternalPreview = async (
+    request: { body?: unknown; params?: unknown; headers: Record<string, string | string[] | undefined> },
+  ) => {
+    const body = internalConfirmationSchema.parse(request.body);
+    const { id } = request.params as { id: string };
+    return service.confirmInternalWritePreview(
+      id,
+      { nonce: body.nonce, candidate_v1_id: body.candidate_v1_id },
+      await getAuthenticatedOperator(request as FastifyRequest, options),
+    );
+  };
+  const executeInternalWrite = async (
+    request: { body?: unknown; params?: unknown; headers: Record<string, string | string[] | undefined> },
+  ) => {
+    const body = internalConfirmationSchema.parse(request.body);
+    const { id } = request.params as { id: string };
+    return service.executeInternalControlledWrite(
+      id,
+      { nonce: body.nonce, candidate_v1_id: body.candidate_v1_id },
+      await getAuthenticatedOperator(request as FastifyRequest, options),
+    );
+  };
+  const reconcileInternalWrite = async (
+    request: { body?: unknown; params?: unknown; headers: Record<string, string | string[] | undefined> },
+  ) => {
+    internalReconciliationSchema.parse(request.body ?? {});
+    const { id } = request.params as { id: string };
+    return service.reconcileInternalControlledWrite(
+      id,
+      await getAuthenticatedOperator(request as FastifyRequest, options),
+    );
+  };
+
+  for (const prefix of ['/v1/internal-controlled-writes', '/internal-controlled-writes', '/v1/internal-writes', '/internal-writes']) {
+    app.post(`${prefix}/previews`, createInternalPreview);
+    app.post(`${prefix}/previews/:id/confirm`, confirmInternalPreview);
+    app.post(`${prefix}/previews/:id/execute`, executeInternalWrite);
+    app.post(`${prefix}/previews/:id/reconcile`, reconcileInternalWrite);
+  }
 
   // 1. POST /v1/screenshots — 创建截图提交
   app.post('/v1/screenshots', async (request, reply) => {

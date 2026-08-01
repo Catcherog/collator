@@ -10,12 +10,14 @@
 // writeBatch 输入中带上 governanceDecision 与 targetBaseToken。
 
 import {
+  isInternalControlledWriteAllowed,
   isProductionPilotWriteAllowed,
   isRealWriteAllowed,
   type FeishuWriteConfig,
   type GovernanceDecisionInput,
   type ProductionPilotRepositoryReadiness,
 } from '../config/feishu-write-config.js';
+import type { InternalWritePreview } from '../repositories/internal-write-repository.js';
 import type {
   ProductionPilotRunManifest,
   RunManifestRepository,
@@ -42,6 +44,11 @@ export interface GuardedWriteBatchInput extends TransactionalBatchWriterInput {
   authoritativePlanDigest?: string;
   /** Internal server-owned manifest; never accepted from the HTTP body. */
   pilotManifest?: ProductionPilotRunManifest;
+  /** Server-only binding for the internal-controlled lane. */
+  internalControlledWrite?: boolean;
+  requestedCandidateId?: string;
+  humanConfirmed?: boolean;
+  internalPreview?: InternalWritePreview;
 }
 
 /**
@@ -93,12 +100,42 @@ export class GuardedBatchWriter {
     if (targetTables.length === 0) {
       return { allowed: false, reason: 'Write gate blocked: no target tables were planned.' };
     }
+    if (this.gateConfig.writeMode === 'internal-controlled' && !input.internalControlledWrite) {
+      return { allowed: false, reason: 'Internal controlled write blocked: dedicated server execution context is required.' };
+    }
 
     // Evaluate the gate for each target table. Fail closed on the first
     // disallowed target so NO Create Record call is ever issued.
     for (const table of targetTables) {
       const tableId = this.getTableId(table, input);
-      const gate = this.gateConfig.writeMode === 'production-pilot'
+      const gate = this.gateConfig.writeMode === 'internal-controlled'
+        ? isInternalControlledWriteAllowed(this.gateConfig, {
+            ingestionId: input.ingestionId,
+            governanceDecision: input.governanceDecision,
+            targetBaseToken: input.targetBaseToken,
+            targetTableId: tableId,
+            targetTables,
+            targetTableIds: this.getTargetTableIds(targetTables, input),
+            candidateId: input.candidateId,
+            requestedCandidateId: input.requestedCandidateId,
+            candidateDigest: input.candidateDigest,
+            governanceDigest: input.governanceDigest,
+            authoritativePlanDigest: input.authoritativePlanDigest,
+            operator: input.operator,
+            humanConfirmed: input.humanConfirmed,
+            dryRun: input.dryRun,
+            preview: input.internalPreview
+              && ['confirmed', 'executing', 'verifying'].includes(input.internalPreview.status)
+              ? {
+                  status: input.internalPreview.status as 'confirmed' | 'executing' | 'verifying',
+                  candidateDigest: input.internalPreview.candidate_digest,
+                  governanceDigest: input.internalPreview.governance_digest,
+                  authoritativePlanDigest: input.internalPreview.authoritative_plan_digest,
+                  operator: input.internalPreview.operator,
+                }
+              : undefined,
+          })
+        : this.gateConfig.writeMode === 'production-pilot'
         ? isProductionPilotWriteAllowed(this.gateConfig, {
             ingestionId: input.ingestionId,
             governanceDecision: input.governanceDecision,
@@ -137,12 +174,13 @@ export class GuardedBatchWriter {
 
     // All targets allowed — delegate to the inner writer. Production-pilot
     // writes must read records back before they can be reported committed.
-    const innerInput = this.gateConfig.writeMode === 'production-pilot'
+    const innerInput = this.gateConfig.writeMode === 'production-pilot' || this.gateConfig.writeMode === 'internal-controlled'
       ? {
           ...input,
           verifyAfterWrite: true,
           enforceProjectRelationContext: true,
           requireDurableWriteLogs: true,
+          compensationPolicy: this.gateConfig.writeMode === 'internal-controlled' ? 'manual' as const : input.compensationPolicy,
           runManifestRepository: input.runManifestRepository ?? this.runManifestRepository,
         }
       : input;
@@ -164,6 +202,13 @@ export class GuardedBatchWriter {
     onCompensationCompleted?: (status: 'completed' | 'failed', recordCount: number) => Promise<void>;
   }): Promise<Array<{ previewId: string; status: 'compensated' | 'compensation_failed' }>> {
     return this.inner.recoverPendingCompensations?.(hooks) ?? [];
+  }
+
+  async findByIngestionId(
+    entity: 'customer' | 'project' | 'model',
+    ingestionId: string,
+  ): Promise<string[]> {
+    return this.inner.findByIngestionId?.(entity, ingestionId) ?? [];
   }
 
   private blockedResult(

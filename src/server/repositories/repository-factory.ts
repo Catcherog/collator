@@ -139,6 +139,7 @@ export function createRepositories(config: Config): RepositoryBundle {
       }),
       customerRecordWriter: new FeishuCustomerRecordWriter(client, {
         customerTableId: required.customerTableId,
+        ingestionIdField: process.env.FEISHU_CUSTOMER_WRITE_KEY_FIELD?.trim() || undefined,
       }),
     };
   }

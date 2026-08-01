@@ -71,6 +71,8 @@ export interface CustomerRecordWriterInput {
   ingestionId: string;
   normalizedFields: Record<string, unknown>;
   createLifecycle?: CreateRecordLifecycle;
+  /** Server-owned deterministic logical key for internal-controlled writes. */
+  internalWriteKey?: string;
 }
 
 /**
@@ -107,6 +109,8 @@ export interface CustomerRecordWriter {
 
 export interface FeishuCustomerRecordWriterOptions {
   customerTableId: string;
+  /** Schema-authoritative marker field; defaults to the existing field. */
+  ingestionIdField?: string;
 }
 
 /**
@@ -137,6 +141,7 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
   ) {}
 
   async write(input: CustomerRecordWriterInput): Promise<CustomerRecordWriterResult> {
+    const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
     // Step 1: idempotent search by Collator 摄入 ID.
     let existing;
     try {
@@ -145,7 +150,7 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
           conjunction: 'and',
           conditions: [
             {
-              field_name: COLLATOR_INGESTION_ID_FIELD,
+              field_name: ingestionIdField,
               operator: 'is',
               value: [input.ingestionId],
             },
@@ -166,7 +171,8 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
 
     // Step 2: build whitelisted field payload + create.
     const fields = this.buildFields(input.normalizedFields, input.ingestionId);
-    const operationKey = `customer-record:${this.options.customerTableId}:${input.ingestionId}`;
+    const operationKey = input.internalWriteKey
+      ?? `customer-record:${this.options.customerTableId}:${input.ingestionId}`;
     const clientToken = createStableClientToken(operationKey);
     await input.createLifecycle?.beforeCreate?.({
       entity: 'customer',
@@ -216,11 +222,12 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
   }
 
   async findByIngestionId(ingestionId: string): Promise<string[]> {
+    const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
     const records = await this.client.searchRecords(this.options.customerTableId, {
       filter: {
         conjunction: 'and',
         conditions: [{
-          field_name: COLLATOR_INGESTION_ID_FIELD,
+          field_name: ingestionIdField,
           operator: 'is',
           value: [ingestionId],
         }],
@@ -250,8 +257,9 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
     normalizedFields: Record<string, unknown>,
     ingestionId: string
   ): Record<string, unknown> {
+    const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
     const fields: Record<string, unknown> = {
-      [COLLATOR_INGESTION_ID_FIELD]: ingestionId,
+      [ingestionIdField]: ingestionId,
     };
     for (const key of CUSTOMER_FIELD_WHITELIST) {
       const value = normalizedFields[key];
@@ -288,7 +296,8 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
   private toCommitFailed(e: unknown): FeishuCommitFailedError {
     if (e instanceof FeishuApiError) {
       return new FeishuCommitFailedError(
-        `Feishu API error (code=${e.code}): ${e.message}`
+        `Feishu API error (code=${e.code}): ${e.message}`,
+        e.code < 0,
       );
     }
     // Unknown error: do not propagate message verbatim (may contain

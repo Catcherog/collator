@@ -30,7 +30,11 @@ import type {
   RunManifestRepository,
 } from '../repositories/run-manifest-repository.js';
 import type { IngestionTask } from '../domain/ingestion.js';
-import { BadRequestError, NotFoundError, ConflictError } from '../domain/errors.js';
+import {
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+} from '../domain/errors.js';
 import type { CandidateV1 } from '../../contracts/candidate-v1.js';
 import { createIdempotencyKey } from '../../contracts/candidate-v1.js';
 import type {
@@ -53,13 +57,42 @@ import type {
 import type { ScreenshotOcrEngine, OcrResult, OcrTextBlock } from './screenshot-ocr-adapter.js';
 import type { ScreenshotGovernanceClient, FullGovernanceResult } from '../governance/screenshot-governance-client.js';
 import type { GuardedWriteBatchInput } from '../business/guarded-batch-writer.js';
-import { computeWritePlan } from '../business/write-plan.js';
+import {
+  computeInternalControlledWritePlan,
+  computeWritePlan,
+  type WriteTable,
+} from '../business/write-plan.js';
+import { InternalWriteQueue, type InternalWriteExecutionContext } from '../business/internal-write-queue.js';
+import type {
+  InternalControlledWriteResult,
+  InternalWriteLog,
+  InternalWritePreview,
+  InternalWriteRepository,
+  InternalWriteResultItem,
+} from '../repositories/internal-write-repository.js';
+import {
+  isInternalControlledWriteAllowed,
+  type FeishuWriteConfig,
+  type InternalControlledWriteConfig,
+} from '../config/feishu-write-config.js';
 import { createAuditEvent, type AuditLogRepository, type AuditEventType } from '../../audit/audit-log-repository.js';
 import {
   buildServerProductionPilotPreviewDigest,
   createServerProductionPilotPreview,
   digestJson,
 } from '../config/production-pilot.js';
+import {
+  InternalWriteAlreadyInProgressError,
+  InternalWriteDisabledError,
+  InternalWriteGateBlockedError,
+  InternalWriteNeedsReconciliationError,
+  InternalWriteOperatorMismatchError,
+  InternalWritePlanMismatchError,
+  InternalWritePreviewStaleError,
+  InternalWritePreviewExpiredError,
+  InternalWriteRequiresHumanConfirmationError,
+  InternalWriteResultUnknownError,
+} from '../domain/errors.js';
 
 // ============================================================================
 // 截图状态存储类型（存储在 IngestionTask.pipeline_evidence 中）
@@ -95,7 +128,19 @@ interface ScreenshotState {
   corrections_applied?: Record<string, unknown>;
   reviewer_id?: string;
   idempotent_replay: boolean;
+  internal_controlled_write?: {
+    preview_id: string;
+    status: InternalWritePreview['status'];
+    result?: InternalControlledWriteResult;
+    transaction_snapshot_id?: string;
+  };
 }
+
+export type InternalWritePreviewRequest = { candidate_v1_id: string };
+export type InternalWriteConfirmationRequest = {
+  nonce: string;
+  candidate_v1_id: string;
+};
 
 // ============================================================================
 // 工具函数
@@ -330,6 +375,7 @@ interface BatchWriterResultView {
 interface ScreenshotBatchWriter {
   writeBatch(input: GuardedWriteBatchInput): Promise<BatchWriterResultView>;
   preflight?(input: GuardedWriteBatchInput): Promise<{ allowed: boolean; reason: string }>;
+  findByIngestionId?(entity: WriteTable, ingestionId: string): Promise<string[]>;
   recoverPendingCompensations?(hooks?: {
     onCompensationStarted?: (recordCount: number) => Promise<void>;
     onCompensationCompleted?: (status: 'completed' | 'failed', recordCount: number) => Promise<void>;
@@ -373,9 +419,19 @@ export interface ScreenshotServiceOptions {
   productionPilotManifestTtlMs?: number;
   /** Server-bound pilot run id; absent means the pilot cannot execute. */
   productionPilotRunId?: string;
+  /** Durable preview/result journal for the separately named internal lane. */
+  internalWriteRepository?: InternalWriteRepository;
+  /** Single-process internal write serializer. */
+  internalWriteQueue?: InternalWriteQueue;
+  /** Full Feishu config or the already parsed internal lane subsection. */
+  internalWriteConfig?: FeishuWriteConfig | InternalControlledWriteConfig;
+  /** Optional caller-visible timeout; the queue slot remains occupied until settlement. */
+  internalWriteTimeoutMs?: number;
 }
 
 export class ScreenshotService {
+  private readonly internalInFlight = new Set<string>();
+
   constructor(
     private readonly repository: TaskRepository,
     private readonly options: ScreenshotServiceOptions = {}
@@ -889,6 +945,353 @@ export class ScreenshotService {
     return this.toPublicProductionPilotPreview(manifest);
   }
 
+  /**
+   * Generate a server-owned internal-controlled preview.  The request only
+   * identifies the candidate; governance, table aliases, digests, nonce and
+   * expiry are all calculated on the server.
+   */
+  async createInternalWritePreview(
+    id: string,
+    req: InternalWritePreviewRequest,
+    authenticatedOperator: string,
+  ): Promise<InternalWritePreview> {
+    const internal = this.requireInternalWriteConfig();
+    if (!authenticatedOperator?.trim()) throw new BadRequestError('authenticated operator is required');
+    const repository = this.options.internalWriteRepository;
+    if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
+    const task = await this.getTaskOrThrow(id);
+    const state = extractScreenshotState(task);
+    const candidate = state.candidate_v1;
+    if (!candidate) throw new ConflictError('Candidate V1 not yet available');
+    if (candidate.candidate_id !== req.candidate_v1_id) throw new BadRequestError('candidate_v1_id mismatch');
+
+    const governance = this.options.governanceClient
+      ? await this.options.governanceClient.callPreWriteFull(candidate)
+      : state.governance_result_v1 ?? this.buildLocalGovernanceResult(task, state, 'PASS');
+    state.governance_result_v1 = governance;
+    if (governance.decision !== 'PASS') {
+      state.screenshot_status = governance.decision === 'BLOCKED'
+        ? 'governance_blocked'
+        : 'governance_needs_review';
+      await this.repository.save(withScreenshotState(task, state));
+      throw new ConflictError(`Internal controlled preview requires governance PASS, got ${governance.decision}`);
+    }
+
+    const targetTables = computeInternalControlledWritePlan(candidate, governance);
+    if (targetTables.length === 0) throw new ConflictError('Internal controlled target plan is empty');
+    const targetTableIds: Partial<Record<WriteTable, string>> = {};
+    const targetTableDigests: Partial<Record<WriteTable, string>> = {};
+    for (const table of targetTables) {
+      const tableId = this.tableIdFor(table);
+      if (!tableId) throw new ConflictError('Internal controlled target table is not configured');
+      targetTableIds[table] = tableId;
+      targetTableDigests[table] = sha256Hex(tableId);
+    }
+    const baseTokenDigest = this.options.feishuWriteContext?.targetBaseToken
+      ? sha256Hex(this.options.feishuWriteContext.targetBaseToken)
+      : undefined;
+    const candidateDigest = digestJson(candidate);
+    const governanceDigest = digestJson(governance);
+    const authoritativePlanDigest = digestJson({ targetTables, targetTableDigests, baseTokenDigest });
+    const createdAt = nowIso();
+    const expiresAt = new Date(Date.parse(createdAt) + internal.previewTtlMs).toISOString();
+    const preview = await repository.createPreview({
+      preview_id: randomUUID(),
+      nonce: randomUUID(),
+      ingestion_id: task.ingestion_id,
+      candidate_id: candidate.candidate_id,
+      candidate_digest: candidateDigest,
+      governance_digest: governanceDigest,
+      authoritative_plan_digest: authoritativePlanDigest,
+      operator: authenticatedOperator,
+      target_tables: [...targetTables],
+      target_table_digests: targetTableDigests,
+      base_token_digest: baseTokenDigest,
+      created_at: createdAt,
+      expires_at: expiresAt,
+    });
+    state.screenshot_status = 'governance_passed';
+    state.internal_controlled_write = {
+      preview_id: preview.preview_id,
+      status: preview.status,
+    };
+    await this.repository.save(withScreenshotState(task, state));
+    await this.auditRecord(task.ingestion_id, 'internal_preview_generated', 'previewed', {
+      preview_id_digest: sha256Hex(preview.preview_id),
+      target_aliases: targetTables,
+      table_digests: targetTableDigests,
+      base_digest: baseTokenDigest,
+      planned_record_count: targetTables.length,
+    });
+    return preview;
+  }
+
+  async confirmInternalWritePreview(
+    previewId: string,
+    req: InternalWriteConfirmationRequest,
+    authenticatedOperator: string,
+  ): Promise<InternalWritePreview> {
+    this.requireInternalWriteConfig();
+    if (!authenticatedOperator?.trim()) throw new BadRequestError('authenticated operator is required');
+    if (!req.nonce?.trim()) throw new BadRequestError('internal controlled write nonce is required');
+    const repository = this.options.internalWriteRepository;
+    if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
+    const existing = await repository.findPreview(previewId);
+    if (!existing) throw new ConflictError('Internal controlled write preview was not found');
+    if (Date.parse(existing.expires_at) <= Date.now()) throw new InternalWritePreviewExpiredError();
+    if (existing.candidate_id !== req.candidate_v1_id) throw new BadRequestError('candidate_v1_id mismatch');
+    if (existing.operator !== authenticatedOperator) throw new InternalWriteOperatorMismatchError();
+    let confirmed: InternalWritePreview;
+    try {
+      confirmed = await repository.confirm(previewId, authenticatedOperator, req.nonce, nowIso());
+    } catch (error) {
+      const code = (error as { message?: unknown }).message;
+      if (code === 'INTERNAL_WRITE_OPERATOR_MISMATCH') throw new InternalWriteOperatorMismatchError();
+      if (code === 'INTERNAL_WRITE_NONCE_MISMATCH') throw new ConflictError('Internal controlled write nonce does not match');
+      throw new ConflictError('Internal controlled write preview is not confirmable');
+    }
+    const task = await this.getTaskOrThrow(confirmed.ingestion_id);
+    const state = extractScreenshotState(task);
+    state.internal_controlled_write = {
+      preview_id: confirmed.preview_id,
+      status: confirmed.status,
+    };
+    await this.repository.save(withScreenshotState(task, state));
+    await this.auditRecord(task.ingestion_id, 'internal_confirmed', 'confirmed', {
+      preview_id_digest: sha256Hex(confirmed.preview_id),
+      confirmation: 'authenticated_operator',
+    });
+    return confirmed;
+  }
+
+  /** Execute only a confirmed server preview.  The returned terminal result is
+   * replayable; a result-unknown preview can be reconciled, never blindly
+   * retried through this method. */
+  async executeInternalControlledWrite(
+    previewId: string,
+    req: InternalWriteConfirmationRequest,
+    authenticatedOperator: string,
+  ): Promise<InternalControlledWriteResult> {
+    const internal = this.requireInternalWriteConfig();
+    if (this.internalInFlight.has(previewId)) throw new InternalWriteAlreadyInProgressError();
+    this.internalInFlight.add(previewId);
+    try {
+      const repository = this.options.internalWriteRepository;
+      if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
+      const preview = await repository.findPreview(previewId);
+      if (!preview) throw new ConflictError('Internal controlled write preview was not found');
+      if (Date.parse(preview.expires_at) <= Date.now()) throw new InternalWritePreviewExpiredError();
+      if (!req.nonce?.trim() || preview.nonce !== req.nonce) {
+        throw new ConflictError('Internal controlled write nonce does not match');
+      }
+      if (preview.candidate_id !== req.candidate_v1_id) throw new BadRequestError('candidate_v1_id mismatch');
+      if (preview.operator !== authenticatedOperator) throw new InternalWriteOperatorMismatchError();
+      if (preview.status === 'preview_generated') throw new InternalWriteRequiresHumanConfirmationError();
+      if (preview.status === 'executing' || preview.status === 'verifying') {
+        throw new InternalWriteAlreadyInProgressError();
+      }
+      if (preview.status === 'result_unknown' || preview.status === 'needs_reconciliation') {
+        throw new InternalWriteNeedsReconciliationError();
+      }
+      if (preview.result && ['succeeded', 'partial', 'failed'].includes(preview.status)) {
+        return preview.result;
+      }
+      if (preview.status !== 'confirmed') throw new ConflictError('Internal controlled write preview is not ready for execution');
+
+      const task = await this.getTaskOrThrow(preview.ingestion_id);
+      const state = extractScreenshotState(task);
+      const candidate = state.candidate_v1;
+      if (!candidate || candidate.candidate_id !== req.candidate_v1_id) throw new BadRequestError('candidate_v1_id mismatch');
+      const governance = state.governance_result_v1;
+      if (!governance || governance.decision !== 'PASS') throw new ConflictError('Internal controlled write requires governance PASS');
+      if (!this.options.auditLogRepository || !(await this.options.auditLogRepository.hasEventType(task.ingestion_id, 'internal_confirmed'))) {
+        throw new InternalWriteGateBlockedError();
+      }
+      const targetTables = computeInternalControlledWritePlan(candidate, governance);
+      const targetTableIds = this.targetTableIds(targetTables);
+      const candidateDigest = digestJson(candidate);
+      const governanceDigest = digestJson(governance);
+      const baseTokenDigest = this.options.feishuWriteContext?.targetBaseToken
+        ? sha256Hex(this.options.feishuWriteContext.targetBaseToken)
+        : undefined;
+      const authoritativePlanDigest = digestJson({
+        targetTables,
+        targetTableDigests: Object.fromEntries(
+          targetTables.map((table) => [table, sha256Hex(targetTableIds[table]!)])
+        ),
+        baseTokenDigest,
+      });
+      if (
+        preview.authoritative_plan_digest !== authoritativePlanDigest
+        || JSON.stringify(preview.target_tables) !== JSON.stringify(targetTables)
+      ) {
+        throw new InternalWritePlanMismatchError();
+      }
+      if (preview.candidate_digest !== candidateDigest || preview.governance_digest !== governanceDigest) {
+        throw new InternalWritePreviewStaleError();
+      }
+
+      const gate = isInternalControlledWriteAllowed(this.asFeishuWriteConfig(internal), {
+        ingestionId: task.ingestion_id,
+        governanceDecision: governance,
+        targetBaseToken: this.options.feishuWriteContext?.targetBaseToken,
+        targetTableId: targetTables[0] ? targetTableIds[targetTables[0]] : undefined,
+        targetTables,
+        targetTableIds,
+        candidateId: candidate.candidate_id,
+        requestedCandidateId: req.candidate_v1_id,
+        candidateDigest,
+        governanceDigest,
+        authoritativePlanDigest,
+        operator: authenticatedOperator,
+        humanConfirmed: true,
+        dryRun: false,
+        preview: {
+          status: 'confirmed',
+          candidateDigest: preview.candidate_digest,
+          governanceDigest: preview.governance_digest,
+          authoritativePlanDigest: preview.authoritative_plan_digest,
+          operator: preview.operator,
+        },
+      });
+      if (!gate.allowed) throw new InternalWriteGateBlockedError();
+      if (!this.options.batchWriter) throw new ConflictError('Internal controlled batch writer is unavailable');
+      if (!this.options.batchWriter.preflight) throw new ConflictError('Internal controlled preflight is unavailable');
+
+      const queue = this.options.internalWriteQueue ?? new InternalWriteQueue({ maxConcurrency: 1 });
+      try {
+        return await queue.run(
+          (executionContext) => this.runInternalControlledWrite(
+            preview,
+            task,
+            state,
+            candidate,
+            targetTables,
+            targetTableIds,
+            authenticatedOperator,
+            executionContext,
+          ),
+          this.options.internalWriteTimeoutMs ?? internal.maxExecutionMs,
+        );
+      } catch (error) {
+        if ((error as { message?: unknown }).message === 'INTERNAL_WRITE_TIMEOUT') {
+          const settled = await repository.findPreview(previewId);
+          if (settled?.result) return settled.result;
+          const timeoutTask = await this.getTaskOrThrow(preview.ingestion_id);
+          const timeoutState = extractScreenshotState(timeoutTask);
+          const timeoutResult: InternalControlledWriteResult = {
+            status: 'result_unknown',
+            write_results: this.emptyInternalResults(targetTables).map((item) => ({
+              ...item,
+              status: 'unknown',
+              error_code: 'INTERNAL_WRITE_RESULT_UNKNOWN',
+            })),
+            error_code: 'INTERNAL_WRITE_RESULT_UNKNOWN',
+            additional_create_calls: 0,
+            completed_at: nowIso(),
+          };
+          return this.completeInternalResult(
+            preview,
+            timeoutTask,
+            timeoutState,
+            timeoutResult,
+            await repository.findWriteLogs(preview.preview_id),
+            'internal_write_unknown',
+          );
+        }
+        throw error;
+      }
+    } finally {
+      this.internalInFlight.delete(previewId);
+    }
+  }
+
+  async reconcileInternalControlledWrite(
+    previewId: string,
+    authenticatedOperator: string,
+  ): Promise<InternalControlledWriteResult> {
+    const internal = this.requireInternalWriteConfig();
+    const repository = this.options.internalWriteRepository;
+    if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
+    const preview = await repository.findPreview(previewId);
+    if (!preview) throw new ConflictError('Internal controlled write preview was not found');
+    if (preview.operator !== authenticatedOperator) throw new InternalWriteOperatorMismatchError();
+    if (preview.result && preview.status === 'succeeded') return preview.result;
+    if (!['result_unknown', 'needs_reconciliation'].includes(preview.status)) {
+      throw new ConflictError('Internal controlled write is not awaiting reconciliation');
+    }
+    if (!internal.reconciliationEnabled) throw new ConflictError('Internal controlled reconciliation is disabled');
+    const writer = this.options.batchWriter;
+    if (!writer?.findByIngestionId) {
+      return this.completeInternalReconciliation(preview, {
+        status: 'needs_reconciliation',
+        write_results: preview.result?.write_results ?? this.emptyInternalResults(preview.target_tables),
+        error_code: 'INTERNAL_WRITE_RECONCILIATION_UNAVAILABLE',
+        additional_create_calls: 0,
+        reconciliation: 'unavailable',
+      }, 'internal_write_failed');
+    }
+    if (preview.target_tables.some((table) => !internal.markerFields[table])) {
+      return this.completeInternalReconciliation(preview, {
+        status: 'needs_reconciliation',
+        write_results: preview.result?.write_results ?? this.emptyInternalResults(preview.target_tables),
+        error_code: 'INTERNAL_WRITE_RECONCILIATION_MARKER_UNAVAILABLE',
+        additional_create_calls: 0,
+        reconciliation: 'unavailable',
+      }, 'internal_write_failed');
+    }
+
+    const prior = preview.result?.write_results ?? this.emptyInternalResults(preview.target_tables);
+    const results = prior.map((item) => ({ ...item }));
+    let uniqueCount = 0;
+    let noneCount = 0;
+    let multipleCount = 0;
+    for (const table of preview.target_tables) {
+      const matches = await writer.findByIngestionId(table, preview.ingestion_id);
+      const result = results.find((item) => item.entity_type === table)!;
+      if (matches.length === 1) {
+        result.business_record_id = matches[0];
+        result.created = false;
+        result.status = 'succeeded';
+        result.error_code = undefined;
+        await repository.updateWriteLog(preview.preview_id, table, {
+          business_record_id: matches[0],
+          status: 'reconciled',
+          resolved_at: nowIso(),
+        }).catch(() => undefined);
+        uniqueCount += 1;
+      } else if (matches.length === 0) {
+        result.status = 'unknown';
+        noneCount += 1;
+      } else {
+        result.status = 'unknown';
+        result.error_code = 'DUPLICATE_CANDIDATES_FOUND';
+        multipleCount += 1;
+      }
+    }
+    if (uniqueCount === preview.target_tables.length) {
+      return this.completeInternalReconciliation(preview, {
+        status: 'succeeded',
+        write_results: results,
+        additional_create_calls: 0,
+        reconciliation: 'unique',
+        completed_at: nowIso(),
+      }, 'internal_write_reconciled');
+    }
+    const errorCode = multipleCount > 0
+      ? 'DUPLICATE_CANDIDATES_FOUND'
+      : noneCount > 0
+        ? 'INTERNAL_WRITE_RECONCILIATION_NOT_FOUND'
+        : 'INTERNAL_WRITE_RECONCILIATION_UNAVAILABLE';
+    return this.completeInternalReconciliation(preview, {
+      status: 'needs_reconciliation',
+      write_results: results,
+      error_code: errorCode,
+      additional_create_calls: 0,
+      reconciliation: multipleCount > 0 ? 'multiple' : 'none',
+    }, 'internal_write_failed');
+  }
+
   async confirmWrite(
     id: string,
     req: ConfirmWriteRequest,
@@ -1164,7 +1567,13 @@ export class ScreenshotService {
         ingestion_id: task.ingestion_id,
         target_table_id: r.target_table_id,
         business_record_id: r.business_record_id,
-        status: r.status,
+        status: r.status === 'succeeded'
+          ? 'succeeded'
+          : r.status === 'failed'
+            ? 'failed'
+            : r.status === 'rolled_back'
+              ? 'rolled_back'
+              : 'not_attempted',
         error_code: r.error_code,
         created_at: task.updated_at,
       }));
@@ -1568,6 +1977,301 @@ export class ScreenshotService {
       write_results: writeResults,
       error_code: errorCode,
     };
+  }
+
+  private getInternalWriteConfig(): InternalControlledWriteConfig | undefined {
+    const configured = this.options.internalWriteConfig;
+    if (!configured) return undefined;
+    if ('taskRepository' in configured) return configured.internalControlledWrite;
+    return configured;
+  }
+
+  private requireInternalWriteConfig(): InternalControlledWriteConfig {
+    const configured = this.getInternalWriteConfig();
+    if (!configured?.enabled) {
+      throw new InternalWriteDisabledError();
+    }
+    return configured;
+  }
+
+  private asFeishuWriteConfig(internal: InternalControlledWriteConfig): FeishuWriteConfig {
+    const configured = this.options.internalWriteConfig;
+    if (configured && 'internalControlledWrite' in configured) return configured;
+    return {
+      taskRepository: 'feishu',
+      dryRun: false,
+      enableRealFeishuWrite: true,
+      feishuWriteEnv: 'internal-controlled',
+      writeMode: 'internal-controlled',
+      testWhitelist: { tableIds: [] },
+      internalControlledWrite: internal,
+    };
+  }
+
+  private targetTableIds(targetTables: readonly WriteTable[]): Partial<Record<WriteTable, string>> {
+    const targetTableIds: Partial<Record<WriteTable, string>> = {};
+    for (const table of targetTables) {
+      const tableId = this.tableIdFor(table);
+      if (!tableId) throw new ConflictError('Internal controlled target table is not configured');
+      targetTableIds[table] = tableId;
+    }
+    return targetTableIds;
+  }
+
+  private emptyInternalResults(targetTables: readonly WriteTable[]): InternalWriteResultItem[] {
+    return targetTables.map((table) => ({
+      entity_type: table,
+      // Internal result payloads expose aliases only. Raw table IDs remain
+      // in the server-side allowlist/digest boundary, never in logs/errors.
+      target_table_id: table,
+      business_record_id: null,
+      created: false,
+      status: 'not_attempted',
+    }));
+  }
+
+  private async runInternalControlledWrite(
+    preview: InternalWritePreview,
+    task: IngestionTask,
+    state: ScreenshotState,
+    candidate: CandidateV1,
+    targetTables: WriteTable[],
+    targetTableIds: Partial<Record<WriteTable, string>>,
+    operator: string,
+    executionContext: InternalWriteExecutionContext,
+  ): Promise<InternalControlledWriteResult> {
+    const repository = this.options.internalWriteRepository!;
+    const writer = this.options.batchWriter!;
+    const startedAt = nowIso();
+    await repository.markExecuting(preview.preview_id, startedAt);
+    state.internal_controlled_write = {
+      preview_id: preview.preview_id,
+      status: 'executing',
+    };
+    await this.repository.save(withScreenshotState(task, state));
+    const logs: InternalWriteLog[] = [];
+    for (const table of targetTables) {
+      logs.push(await repository.appendWriteLog({
+        ingestion_id: task.ingestion_id,
+        preview_id: preview.preview_id,
+        entity_type: table,
+        logical_write_key: sha256Hex(`${preview.preview_id}:${task.ingestion_id}:${table}`),
+        target_table_id_digest: preview.target_table_digests[table] ?? sha256Hex(targetTableIds[table] ?? ''),
+        business_record_id: null,
+        request_started_at: startedAt,
+        operator,
+        status: 'intent',
+      }));
+    }
+    await this.auditRecord(task.ingestion_id, 'internal_write_started', 'committing', {
+      preview_id_digest: sha256Hex(preview.preview_id),
+      target_aliases: targetTables,
+      table_digests: preview.target_table_digests,
+    });
+
+    const ctx = this.options.feishuWriteContext;
+    const input: GuardedWriteBatchInput = {
+      ingestionId: task.ingestion_id,
+      normalizedFields: candidate.normalized_fields as Record<string, unknown>,
+      targetTables: [...targetTables],
+      dryRun: false,
+      governanceDecision: { decision: 'PASS' },
+      candidateId: candidate.candidate_id,
+      requestedCandidateId: candidate.candidate_id,
+      operator,
+      targetBaseToken: ctx?.targetBaseToken,
+      customerTableId: ctx?.customerTableId,
+      projectTableId: ctx?.projectTableId,
+      modelTableId: ctx?.modelTableId,
+      internalControlledWrite: true,
+      internalPreviewId: preview.preview_id,
+      candidateDigest: preview.candidate_digest,
+      governanceDigest: preview.governance_digest,
+      authoritativePlanDigest: preview.authoritative_plan_digest,
+      humanConfirmed: true,
+      internalPreview: preview,
+      compensationPolicy: 'manual',
+      verifyAfterWrite: true,
+      enforceProjectRelationContext: true,
+      requireDurableWriteLogs: true,
+    };
+    const preflight = writer.preflight;
+    if (!preflight) throw new ConflictError('Internal controlled preflight is unavailable');
+    const preflightResult = await preflight.call(writer, input);
+    if (!preflightResult.allowed) {
+      const result: InternalControlledWriteResult = {
+        status: 'failed',
+        write_results: this.emptyInternalResults(targetTables).map((item) => ({
+          ...item,
+          error_code: 'INTERNAL_WRITE_GATE_BLOCKED',
+        })),
+        error_code: 'INTERNAL_WRITE_GATE_BLOCKED',
+        additional_create_calls: 0,
+        completed_at: nowIso(),
+      };
+      return this.completeInternalResult(preview, task, state, result, logs, 'internal_write_failed');
+    }
+
+    let batchResult: BatchWriterResultView;
+    try {
+      batchResult = await writer.writeBatch(input);
+      if (executionContext.isTimedOut()) {
+        const result: InternalControlledWriteResult = {
+          status: 'result_unknown',
+          write_results: batchResult.write_results.map((item) => ({
+            entity_type: item.entity_type,
+            target_table_id: item.entity_type,
+            business_record_id: item.business_record_id,
+            created: item.created,
+            status: 'unknown',
+            error_code: 'INTERNAL_WRITE_RESULT_UNKNOWN',
+            write_log_id: item.write_log_id,
+          })),
+          transaction_snapshot_id: batchResult.transaction_snapshot_id,
+          error_code: 'INTERNAL_WRITE_RESULT_UNKNOWN',
+          additional_create_calls: 0,
+          completed_at: nowIso(),
+        };
+        return this.completeInternalResult(preview, task, state, result, logs, 'internal_write_unknown');
+      }
+    } catch (error) {
+      if (executionContext.isTimedOut() || this.isUnknownInternalError(error)) {
+        const result: InternalControlledWriteResult = {
+          status: 'result_unknown',
+          write_results: this.emptyInternalResults(targetTables).map((item) => ({
+            ...item,
+            status: 'unknown',
+            error_code: 'INTERNAL_WRITE_RESULT_UNKNOWN',
+          })),
+          error_code: 'INTERNAL_WRITE_RESULT_UNKNOWN',
+          additional_create_calls: 0,
+          completed_at: nowIso(),
+        };
+        return this.completeInternalResult(preview, task, state, result, logs, 'internal_write_unknown');
+      }
+      const result: InternalControlledWriteResult = {
+        status: 'failed',
+        write_results: this.emptyInternalResults(targetTables).map((item) => ({
+          ...item,
+          status: 'failed',
+          error_code: 'INTERNAL_WRITE_FAILED',
+        })),
+        error_code: 'INTERNAL_WRITE_FAILED',
+        additional_create_calls: 0,
+        completed_at: nowIso(),
+      };
+      return this.completeInternalResult(preview, task, state, result, logs, 'internal_write_failed');
+    }
+
+    const writeResults: InternalWriteResultItem[] = batchResult.write_results.map((item) => ({
+      entity_type: item.entity_type,
+      target_table_id: item.entity_type,
+      business_record_id: item.business_record_id,
+      created: item.created,
+      status: item.status === 'succeeded' ? 'succeeded' : item.status === 'failed' ? 'failed' : 'not_attempted',
+      error_code: item.error_code,
+      write_log_id: item.write_log_id,
+    }));
+    const hasFailure = writeResults.some((item) => item.status === 'failed');
+    const isPartial = batchResult.status === 'partial' || hasFailure;
+    const result: InternalControlledWriteResult = {
+      status: isPartial ? 'partial' : batchResult.status === 'committed' ? 'succeeded' : 'failed',
+      write_results: writeResults,
+      transaction_snapshot_id: batchResult.transaction_snapshot_id,
+      error_code: isPartial ? 'INTERNAL_WRITE_PARTIAL' : batchResult.error_code,
+      additional_create_calls: 0,
+      completed_at: nowIso(),
+    };
+    return this.completeInternalResult(
+      preview,
+      task,
+      state,
+      result,
+      logs,
+      result.status === 'succeeded' ? 'internal_write_succeeded' : 'internal_write_partial',
+    );
+  }
+
+  private isUnknownInternalError(error: unknown): boolean {
+    return error instanceof InternalWriteResultUnknownError
+      || (error as { code?: unknown }).code === 'INTERNAL_WRITE_RESULT_UNKNOWN'
+      || (error as { resultUnknown?: unknown }).resultUnknown === true;
+  }
+
+  private async completeInternalResult(
+    preview: InternalWritePreview,
+    task: IngestionTask,
+    state: ScreenshotState,
+    result: InternalControlledWriteResult,
+    logs: InternalWriteLog[],
+    auditType: AuditEventType,
+  ): Promise<InternalControlledWriteResult> {
+    const repository = this.options.internalWriteRepository!;
+    for (const item of result.write_results) {
+      const log = logs.find((candidate) => candidate.entity_type === item.entity_type);
+      if (!log) continue;
+      await repository.updateWriteLog(preview.preview_id, item.entity_type, {
+        business_record_id: item.business_record_id,
+        status: result.reconciliation === 'unique' && item.status === 'succeeded'
+          ? 'reconciled'
+          : item.status === 'succeeded'
+            ? 'succeeded'
+          : result.status === 'result_unknown'
+            ? 'unknown'
+            : item.status === 'failed' ? 'failed' : 'not_attempted',
+        error_code: item.error_code ?? result.error_code,
+        resolved_at: result.status === 'succeeded' ? nowIso() : undefined,
+        request_completed_at: result.completed_at ?? nowIso(),
+      }).catch(() => undefined);
+    }
+    await repository.complete(preview.preview_id, result, preview.operator, result.completed_at ?? nowIso());
+    state.internal_controlled_write = {
+      preview_id: preview.preview_id,
+      status: result.status,
+      result,
+      transaction_snapshot_id: result.transaction_snapshot_id,
+    };
+    state.write_results = result.write_results.map((item) => ({
+      entity_type: item.entity_type,
+      target_table_id: item.target_table_id,
+      business_record_id: item.business_record_id,
+      created: item.created,
+      status: item.status === 'succeeded'
+        ? 'succeeded'
+        : item.status === 'failed' ? 'failed' : 'not_attempted',
+      error_code: item.error_code,
+      write_log_id: item.write_log_id,
+    }));
+    if (result.status === 'succeeded') {
+      state.screenshot_status = 'write_succeeded';
+    } else {
+      state.screenshot_status = 'write_failed';
+    }
+    if (result.transaction_snapshot_id) {
+      state.transaction_snapshot = {
+        snapshot_id: result.transaction_snapshot_id,
+        status: result.status === 'succeeded' ? 'committed' : 'partial',
+        records_created: result.write_results.filter((item) => item.created).length,
+        records_rolled_back: 0,
+      };
+    }
+    await this.repository.save(withScreenshotState(task, state));
+    await this.auditRecord(task.ingestion_id, auditType, result.status, {
+      preview_id_digest: sha256Hex(preview.preview_id),
+      error_code: result.error_code,
+      record_count: result.write_results.filter((item) => item.business_record_id).length,
+    });
+    return result;
+  }
+
+  private async completeInternalReconciliation(
+    preview: InternalWritePreview,
+    result: InternalControlledWriteResult,
+    auditType: AuditEventType,
+  ): Promise<InternalControlledWriteResult> {
+    const task = await this.getTaskOrThrow(preview.ingestion_id);
+    const state = extractScreenshotState(task);
+    return this.completeInternalResult(preview, task, state, result, await this.options.internalWriteRepository!.findWriteLogs(preview.preview_id), auditType);
   }
 
   private tableIdFor(table: 'customer' | 'project' | 'model'): string | undefined {

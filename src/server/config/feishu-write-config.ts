@@ -29,11 +29,12 @@ import { sha256Hex } from './production-pilot.js';
  *
  * `production` is defined for type completeness but is NOT enabled by this
  * batch — `isRealWriteAllowed` only returns `allowed: true` when
- * `feishuWriteEnv === 'test'`.
+ * `feishuWriteEnv === 'test'`; the internal-controlled lane has its own
+ * independent gate below.
  */
-export type FeishuWriteEnv = 'test' | 'production-pilot' | 'production';
+export type FeishuWriteEnv = 'test' | 'internal-controlled' | 'production-pilot' | 'production';
 
-export type FeishuWriteMode = 'test' | 'production-pilot' | 'blocked';
+export type FeishuWriteMode = 'test' | 'internal-controlled' | 'production-pilot' | 'blocked';
 
 export interface FeishuTargetWhitelist {
   baseAppToken?: string;
@@ -47,6 +48,24 @@ export interface ProductionPilotConfig {
   pilotRunId?: string;
   /** Notifications stay off for the first controlled pilot. */
   notificationsEnabled: boolean;
+}
+
+/**
+ * The deliberately narrow internal write lane.  This is not a production
+ * pilot flag: it is a separately named, operator-confirmed, best-effort
+ * single-instance mode whose default is disabled.
+ */
+export interface InternalControlledWriteConfig {
+  enabled: boolean;
+  maxConcurrency: 1;
+  requireHumanConfirmation: boolean;
+  autoRetryCreate: false;
+  reconciliationEnabled: boolean;
+  notificationsEnabled: boolean;
+  maxExecutionMs: number;
+  previewTtlMs: number;
+  whitelist: FeishuTargetWhitelist;
+  markerFields: Partial<Record<WriteTable, string>>;
 }
 
 /** Runtime readiness of the three durable production-pilot boundaries. */
@@ -90,6 +109,8 @@ export interface FeishuWriteConfig {
   productionPilotWhitelist?: FeishuTargetWhitelist;
   /** Fail-closed pilot controls. */
   productionPilot?: ProductionPilotConfig;
+  /** Separate internal-controlled lane; omitted only for legacy hand-built fixtures. */
+  internalControlledWrite?: InternalControlledWriteConfig;
 }
 
 /**
@@ -131,6 +152,18 @@ function parseNonNegativeInteger(value: string | undefined, defaultValue: number
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : defaultValue;
 }
 
+function parsePositiveInteger(value: string | undefined, defaultValue: number): number {
+  const parsed = parseNonNegativeInteger(value, defaultValue);
+  return parsed > 0 ? parsed : defaultValue;
+}
+
+function parseCsv(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
 /**
  * Load the double-layer gate config from an environment map (defaults to
  * `process.env`).
@@ -139,7 +172,7 @@ function parseNonNegativeInteger(value: string | undefined, defaultValue: number
  * - `TASK_REPOSITORY`             → `taskRepository` (`'feishu'` only; else `'memory'`)
  * - `DRY_RUN`                     → `dryRun` (parsed via `parseBooleanEnv`)
  * - `ENABLE_REAL_FEISHU_WRITE`    → `enableRealFeishuWrite` (default `false`)
- * - `FEISHU_WRITE_ENV`            → `feishuWriteEnv` (`'test'` | `'production-pilot'` | `'production'`; else `undefined`)
+ * - `FEISHU_WRITE_ENV`            → `feishuWriteEnv` (`'test'` | `'internal-controlled'` | `'production-pilot'` | `'production'`; else `undefined`)
  * - `FEISHU_TEST_BASE_APP_TOKEN`  → `testWhitelist.baseAppToken`
  * - `FEISHU_TEST_TABLE_IDS`       → `testWhitelist.tableIds` (comma-separated)
  * - `FEISHU_PRODUCTION_PILOT_BASE_APP_TOKEN` / `_TABLE_IDS` → separate pilot whitelist
@@ -164,14 +197,22 @@ export function loadFeishuWriteConfig(
   const feishuWriteEnv: FeishuWriteEnv | undefined =
     rawEnv === 'test'
       ? 'test'
-      : rawEnv === 'production-pilot'
-        ? 'production-pilot'
-        : rawEnv === 'production'
-          ? 'production'
-          : undefined;
+      : rawEnv === 'internal-controlled'
+        ? 'internal-controlled'
+        : rawEnv === 'production-pilot'
+          ? 'production-pilot'
+          : rawEnv === 'production'
+            ? 'production'
+            : undefined;
 
   const writeMode: FeishuWriteMode =
-    rawEnv === 'test' ? 'test' : rawEnv === 'production-pilot' ? 'production-pilot' : 'blocked';
+    rawEnv === 'test'
+      ? 'test'
+      : rawEnv === 'internal-controlled'
+        ? 'internal-controlled'
+        : rawEnv === 'production-pilot'
+          ? 'production-pilot'
+          : 'blocked';
 
   const baseAppTokenRaw = env.FEISHU_TEST_BASE_APP_TOKEN?.trim();
   const baseAppToken = baseAppTokenRaw && baseAppTokenRaw.length > 0 ? baseAppTokenRaw : undefined;
@@ -191,6 +232,41 @@ export function loadFeishuWriteConfig(
     .filter((id) => id.length > 0);
   const pilotRunIdRaw = env.PRODUCTION_PILOT_RUN_ID?.trim();
   const pilotRunId = pilotRunIdRaw && pilotRunIdRaw.length > 0 ? pilotRunIdRaw : undefined;
+
+  const rawInternalMaxConcurrency = env.INTERNAL_WRITE_MAX_CONCURRENCY?.trim();
+  const internalMaxConcurrency = rawInternalMaxConcurrency === undefined || rawInternalMaxConcurrency === ''
+    ? 1
+    : Number(rawInternalMaxConcurrency);
+  if (!Number.isInteger(internalMaxConcurrency) || internalMaxConcurrency !== 1) {
+    throw new Error('INTERNAL_WRITE_MAX_CONCURRENCY must be 1');
+  }
+  const internalAutoRetryCreate = parseBooleanEnv(env.INTERNAL_WRITE_AUTO_RETRY_CREATE, false);
+  if (internalAutoRetryCreate) {
+    throw new Error('INTERNAL_WRITE_AUTO_RETRY_CREATE must be false');
+  }
+  const internalEnabled = parseBooleanEnv(env.ENABLE_INTERNAL_CONTROLLED_WRITE, false);
+  const internalRequiresConfirmation = parseBooleanEnv(
+    env.INTERNAL_WRITE_REQUIRE_HUMAN_CONFIRMATION,
+    true,
+  );
+  if (internalEnabled && !internalRequiresConfirmation) {
+    throw new Error('INTERNAL_WRITE_REQUIRE_HUMAN_CONFIRMATION must be true');
+  }
+  const internalBaseAppTokenRaw = env.FEISHU_INTERNAL_CONTROLLED_BASE_APP_TOKEN?.trim();
+  const internalBaseAppToken = internalBaseAppTokenRaw && internalBaseAppTokenRaw.length > 0
+    ? internalBaseAppTokenRaw
+    : undefined;
+  const internalTableIds = parseCsv(env.FEISHU_INTERNAL_CONTROLLED_TABLE_IDS);
+  const markerFields: Partial<Record<WriteTable, string>> = {};
+  const markerFieldEnv: Array<[WriteTable, string | undefined]> = [
+    ['customer', env.FEISHU_CUSTOMER_WRITE_KEY_FIELD],
+    ['project', env.FEISHU_PROJECT_WRITE_KEY_FIELD],
+    ['model', env.FEISHU_MODEL_WRITE_KEY_FIELD],
+  ];
+  for (const [table, value] of markerFieldEnv) {
+    const marker = value?.trim();
+    if (marker) markerFields[table] = marker;
+  }
 
   return {
     taskRepository,
@@ -214,6 +290,27 @@ export function loadFeishuWriteConfig(
         env.ENABLE_PRODUCTION_PILOT_NOTIFICATIONS,
         false
       ),
+    },
+    internalControlledWrite: {
+      enabled: internalEnabled,
+      maxConcurrency: 1,
+      requireHumanConfirmation: internalRequiresConfirmation,
+      autoRetryCreate: false,
+      reconciliationEnabled: parseBooleanEnv(
+        env.INTERNAL_WRITE_RECONCILIATION_ENABLED,
+        true,
+      ),
+      notificationsEnabled: parseBooleanEnv(
+        env.INTERNAL_WRITE_NOTIFICATIONS_ENABLED,
+        false,
+      ),
+      maxExecutionMs: parsePositiveInteger(env.INTERNAL_WRITE_TIMEOUT_MS, 120_000),
+      previewTtlMs: parsePositiveInteger(env.INTERNAL_WRITE_PREVIEW_TTL_MS, 15 * 60 * 1000),
+      whitelist: {
+        baseAppToken: internalBaseAppToken,
+        tableIds: internalTableIds,
+      },
+      markerFields,
     },
   };
 }
@@ -477,4 +574,108 @@ export function isProductionPilotWriteAllowed(
     allowed: true,
     reason: 'Production pilot conditions satisfied; controlled write may proceed.',
   };
+}
+
+export interface InternalControlledWritePreviewBinding {
+  status: 'confirmed' | 'executing' | 'verifying';
+  candidateDigest: string;
+  governanceDigest: string;
+  authoritativePlanDigest: string;
+  operator: string;
+}
+
+export interface InternalControlledWriteGateInput {
+  ingestionId?: string;
+  governanceDecision: GovernanceDecisionInput;
+  targetBaseToken?: string;
+  targetTableId?: string;
+  targetTables: readonly WriteTable[];
+  targetTableIds: Partial<Record<WriteTable, string | undefined>>;
+  candidateId?: string;
+  requestedCandidateId?: string;
+  candidateDigest?: string;
+  governanceDigest?: string;
+  authoritativePlanDigest?: string;
+  operator?: string;
+  humanConfirmed?: boolean;
+  dryRun?: boolean;
+  preview?: InternalControlledWritePreviewBinding;
+}
+
+/**
+ * Fail-closed gate for the internal-controlled lane.  Every value returned
+ * in `reason` is static so blocked diagnostics cannot disclose table tokens,
+ * record IDs, candidate content, or operator input.
+ */
+export function isInternalControlledWriteAllowed(
+  config: FeishuWriteConfig,
+  input: InternalControlledWriteGateInput,
+): RealWriteGateResult {
+  const internal = config.internalControlledWrite;
+  if (!internal?.enabled || config.writeMode !== 'internal-controlled' || config.feishuWriteEnv !== 'internal-controlled') {
+    return { allowed: false, reason: 'Internal controlled write blocked: lane is disabled or mode is not internal-controlled.' };
+  }
+  if (config.taskRepository !== 'feishu') {
+    return { allowed: false, reason: 'Internal controlled write blocked: TASK_REPOSITORY is not feishu.' };
+  }
+  if (config.dryRun || input.dryRun) {
+    return { allowed: false, reason: 'Internal controlled write blocked: DRY_RUN is enabled.' };
+  }
+  if (!config.enableRealFeishuWrite) {
+    return { allowed: false, reason: 'Internal controlled write blocked: real Feishu writes are disabled.' };
+  }
+  if (internal.maxConcurrency !== 1 || internal.autoRetryCreate) {
+    return { allowed: false, reason: 'Internal controlled write blocked: unsafe concurrency or retry policy is configured.' };
+  }
+  if (internal.notificationsEnabled) {
+    return { allowed: false, reason: 'Internal controlled write blocked: notifications must remain disabled.' };
+  }
+  if (!internal.requireHumanConfirmation || !input.humanConfirmed) {
+    return { allowed: false, reason: 'Internal controlled write blocked: authenticated human confirmation is required.' };
+  }
+  if (!input.operator?.trim()) {
+    return { allowed: false, reason: 'Internal controlled write blocked: authenticated operator is missing.' };
+  }
+  if (input.preview?.operator !== input.operator) {
+    return { allowed: false, reason: 'Internal controlled write blocked: operator binding does not match the server preview.' };
+  }
+  if (input.candidateId !== input.requestedCandidateId) {
+    return { allowed: false, reason: 'Internal controlled write blocked: candidate binding does not match.' };
+  }
+  if (!input.preview || input.preview.status !== 'confirmed' && input.preview.status !== 'executing' && input.preview.status !== 'verifying') {
+    return { allowed: false, reason: 'Internal controlled write blocked: server preview is not confirmed.' };
+  }
+  if (
+    !input.candidateDigest
+    || !input.governanceDigest
+    || !input.authoritativePlanDigest
+    || input.preview.candidateDigest !== input.candidateDigest
+    || input.preview.governanceDigest !== input.governanceDigest
+    || input.preview.authoritativePlanDigest !== input.authoritativePlanDigest
+  ) {
+    return { allowed: false, reason: 'Internal controlled write blocked: authoritative preview bindings are stale.' };
+  }
+  if (normalizeDecision(input.governanceDecision) !== 'PASS') {
+    return { allowed: false, reason: 'Internal controlled write blocked: SOP decision is not PASS.' };
+  }
+  if (input.targetTables.length === 0 || new Set(input.targetTables).size !== input.targetTables.length) {
+    return { allowed: false, reason: 'Internal controlled write blocked: authoritative plan is empty or duplicated.' };
+  }
+  const whitelist = internal.whitelist;
+  if (!whitelist.baseAppToken || whitelist.tableIds.length === 0) {
+    return { allowed: false, reason: 'Internal controlled write blocked: internal Base/table allowlist is incomplete.' };
+  }
+  if (input.targetBaseToken !== whitelist.baseAppToken) {
+    return { allowed: false, reason: 'Internal controlled write blocked: target Base is not allow-listed.' };
+  }
+  for (const table of input.targetTables) {
+    const tableId = input.targetTableIds[table];
+    if (!tableId || !whitelist.tableIds.includes(tableId)) {
+      return { allowed: false, reason: 'Internal controlled write blocked: target table is not allow-listed.' };
+    }
+  }
+  if (!input.targetTableId || !whitelist.tableIds.includes(input.targetTableId)) {
+    return { allowed: false, reason: 'Internal controlled write blocked: target table is not allow-listed.' };
+  }
+  return { allowed: true, reason: 'Internal controlled write conditions satisfied.' };
 }

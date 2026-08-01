@@ -59,6 +59,8 @@ export interface ProjectRecordWriterInput {
   ingestionId: string;
   normalizedFields: Record<string, unknown>;
   createLifecycle?: CreateRecordLifecycle;
+  /** Server-owned deterministic logical key for internal-controlled writes. */
+  internalWriteKey?: string;
 }
 
 /**
@@ -76,6 +78,8 @@ export interface ProjectRecordWriter {
 
 export interface FeishuProjectRecordWriterOptions {
   projectTableId: string;
+  /** Schema-authoritative marker field; defaults to the existing field. */
+  ingestionIdField?: string;
 }
 
 /**
@@ -93,6 +97,7 @@ export class FeishuProjectRecordWriter implements ProjectRecordWriter {
   ) {}
 
   async write(input: ProjectRecordWriterInput): Promise<ProjectRecordWriterResult> {
+    const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
     let existing;
     try {
       existing = await this.client.searchRecords(this.options.projectTableId, {
@@ -100,7 +105,7 @@ export class FeishuProjectRecordWriter implements ProjectRecordWriter {
           conjunction: 'and',
           conditions: [
             {
-              field_name: COLLATOR_INGESTION_ID_FIELD,
+              field_name: ingestionIdField,
               operator: 'is',
               value: [input.ingestionId],
             },
@@ -120,7 +125,8 @@ export class FeishuProjectRecordWriter implements ProjectRecordWriter {
     }
 
     const fields = this.buildFields(input.normalizedFields, input.ingestionId);
-    const operationKey = `project-record:${this.options.projectTableId}:${input.ingestionId}`;
+    const operationKey = input.internalWriteKey
+      ?? `project-record:${this.options.projectTableId}:${input.ingestionId}`;
     const clientToken = createStableClientToken(operationKey);
     await input.createLifecycle?.beforeCreate?.({
       entity: 'project',
@@ -163,11 +169,12 @@ export class FeishuProjectRecordWriter implements ProjectRecordWriter {
   }
 
   async findByIngestionId(ingestionId: string): Promise<string[]> {
+    const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
     const records = await this.client.searchRecords(this.options.projectTableId, {
       filter: {
         conjunction: 'and',
         conditions: [{
-          field_name: COLLATOR_INGESTION_ID_FIELD,
+          field_name: ingestionIdField,
           operator: 'is',
           value: [ingestionId],
         }],
@@ -186,8 +193,9 @@ export class FeishuProjectRecordWriter implements ProjectRecordWriter {
     normalizedFields: Record<string, unknown>,
     ingestionId: string
   ): Record<string, unknown> {
+    const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
     const fields: Record<string, unknown> = {
-      [COLLATOR_INGESTION_ID_FIELD]: ingestionId,
+      [ingestionIdField]: ingestionId,
     };
     for (const key of PROJECT_FIELD_WHITELIST) {
       const value = normalizedFields[key];
@@ -211,7 +219,8 @@ export class FeishuProjectRecordWriter implements ProjectRecordWriter {
   private toCommitFailed(e: unknown): FeishuCommitFailedError {
     if (e instanceof FeishuApiError) {
       return new FeishuCommitFailedError(
-        `Feishu API error (code=${e.code}): ${e.message}`
+        `Feishu API error (code=${e.code}): ${e.message}`,
+        e.code < 0,
       );
     }
     return new FeishuCommitFailedError(

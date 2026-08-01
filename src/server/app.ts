@@ -29,6 +29,8 @@ import {
   type RunManifestRepository,
 } from './repositories/run-manifest-repository.js';
 import type { CustomerRecordWriter } from './business/customer-record-writer.js';
+import { InternalWriteQueue } from './business/internal-write-queue.js';
+import { FileInternalWriteRepository } from './repositories/internal-write-repository.js';
 import type { PreWriteClient } from './governance/pre-write-client.js';
 import {
   SopPreWriteClient,
@@ -165,6 +167,7 @@ export async function buildApp(options?: BuildAppOptions) {
 
   // 主线 A1: 截图纵向闭环 — 装配 ScreenshotService
   const screenshotServiceOptions: ScreenshotServiceOptions = options?.screenshotServiceOptions ?? {};
+  const feishuWriteConfig = loadFeishuWriteConfig();
   if (!runManifestRepository && screenshotServiceOptions.runManifestRepository) {
     runManifestRepository = screenshotServiceOptions.runManifestRepository;
   }
@@ -173,21 +176,49 @@ export async function buildApp(options?: BuildAppOptions) {
       process.env.PRODUCTION_PILOT_MANIFEST_FILE ?? 'data/production-pilot-manifests.json'
     );
   }
+  if (
+    feishuWriteConfig.writeMode === 'internal-controlled'
+    && !screenshotServiceOptions.internalWriteRepository
+  ) {
+    screenshotServiceOptions.internalWriteRepository = new FileInternalWriteRepository(
+      process.env.INTERNAL_WRITE_REPOSITORY_FILE ?? 'data/internal-controlled-writes.json',
+    );
+  }
+  if (
+    feishuWriteConfig.writeMode === 'internal-controlled'
+    && !screenshotServiceOptions.internalWriteQueue
+  ) {
+    screenshotServiceOptions.internalWriteQueue = new InternalWriteQueue({
+      maxConcurrency: feishuWriteConfig.internalControlledWrite?.maxConcurrency ?? 1,
+      timeoutMs: feishuWriteConfig.internalControlledWrite?.maxExecutionMs,
+    });
+  }
   screenshotServiceOptions.writeLogRepository =
     screenshotServiceOptions.writeLogRepository ?? writeLogRepository;
   screenshotServiceOptions.auditLogRepository =
     screenshotServiceOptions.auditLogRepository ?? auditLogRepository;
   screenshotServiceOptions.runManifestRepository =
     screenshotServiceOptions.runManifestRepository ?? runManifestRepository;
-  const feishuWriteConfig = loadFeishuWriteConfig();
+  if (feishuWriteConfig.writeMode === 'internal-controlled') {
+    screenshotServiceOptions.internalWriteConfig =
+      screenshotServiceOptions.internalWriteConfig ?? feishuWriteConfig;
+  }
   const authenticatedOperatorResolver: AuthenticatedOperatorResolver | undefined =
     options?.authenticatedOperatorResolver
     ?? (process.env.PRODUCTION_PILOT_JWT_SECRET?.trim()
       ? createHmacJwtOperatorResolver(process.env.PRODUCTION_PILOT_JWT_SECRET.trim())
       : undefined);
-  if (feishuWriteConfig.writeMode === 'production-pilot' && !authenticatedOperatorResolver) {
+  const internalWriteActive =
+    feishuWriteConfig.writeMode === 'internal-controlled'
+    && feishuWriteConfig.internalControlledWrite?.enabled === true;
+  if (
+    (feishuWriteConfig.writeMode === 'production-pilot' || internalWriteActive)
+    && !authenticatedOperatorResolver
+  ) {
     throw new Error(
-      'Production pilot startup blocked: verified operator principal resolver is unavailable.',
+      feishuWriteConfig.writeMode === 'production-pilot'
+        ? 'Production pilot startup blocked: verified operator principal resolver is unavailable.'
+        : 'Internal controlled write startup blocked: verified operator principal resolver is unavailable.',
     );
   }
   screenshotServiceOptions.productionPilotRunId =
@@ -214,9 +245,15 @@ export async function buildApp(options?: BuildAppOptions) {
       });
       const projectWriter = new FeishuProjectRecordWriter(feishuClient, {
         projectTableId: config.feishuProjectTableId,
+        ingestionIdField: feishuWriteConfig.internalControlledWrite?.markerFields.project
+          ?? process.env.FEISHU_PROJECT_WRITE_KEY_FIELD?.trim()
+          ?? undefined,
       });
       const modelWriter = new FeishuModelRecordWriter(feishuClient, {
         modelTableId: config.feishuModelTableId,
+        ingestionIdField: feishuWriteConfig.internalControlledWrite?.markerFields.model
+          ?? process.env.FEISHU_MODEL_WRITE_KEY_FIELD?.trim()
+          ?? undefined,
       });
       const innerWriter = new TransactionalBatchWriter(
         customerRecordWriter,
@@ -302,7 +339,9 @@ export async function buildApp(options?: BuildAppOptions) {
   await app.register(async (instance) => {
     await screenshotRoutes(instance, screenshotService, {
       authenticatedOperatorResolver,
-      requireVerifiedOperator: feishuWriteConfig.writeMode === 'production-pilot',
+      requireVerifiedOperator:
+        feishuWriteConfig.writeMode === 'production-pilot'
+        || internalWriteActive,
     });
   });
 
