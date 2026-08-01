@@ -22,7 +22,11 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import type { TaskRepository } from '../repositories/task-repository.js';
+import {
+  TaskSaveConflictError,
+  type TaskRepository,
+  type TaskSaveFence,
+} from '../repositories/task-repository.js';
 import type { WriteLogRepository } from '../repositories/write-log-repository.js';
 import type {
   ProductionPilotCommitPayload,
@@ -34,6 +38,7 @@ import {
   BadRequestError,
   ConflictError,
   NotFoundError,
+  ProductionPilotMutationLockedError,
 } from '../domain/errors.js';
 import type { CandidateV1 } from '../../contracts/candidate-v1.js';
 import { createIdempotencyKey } from '../../contracts/candidate-v1.js';
@@ -195,13 +200,15 @@ function extractScreenshotState(task: IngestionTask): ScreenshotState {
   if (!evidence?.screenshot_state) {
     throw new Error(`Screenshot state not found for ingestion ${task.ingestion_id}`);
   }
-  return evidence.screenshot_state;
+  return JSON.parse(JSON.stringify(evidence.screenshot_state)) as ScreenshotState;
 }
 
 /** 将截图状态写回 IngestionTask.pipeline_evidence */
 function withScreenshotState(task: IngestionTask, state: ScreenshotState): IngestionTask {
-  const evidence = (task.pipeline_evidence ?? {}) as Record<string, unknown>;
-  evidence.screenshot_state = state;
+  const evidence = {
+    ...((task.pipeline_evidence ?? {}) as Record<string, unknown>),
+    screenshot_state: state,
+  };
   return {
     ...task,
     pipeline_evidence: evidence,
@@ -376,6 +383,13 @@ interface BatchWriterResultView {
   compensation_events_emitted?: boolean;
 }
 
+const PILOT_MUTATION_LOCKED_STATUSES = new Set<ProductionPilotRunManifest['status']>([
+  'consumed',
+  'executing',
+  'verifying',
+  'committing',
+]);
+
 /**
  * 截图服务批量写入器端口。接受 TransactionalBatchWriter 与 GuardedBatchWriter
  * （Amendment 6 双层放行门）。writeBatch 入参为 GuardedWriteBatchInput（含治理决定
@@ -479,6 +493,29 @@ export class ScreenshotService {
     }
   }
 
+  private async assertPilotMutationUnlocked(ingestionId: string): Promise<void> {
+    const manifestRepository = this.options.runManifestRepository;
+    const pilotRunId = this.options.productionPilotRunId?.trim();
+    if (!manifestRepository || !pilotRunId) return;
+    const manifest = await manifestRepository.findByRunId(pilotRunId);
+    if (manifest?.ingestionId === ingestionId && PILOT_MUTATION_LOCKED_STATUSES.has(manifest.status)) {
+      throw new ProductionPilotMutationLockedError(
+        `Production pilot mutation is locked while manifest ${manifest.status}`,
+      );
+    }
+  }
+
+  private async savePilotTaskWithFence(
+    task: IngestionTask,
+    state: ScreenshotState,
+    fence: TaskSaveFence,
+  ): Promise<void> {
+    if (!this.repository.saveWithFence || !Number.isInteger(task.task_version)) {
+      throw new TaskSaveConflictError('Production pilot task CAS is unavailable');
+    }
+    await this.repository.saveWithFence(withScreenshotState(task, state), fence);
+  }
+
   // ==========================================================================
   // 1. POST /v1/screenshots — 创建截图提交
   // ==========================================================================
@@ -534,6 +571,7 @@ export class ScreenshotService {
 
     const task: IngestionTask = {
       ingestion_id: ingestionId,
+      task_version: 1,
       idempotency_key: idempotencyKey,
       status: 'received',
       source_system: req.source_system,
@@ -602,12 +640,15 @@ export class ScreenshotService {
     imageBuffer: Buffer,
     imageHash: string
   ): Promise<void> {
-    const task = await this.repository.findById(ingestionId);
+    let task = await this.repository.findById(ingestionId);
     if (!task) throw new NotFoundError(`Screenshot ${ingestionId} not found`);
 
-    const state = extractScreenshotState(task);
+    let state = extractScreenshotState(task);
     state.screenshot_status = 'ocr_processing';
     await this.repository.save(withScreenshotState(task, state));
+    task = await this.repository.findById(ingestionId);
+    if (!task) throw new NotFoundError(`Screenshot ${ingestionId} not found after OCR start`);
+    state = extractScreenshotState(task);
 
     // 调用 OCR 引擎
     const engine = this.options.ocrEngine;
@@ -619,6 +660,9 @@ export class ScreenshotService {
     state.ocr_task_id = `ocr_${randomUUID().replace(/-/g, '')}`;
     state.screenshot_status = 'ocr_completed';
     await this.repository.save(withScreenshotState(task, state));
+    task = await this.repository.findById(ingestionId);
+    if (!task) throw new NotFoundError(`Screenshot ${ingestionId} not found after OCR completion`);
+    state = extractScreenshotState(task);
 
     // Workstream D/E: 审计 — OCR 完成。
     await this.auditRecord(ingestionId, 'ocr_completed', 'ocr_completed', {
@@ -761,6 +805,7 @@ export class ScreenshotService {
   // ==========================================================================
 
   async submitCorrections(id: string, req: SubmitCorrectionsRequest): Promise<SubmitCorrectionsResponse> {
+    await this.assertPilotMutationUnlocked(id);
     const task = await this.getTaskOrThrow(id);
     const state = extractScreenshotState(task);
 
@@ -839,10 +884,14 @@ export class ScreenshotService {
     if (!authenticatedOperator?.trim()) {
       throw new BadRequestError('authenticated operator is required');
     }
+    await this.assertPilotMutationUnlocked(id);
     const task = await this.getTaskOrThrow(id);
     const state = extractScreenshotState(task);
     const candidate = state.candidate_v1;
     if (!candidate) throw new ConflictError('Candidate V1 not yet available');
+    if (!Number.isInteger(task.task_version)) {
+      throw new ConflictError('Production pilot task version is unavailable');
+    }
     if (candidate.candidate_id !== req.candidate_v1_id) {
       throw new BadRequestError('candidate_v1_id mismatch');
     }
@@ -1385,6 +1434,7 @@ export class ScreenshotService {
     if (req.production_pilot_preview_id || req.production_pilot_nonce) {
       return this.confirmProductionPilotExecution(id, req, authenticatedOperator);
     }
+    await this.assertPilotMutationUnlocked(id);
     const task = await this.getTaskOrThrow(id);
     const state = extractScreenshotState(task);
 
@@ -1568,6 +1618,7 @@ export class ScreenshotService {
   // ==========================================================================
 
   async escalateReview(id: string, req: EscalateReviewRequest): Promise<EscalateReviewResponse> {
+    await this.assertPilotMutationUnlocked(id);
     const task = await this.getTaskOrThrow(id);
     const state = extractScreenshotState(task);
 
@@ -1756,29 +1807,89 @@ export class ScreenshotService {
     if (!task) {
       throw new Error('RUN_MANIFEST_TASK_NOT_FOUND');
     }
-
-    for (const event of payload.auditEvents) {
-      await this.auditRecord(
-        manifest.ingestionId,
-        event.eventType,
-        event.resultStatus,
-        event.details,
-      );
+    const state = extractScreenshotState(task);
+    const candidate = state.candidate_v1;
+    const governance = state.governance_result_v1;
+    if (!candidate || !governance) {
+      throw new Error('RUN_MANIFEST_TASK_BINDING_MISSING');
+    }
+    if (!Number.isInteger(task.task_version)) {
+      throw new Error('RUN_MANIFEST_TASK_VERSION_MISSING');
     }
 
-    const state = extractScreenshotState(task);
+    // Recovery is allowed to write audit/task state only after every
+    // server-owned binding has been revalidated against the current task and
+    // current write configuration. A changed candidate, governance result,
+    // plan, or task version requires manual reconciliation; it must never be
+    // repaired by replaying the old commit payload.
+    const currentCandidateDigest = digestJson(candidate);
+    const currentGovernanceDigest = digestJson(governance);
+    if (
+      manifest.candidateDigest !== currentCandidateDigest
+      || payload.expected_candidate_digest !== currentCandidateDigest
+    ) {
+      throw new Error('RUN_MANIFEST_CANDIDATE_BINDING_MISMATCH');
+    }
+    if (
+      governance.decision !== 'PASS'
+      || manifest.governanceDigest !== currentGovernanceDigest
+      || payload.expected_governance_digest !== currentGovernanceDigest
+    ) {
+      throw new Error('RUN_MANIFEST_GOVERNANCE_BINDING_MISMATCH');
+    }
+
+    const targetTables = computeWritePlan(candidate, governance);
+    const targetTableDigests: Partial<Record<'customer' | 'project' | 'model', string>> = {};
+    for (const table of targetTables) {
+      const tableId = this.tableIdFor(table);
+      if (!tableId) throw new Error('RUN_MANIFEST_TARGET_TABLE_UNAVAILABLE');
+      targetTableDigests[table] = sha256Hex(tableId);
+    }
+    const baseTokenDigest = this.options.feishuWriteContext?.targetBaseToken
+      ? sha256Hex(this.options.feishuWriteContext.targetBaseToken)
+      : undefined;
+    const authoritativePlanDigest = digestJson({ targetTables, targetTableDigests, baseTokenDigest });
+    if (
+      manifest.authoritativePlanDigest !== authoritativePlanDigest
+      || payload.expected_authoritative_plan_digest !== authoritativePlanDigest
+      || JSON.stringify(manifest.targetTables) !== JSON.stringify(targetTables)
+      || JSON.stringify(manifest.targetTableDigests) !== JSON.stringify(targetTableDigests)
+      || manifest.baseTokenDigest !== baseTokenDigest
+    ) {
+      throw new Error('RUN_MANIFEST_AUTHORITATIVE_PLAN_MISMATCH');
+    }
+
     const expectedSnapshot = payload.transactionSnapshot;
     const sameCommittedState = state.screenshot_status === 'write_succeeded'
       && JSON.stringify(state.write_results) === JSON.stringify(payload.writeResults)
       && JSON.stringify(state.transaction_snapshot) === JSON.stringify(expectedSnapshot);
-    if (state.screenshot_status === 'write_succeeded' && !sameCommittedState) {
+    if (
+      state.screenshot_status === 'write_succeeded'
+      && (!sameCommittedState || task.task_version !== payload.expected_task_version + 1)
+    ) {
       throw new Error('RUN_MANIFEST_TASK_COMMIT_CONFLICT');
     }
+
     if (!sameCommittedState) {
+      if (task.task_version !== payload.expected_task_version) {
+        throw new Error('RUN_MANIFEST_TASK_VERSION_CONFLICT');
+      }
+      for (const event of payload.auditEvents) {
+        await this.auditRecord(
+          manifest.ingestionId,
+          event.eventType,
+          event.resultStatus,
+          event.details,
+        );
+      }
       state.write_results = payload.writeResults;
       state.transaction_snapshot = expectedSnapshot;
       state.screenshot_status = 'write_succeeded';
-      await this.repository.save(withScreenshotState(task, state));
+      await this.savePilotTaskWithFence(task, state, {
+        expected_task_version: payload.expected_task_version,
+        expected_candidate_digest: payload.expected_candidate_digest,
+        expected_governance_digest: payload.expected_governance_digest,
+      });
     }
     await manifestRepository.completeSuccess(manifest.previewId);
   }
@@ -1798,6 +1909,10 @@ export class ScreenshotService {
     const state = extractScreenshotState(task);
     const candidate = state.candidate_v1;
     if (!candidate) throw new ConflictError('Candidate V1 not yet available');
+    const expectedTaskVersion = task.task_version;
+    if (typeof expectedTaskVersion !== 'number' || !Number.isInteger(expectedTaskVersion)) {
+      throw new ConflictError('Production pilot task version is unavailable');
+    }
     if (candidate.candidate_id !== req.candidate_v1_id) {
       throw new BadRequestError('candidate_v1_id mismatch');
     }
@@ -1916,7 +2031,11 @@ export class ScreenshotService {
     if (!preflight.allowed) {
       await manifestRepository.markCompensationRequired(consumed.previewId);
       await manifestRepository.completeCompensation(consumed.previewId, true);
-      return this.persistPilotBlockedResult(task, state, targetTables, 'GATE_BLOCKED');
+      return this.persistPilotBlockedResult(task, state, targetTables, 'GATE_BLOCKED', {
+        expected_task_version: expectedTaskVersion,
+        expected_candidate_digest: manifest.candidateDigest!,
+        expected_governance_digest: manifest.governanceDigest!,
+      });
     }
     await manifestRepository.markExecuting(consumed.previewId);
     await this.auditRecord(task.ingestion_id, 'pilot_write_started', 'committing', pilotAuditContext);
@@ -1927,7 +2046,11 @@ export class ScreenshotService {
     } catch {
       state.screenshot_status = 'write_failed';
       state.write_results = [];
-      await this.repository.save(withScreenshotState(task, state));
+      await this.savePilotTaskWithFence(task, state, {
+        expected_task_version: expectedTaskVersion,
+        expected_candidate_digest: manifest.candidateDigest!,
+        expected_governance_digest: manifest.governanceDigest!,
+      });
       await manifestRepository.markCompensationRequired(consumed.previewId).catch(() => undefined);
       return {
         screenshot_id: task.ingestion_id,
@@ -1949,7 +2072,11 @@ export class ScreenshotService {
       || batchResult.write_results.some((result) => result.status === 'failed')
     ) {
       state.screenshot_status = 'write_failed';
-      await this.repository.save(withScreenshotState(task, state));
+      await this.savePilotTaskWithFence(task, state, {
+        expected_task_version: expectedTaskVersion,
+        expected_candidate_digest: manifest.candidateDigest!,
+        expected_governance_digest: manifest.governanceDigest!,
+      });
       await this.auditRecord(task.ingestion_id, 'pilot_write_failed', 'failed', {
         ...pilotAuditContext,
         error_code: batchResult.error_code ?? 'WRITE_FAILED',
@@ -2013,6 +2140,10 @@ export class ScreenshotService {
       const commitPayload: ProductionPilotCommitPayload = {
         writeResults: batchResult.write_results,
         transactionSnapshot: state.transaction_snapshot!,
+        expected_task_version: expectedTaskVersion,
+        expected_candidate_digest: manifest.candidateDigest!,
+        expected_governance_digest: manifest.governanceDigest!,
+        expected_authoritative_plan_digest: manifest.authoritativePlanDigest!,
         auditEvents,
       };
       // COMMITTING is the durable fence between external Feishu success and
@@ -2023,16 +2154,22 @@ export class ScreenshotService {
         await this.auditRecord(task.ingestion_id, event.eventType, event.resultStatus, event.details);
       }
       state.screenshot_status = 'write_succeeded';
-      await this.repository.save(withScreenshotState(task, state));
+      await this.savePilotTaskWithFence(task, state, {
+        expected_task_version: expectedTaskVersion,
+        expected_candidate_digest: manifest.candidateDigest!,
+        expected_governance_digest: manifest.governanceDigest!,
+      });
       await manifestRepository.completeSuccess(consumed.previewId);
-    } catch {
+    } catch (error) {
       return {
         screenshot_id: task.ingestion_id,
         ingestion_id: task.ingestion_id,
         status: 'write_failed',
         write_results: state.write_results ?? [],
         transaction_snapshot_id: state.transaction_snapshot?.snapshot_id,
-        error_code: 'PILOT_AUDIT_PERSIST_FAILED',
+        error_code: error instanceof TaskSaveConflictError
+          ? 'PILOT_TASK_VERSION_CONFLICT'
+          : 'PILOT_AUDIT_PERSIST_FAILED',
       };
     }
     return {
@@ -2050,6 +2187,7 @@ export class ScreenshotService {
     state: ScreenshotState,
     targetTables: Array<'customer' | 'project' | 'model'>,
     errorCode: string,
+    fence?: TaskSaveFence,
   ): Promise<ConfirmWriteResponse> {
     const writeResults: WriteResult[] = targetTables.map((table) => ({
       entity_type: table,
@@ -2060,7 +2198,11 @@ export class ScreenshotService {
     }));
     state.write_results = writeResults;
     state.screenshot_status = 'write_failed';
-    await this.repository.save(withScreenshotState(task, state));
+    if (fence) {
+      await this.savePilotTaskWithFence(task, state, fence);
+    } else {
+      await this.repository.save(withScreenshotState(task, state));
+    }
     await this.auditRecord(task.ingestion_id, 'pilot_write_blocked', 'blocked', {
       reason_code: errorCode,
       target_aliases: targetTables,

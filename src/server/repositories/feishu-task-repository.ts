@@ -1,5 +1,10 @@
 import type { IngestionTask } from '../domain/ingestion.js';
-import type { TaskRepository } from './task-repository.js';
+import {
+  assertTaskSaveFence,
+  TaskSaveConflictError,
+  type TaskRepository,
+  type TaskSaveFence,
+} from './task-repository.js';
 import type { FeishuClient, FeishuRecord } from '../feishu/feishu-client.js';
 import { normalizeFeishuJson } from '../feishu/normalize-text.js';
 
@@ -40,6 +45,8 @@ export interface FeishuTaskRepositoryOptions {
  *   acceptance is enforced at the service layer, not here.
  */
 export class FeishuTaskRepository implements TaskRepository {
+  private readonly saveTails = new Map<string, Promise<void>>();
+
   constructor(
     private readonly client: FeishuClient,
     private readonly options: FeishuTaskRepositoryOptions
@@ -74,25 +81,66 @@ export class FeishuTaskRepository implements TaskRepository {
   }
 
   async save(task: IngestionTask): Promise<void> {
-    const fields = this.buildFields(task);
-    const existing = await this.client.searchRecords(this.options.ingestionTableId, {
+    return this.enqueueSave(task.ingestion_id, async () => {
+      const existing = await this.findRecordsByIngestionId(task.ingestion_id);
+      if (existing.length > 0) {
+        const current = this.parseSnapshot(existing[0]);
+        const next = this.nextVersionedTask(current, task);
+        await this.client.updateRecord(
+          this.options.ingestionTableId,
+          existing[0].record_id,
+          this.buildFields(next)
+        );
+      } else {
+        await this.client.createRecord(this.options.ingestionTableId, this.buildFields(task));
+      }
+    });
+  }
+
+  async saveWithFence(task: IngestionTask, fence: TaskSaveFence): Promise<void> {
+    return this.enqueueSave(task.ingestion_id, async () => {
+      const existing = await this.findRecordsByIngestionId(task.ingestion_id);
+      if (existing.length === 0) {
+        throw new TaskSaveConflictError('Task disappeared before fenced save');
+      }
+      const current = this.parseSnapshot(existing[0]);
+      assertTaskSaveFence(current, task, fence);
+      await this.client.updateRecord(
+        this.options.ingestionTableId,
+        existing[0].record_id,
+        this.buildFields({ ...task, task_version: fence.expected_task_version + 1 }),
+      );
+    });
+  }
+
+  private async findRecordsByIngestionId(ingestionId: string): Promise<FeishuRecord[]> {
+    return this.client.searchRecords(this.options.ingestionTableId, {
       filter: {
         conjunction: 'and',
         conditions: [
-          { field_name: FIELD.ingestionId, operator: 'is', value: [task.ingestion_id] },
+          { field_name: FIELD.ingestionId, operator: 'is', value: [ingestionId] },
         ],
       },
       page_size: 2,
     });
-    if (existing.length > 0) {
-      await this.client.updateRecord(
-        this.options.ingestionTableId,
-        existing[0].record_id,
-        fields
-      );
-    } else {
-      await this.client.createRecord(this.options.ingestionTableId, fields);
-    }
+  }
+
+  /** Serialize the read/validate/write sequence for one task in this process. */
+  private enqueueSave<T>(ingestionId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.saveTails.get(ingestionId) ?? Promise.resolve();
+    const run = previous.then(operation, operation);
+    const tail = run.then(() => undefined, () => undefined);
+    this.saveTails.set(ingestionId, tail);
+    return run.finally(() => {
+      if (this.saveTails.get(ingestionId) === tail) {
+        this.saveTails.delete(ingestionId);
+      }
+    });
+  }
+
+  private nextVersionedTask(current: IngestionTask, next: IngestionTask): IngestionTask {
+    if (current.task_version === undefined) return next;
+    return { ...next, task_version: current.task_version + 1 };
   }
 
   /**

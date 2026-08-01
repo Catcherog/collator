@@ -67,6 +67,10 @@ export interface ProductionPilotCommitPayload {
     records_created: number;
     records_rolled_back: number;
   };
+  expected_task_version: number;
+  expected_candidate_digest: string;
+  expected_governance_digest: string;
+  expected_authoritative_plan_digest: string;
   auditEvents: ProductionPilotAuditEvent[];
 }
 
@@ -851,6 +855,10 @@ class ManifestStateStore {
           && ['committed', 'rolled_back', 'partial'].includes(manifest.commitPayload.transactionSnapshot.status)
           && Number.isInteger(manifest.commitPayload.transactionSnapshot.records_created)
           && Number.isInteger(manifest.commitPayload.transactionSnapshot.records_rolled_back)
+          && Number.isInteger(manifest.commitPayload.expected_task_version)
+          && typeof manifest.commitPayload.expected_candidate_digest === 'string'
+          && typeof manifest.commitPayload.expected_governance_digest === 'string'
+          && typeof manifest.commitPayload.expected_authoritative_plan_digest === 'string'
           && Array.isArray(manifest.commitPayload.auditEvents)
           && manifest.commitPayload.auditEvents.every((event) => (
             event

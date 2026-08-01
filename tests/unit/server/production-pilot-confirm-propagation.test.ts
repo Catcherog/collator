@@ -85,6 +85,20 @@ class CrashOnWriteSucceededTaskRepository implements TaskRepository {
     }
     await this.delegate.save(task);
   }
+
+  async saveWithFence(
+    task: IngestionTask,
+    fence: Parameters<NonNullable<TaskRepository['saveWithFence']>>[1],
+  ): Promise<void> {
+    const evidence = task.pipeline_evidence as {
+      screenshot_state?: { screenshot_status?: string };
+    } | undefined;
+    if (this.failNextWriteSucceeded && evidence?.screenshot_state?.screenshot_status === 'write_succeeded') {
+      this.failNextWriteSucceeded = false;
+      throw new Error('simulated task-store crash after external write');
+    }
+    await this.delegate.saveWithFence!(task, fence);
+  }
 }
 
 class CrashOnceManifestRepository extends InMemoryRunManifestRepository {

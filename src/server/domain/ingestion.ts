@@ -59,6 +59,8 @@ export interface RejectRequest {
 
 export interface IngestionTask {
   ingestion_id: string;
+  /** Monotonic optimistic-concurrency version for persisted task snapshots. */
+  task_version?: number;
   idempotency_key: string;
   status: IngestionStatus;
   source_system: string;
