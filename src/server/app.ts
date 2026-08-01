@@ -172,6 +172,9 @@ export async function buildApp(options?: BuildAppOptions) {
     screenshotServiceOptions.auditLogRepository ?? auditLogRepository;
   screenshotServiceOptions.runManifestRepository =
     screenshotServiceOptions.runManifestRepository ?? runManifestRepository;
+  const feishuWriteConfig = loadFeishuWriteConfig();
+  screenshotServiceOptions.productionPilotRunId =
+    screenshotServiceOptions.productionPilotRunId ?? feishuWriteConfig.productionPilot?.pilotRunId;
   // 生产模式自动装配 OCR + Governance Client（测试模式由调用方注入）
   if (!options?.screenshotServiceOptions) {
     // Workstream B/E: 真实 OCR 引擎由工厂装配（amendment 3 fail-closed）。
@@ -222,6 +225,19 @@ export async function buildApp(options?: BuildAppOptions) {
         modelTableId: config.feishuModelTableId,
       };
     }
+  }
+  if (feishuWriteConfig.writeMode === 'production-pilot') {
+    const manifestRepository = screenshotServiceOptions.runManifestRepository;
+    const batchWriter = screenshotServiceOptions.batchWriter;
+    if (!manifestRepository || !batchWriter?.recoverPendingCompensations) {
+      throw new Error('Production pilot startup blocked: durable manifest recovery is unavailable.');
+    }
+    await manifestRepository.validate();
+    const recoveryOutcomes = await batchWriter.recoverPendingCompensations();
+    if (recoveryOutcomes.some((outcome) => outcome.status !== 'compensated')) {
+      throw new Error('Production pilot startup blocked: pending compensation recovery failed.');
+    }
+    await manifestRepository.validate();
   }
   const screenshotService = new ScreenshotService(repository, screenshotServiceOptions);
 

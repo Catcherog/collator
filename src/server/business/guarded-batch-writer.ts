@@ -16,8 +16,10 @@ import {
   type GovernanceDecisionInput,
   type ProductionPilotRepositoryReadiness,
 } from '../config/feishu-write-config.js';
-import type { ProductionWritePreview } from '../config/production-pilot.js';
-import type { RunManifestRepository } from '../repositories/run-manifest-repository.js';
+import type {
+  ProductionPilotRunManifest,
+  RunManifestRepository,
+} from '../repositories/run-manifest-repository.js';
 import type { BatchWriterPort, TransactionalBatchWriterInput, TransactionalBatchWriterResult } from './transactional-batch-writer.js';
 import type { WriteResult } from '../../contracts/screenshot-api-v1.js';
 
@@ -32,12 +34,14 @@ export interface GuardedWriteBatchInput extends TransactionalBatchWriterInput {
   targetBaseToken?: string;
   /** Single run id bound by the production-pilot process configuration. */
   pilotRunId?: string;
-  /** Explicit operator confirmation that the source/candidate is confirmed. */
-  humanConfirmed?: boolean;
-  /** Public-safe preview previously shown and explicitly confirmed. */
-  productionPilotPreview?: ProductionWritePreview;
-  /** Short alias accepted by adapters that call the field simply `preview`. */
-  preview?: ProductionWritePreview;
+  /** Authenticated operator identity bound to the server manifest. */
+  operator?: string;
+  /** Candidate/governance/plan digests are server-computed execution bindings. */
+  candidateDigest?: string;
+  governanceDigest?: string;
+  authoritativePlanDigest?: string;
+  /** Internal server-owned manifest; never accepted from the HTTP body. */
+  pilotManifest?: ProductionPilotRunManifest;
 }
 
 /**
@@ -104,8 +108,11 @@ export class GuardedBatchWriter {
             targetTableIds: this.getTargetTableIds(targetTables, input),
             repositoryReadiness: this.pilotRepositoryReadiness,
             pilotRunId: input.pilotRunId,
-            humanConfirmed: input.humanConfirmed,
-            preview: input.productionPilotPreview ?? input.preview,
+            operator: input.operator,
+            candidateDigest: input.candidateDigest,
+            governanceDigest: input.governanceDigest,
+            authoritativePlanDigest: input.authoritativePlanDigest,
+            manifest: input.pilotManifest,
           })
         : isRealWriteAllowed(
             this.gateConfig,

@@ -236,12 +236,10 @@ export interface ConfirmWriteRequest {
   dry_run?: boolean;
   /** 目标写入表 */
   target_tables?: Array<'customer' | 'project' | 'model'>;
-  /** One-shot production-pilot run binding; ignored by test-mode writers. */
-  pilot_run_id?: string;
-  /** Explicit operator confirmation that the candidate/source was reviewed. */
-  human_confirmed?: boolean;
-  /** Public-safe preview previously shown and explicitly confirmed. */
-  production_pilot_preview?: ProductionPilotPreview;
+  /** Server-created opaque preview identifier. */
+  production_pilot_preview_id?: string;
+  /** Server-created nonce returned with the preview. */
+  production_pilot_nonce?: string;
 }
 
 /**
@@ -250,15 +248,24 @@ export interface ConfirmWriteRequest {
  * accepted in the preview body.
  */
 export interface ProductionPilotPreview {
-  previewId: string;
-  generatedAt: string;
-  writeMode: 'production-pilot';
-  plannedRecordCount: number;
-  targetTableAliases: Array<'customer' | 'project' | 'model'>;
-  targetTableDigests: Partial<Record<'customer' | 'project' | 'model', string>>;
-  baseTokenDigest?: string;
-  confirmed: boolean;
-  confirmedAt?: string;
+  preview_id: string;
+  nonce: string;
+  generated_at: string;
+  expires_at: string;
+  write_mode: 'production-pilot';
+  status: 'generated' | 'confirmed' | 'consumed' | 'succeeded';
+  planned_record_count: number;
+  target_table_aliases: Array<'customer' | 'project' | 'model'>;
+  target_table_digests: Partial<Record<'customer' | 'project' | 'model', string>>;
+  base_token_digest?: string;
+}
+
+export interface CreateProductionPilotPreviewRequest {
+  candidate_v1_id: string;
+}
+
+export interface ConfirmProductionPilotPreviewRequest {
+  nonce: string;
 }
 
 export interface ConfirmWriteResponse {

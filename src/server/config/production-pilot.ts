@@ -1,117 +1,81 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { WriteTable } from '../business/write-plan.js';
 
+export type ProductionPilotStatus = 'generated' | 'confirmed' | 'consumed' | 'succeeded';
+
 /**
- * The inputs used to build a production-pilot preview. Raw identifiers are
- * accepted here only so the preview can bind itself to the exact target; they
- * are never returned by the preview object or written to evidence.
+ * This is the server-owned preview returned to the trusted operator UI.  The
+ * execute request accepts only preview_id + nonce; it never accepts this full
+ * object or any client-provided confirmation flag.
  */
-export interface ProductionWritePreviewRequest {
+export interface ProductionPilotPreview {
+  preview_id: string;
+  nonce: string;
+  generated_at: string;
+  expires_at: string;
+  write_mode: 'production-pilot';
+  status: ProductionPilotStatus;
+  planned_record_count: number;
+  target_table_aliases: WriteTable[];
+  target_table_digests: Partial<Record<WriteTable, string>>;
+  base_token_digest?: string;
+}
+
+/** Internal-only server input used to bind a preview to authoritative state. */
+export interface ServerProductionPilotPreviewInput {
   ingestionId: string;
   targetTables: readonly WriteTable[];
-  targetTableIds: Partial<Record<WriteTable, string | undefined>>;
-  targetBaseToken?: string;
-}
-
-/** A public-safe, confirmation-bearing write preview. */
-export interface ProductionWritePreview {
-  previewId: string;
-  generatedAt: string;
-  writeMode: 'production-pilot';
-  plannedRecordCount: number;
-  targetTableAliases: WriteTable[];
   targetTableDigests: Partial<Record<WriteTable, string>>;
   baseTokenDigest?: string;
-  confirmed: boolean;
-  confirmedAt?: string;
+  candidateDigest: string;
+  governanceDigest: string;
+  authoritativePlanDigest: string;
+  pilotRunId: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
-function digest(value: string): string {
+export function sha256Hex(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-function canonicalRequest(request: ProductionWritePreviewRequest): string {
-  const tableEntries = [...request.targetTables]
-    .map((table) => [table, request.targetTableIds[table] ?? ''] as const)
-    .sort(([left], [right]) => left.localeCompare(right));
-
-  return JSON.stringify({
-    ingestionId: request.ingestionId,
-    targetTables: tableEntries,
-    targetBaseToken: request.targetBaseToken ?? '',
-  });
+export function digestJson(value: unknown): string {
+  return sha256Hex(JSON.stringify(value));
 }
 
-/**
- * Build a deterministic preview without calling Feishu or exposing raw
- * Base/Table/record identifiers. The preview id binds the later write to the
- * exact request that was shown to the operator.
- */
-export function previewProductionWrite(
-  request: ProductionWritePreviewRequest
-): ProductionWritePreview {
-  const previewId = digest(canonicalRequest(request));
-  const targetTableDigests: Partial<Record<WriteTable, string>> = {};
-  for (const table of request.targetTables) {
-    const tableId = request.targetTableIds[table];
-    if (tableId) targetTableDigests[table] = digest(tableId);
-  }
-
+/** Generate a fresh opaque server token and public-safe preview. */
+export function createServerProductionPilotPreview(
+  input: ServerProductionPilotPreviewInput,
+): ProductionPilotPreview {
   return {
+    preview_id: randomUUID(),
+    nonce: randomUUID(),
+    generated_at: input.createdAt,
+    expires_at: input.expiresAt,
+    write_mode: 'production-pilot',
+    status: 'generated',
+    planned_record_count: input.targetTables.length,
+    target_table_aliases: [...input.targetTables],
+    target_table_digests: { ...input.targetTableDigests },
+    base_token_digest: input.baseTokenDigest,
+  };
+}
+
+export function buildServerProductionPilotPreviewDigest(
+  input: ServerProductionPilotPreviewInput,
+  previewId: string,
+): string {
+  return digestJson({
     previewId,
-    generatedAt: new Date().toISOString(),
-    writeMode: 'production-pilot',
-    plannedRecordCount: request.targetTables.length,
-    targetTableAliases: [...request.targetTables],
-    targetTableDigests,
-    baseTokenDigest: request.targetBaseToken ? digest(request.targetBaseToken) : undefined,
-    confirmed: false,
-  };
-}
-
-/** Mark an already displayed preview as explicitly confirmed by an operator. */
-export function confirmProductionWritePreview(
-  preview: ProductionWritePreview
-): ProductionWritePreview {
-  return {
-    ...preview,
-    confirmed: true,
-    confirmedAt: new Date().toISOString(),
-  };
-}
-
-/**
- * Verify that a confirmed preview is bound to the current write request.
- * This is intentionally pure so the gate can enforce it before any API call.
- */
-export function isProductionWritePreviewValid(
-  preview: ProductionWritePreview | undefined,
-  request: ProductionWritePreviewRequest
-): boolean {
-  if (
-    !preview ||
-    preview.writeMode !== 'production-pilot' ||
-    !preview.confirmed ||
-    !preview.confirmedAt
-  ) {
-    return false;
-  }
-  if (preview.previewId !== digest(canonicalRequest(request))) return false;
-  if (preview.plannedRecordCount !== request.targetTables.length) return false;
-  if (
-    [...preview.targetTableAliases].sort().join(',') !==
-    [...request.targetTables].sort().join(',')
-  ) {
-    return false;
-  }
-  if (
-    request.targetBaseToken &&
-    preview.baseTokenDigest !== digest(request.targetBaseToken)
-  ) {
-    return false;
-  }
-  return request.targetTables.every((table) => {
-    const tableId = request.targetTableIds[table];
-    return Boolean(tableId && preview.targetTableDigests[table] === digest(tableId));
+    ingestionId: input.ingestionId,
+    targetTables: [...input.targetTables],
+    targetTableDigests: input.targetTableDigests,
+    baseTokenDigest: input.baseTokenDigest,
+    candidateDigest: input.candidateDigest,
+    governanceDigest: input.governanceDigest,
+    authoritativePlanDigest: input.authoritativePlanDigest,
+    pilotRunId: input.pilotRunId,
+    createdAt: input.createdAt,
+    expiresAt: input.expiresAt,
   });
 }

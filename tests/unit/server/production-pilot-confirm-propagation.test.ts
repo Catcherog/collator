@@ -8,26 +8,18 @@ import { MockOcrEngine } from '../../../src/server/services/screenshot-ocr-adapt
 import type { ScreenshotGovernanceClient, FullGovernanceResult } from '../../../src/server/governance/screenshot-governance-client.js';
 import type { GuardedWriteBatchInput } from '../../../src/server/business/guarded-batch-writer.js';
 import type { TransactionalBatchWriterResult } from '../../../src/server/business/transactional-batch-writer.js';
-import {
-  confirmProductionWritePreview,
-  previewProductionWrite,
-} from '../../../src/server/config/production-pilot.js';
 
 class PassGovernanceClient implements ScreenshotGovernanceClient {
   async callPreWriteFull(candidate: Parameters<ScreenshotGovernanceClient['callPreWriteFull']>[0]): Promise<FullGovernanceResult> {
     const now = new Date().toISOString();
     return {
-      schema_version: 'v1',
-      candidate_id: candidate.candidate_id,
-      decision: 'PASS',
+      schema_version: 'v1', candidate_id: candidate.candidate_id, decision: 'PASS',
       classification: { entity_type: 'project', project_type: 'client', confidence: 0.99 },
-      rule_version: 'pilot-test-rules',
-      violations: [],
+      rule_version: 'pilot-test-rules', violations: [],
       write: { status: 'NOT_ATTEMPTED', target_table: 'project', target_record_id: null },
       review: { status: 'NOT_REQUIRED', review_task_id: null },
       audit: {
-        audit_id: 'audit_pilot_test',
-        timestamp: now,
+        audit_id: 'audit_pilot_propagation', timestamp: now,
         source_record_id: candidate.source.record_id,
         idempotency_key: candidate.idempotency_key,
         rule_version: 'pilot-test-rules',
@@ -39,425 +31,156 @@ class PassGovernanceClient implements ScreenshotGovernanceClient {
 class CaptureBatchWriter {
   input?: GuardedWriteBatchInput;
   calls = 0;
-
   async preflight(): Promise<{ allowed: boolean; reason: string }> {
     return { allowed: true, reason: 'test preflight allowed' };
   }
-
   async writeBatch(input: GuardedWriteBatchInput): Promise<TransactionalBatchWriterResult> {
     this.calls += 1;
     this.input = input;
     return {
       write_results: [
-        {
-          entity_type: 'customer',
-          target_table_id: 'tbl_customer_pilot',
-          business_record_id: 'rec_customer_pilot',
-          created: true,
-          status: 'succeeded',
-        },
-        {
-          entity_type: 'project',
-          target_table_id: 'tbl_project_pilot',
-          business_record_id: 'rec_project_pilot',
-          created: true,
-          status: 'succeeded',
-        },
+        { entity_type: 'customer', target_table_id: 'tbl_customer_pilot', business_record_id: 'rec_customer_pilot', created: true, status: 'succeeded' },
+        { entity_type: 'project', target_table_id: 'tbl_project_pilot', business_record_id: 'rec_project_pilot', created: true, status: 'succeeded' },
       ],
-      transaction_snapshot_id: 'txn_pilot_test',
-      status: 'committed',
-      records_created: 2,
-      records_rolled_back: 0,
-      post_write_verified: true,
+      transaction_snapshot_id: 'txn_pilot_propagation', status: 'committed', records_created: 2,
+      records_rolled_back: 0, post_write_verified: true,
     };
-  }
-}
-
-class CompensationBatchWriter {
-  async preflight(): Promise<{ allowed: boolean; reason: string }> {
-    return { allowed: true, reason: 'test preflight allowed' };
-  }
-
-  async writeBatch(input: GuardedWriteBatchInput): Promise<TransactionalBatchWriterResult> {
-    await input.onCompensationStarted?.(1);
-    await input.onCompensationCompleted?.('completed', 1);
-    return {
-      write_results: [
-        {
-          entity_type: 'project',
-          target_table_id: 'tbl_project_pilot',
-          business_record_id: 'rec_project_pilot',
-          created: true,
-          status: 'failed',
-          error_code: 'POST_WRITE_VERIFY_FAILED',
-        },
-      ],
-      transaction_snapshot_id: 'txn_pilot_compensation',
-      status: 'rolled_back',
-      records_created: 1,
-      records_rolled_back: 1,
-      error_code: 'POST_WRITE_VERIFY_FAILED',
-      post_write_verified: false,
-    };
-  }
-}
-
-class BlockingBatchWriter extends CaptureBatchWriter {
-  async preflight(): Promise<{ allowed: boolean; reason: string }> {
-    return { allowed: false, reason: 'test gate denied' };
-  }
-}
-
-class RecoverableBatchWriter extends CaptureBatchWriter {
-  recoveryCalls = 0;
-
-  async recoverPendingCompensations(): Promise<Array<{ previewId: string; status: 'compensated' }>> {
-    this.recoveryCalls += 1;
-    return [];
   }
 }
 
 class FailingWriteSucceededAuditRepository extends InMemoryAuditLogRepository {
   async record(event: Parameters<InMemoryAuditLogRepository['record']>[0]) {
-    if (event.event_type === 'write_succeeded') {
-      throw new Error('simulated audit outage');
-    }
+    if (event.event_type === 'write_succeeded') throw new Error('simulated audit outage');
     return super.record(event);
   }
 }
 
-describe('ScreenshotService production-pilot confirmation propagation', () => {
-  it('passes pilot_run_id, human confirmation, and preview to the guarded writer', async () => {
-    const repository = new InMemoryTaskRepository();
-    const auditLogRepository = new InMemoryAuditLogRepository();
-    const runManifestRepository = new InMemoryRunManifestRepository();
-    const writer = new CaptureBatchWriter();
-    const service = new ScreenshotService(repository, {
-      ocrEngine: new MockOcrEngine(),
-      governanceClient: new PassGovernanceClient(),
-      batchWriter: writer,
-      feishuWriteContext: {
-        targetBaseToken: 'base_pilot',
-        customerTableId: 'tbl_customer_pilot',
-        projectTableId: 'tbl_project_pilot',
-      },
-      auditLogRepository,
-      writeLogRepository: new InMemoryWriteLogRepository(),
-      runManifestRepository,
-    });
+class FailingPilotConfirmationAuditRepository extends InMemoryAuditLogRepository {
+  async record(event: Parameters<InMemoryAuditLogRepository['record']>[0]) {
+    if (event.event_type === 'pilot_confirmed') throw new Error('simulated confirmation audit outage');
+    return super.record(event);
+  }
+}
 
-    const created = await service.createScreenshot({
-      source_system: 'test',
-      source_record_id: 'source_pilot_001',
-      submitted_at: new Date().toISOString(),
-      image_base64: Buffer.from('pilot').toString('base64'),
-    });
-    const evidence = await service.getScreenshotEvidence(created.ingestion_id);
-    const preview = confirmProductionWritePreview(previewProductionWrite({
-      ingestionId: created.ingestion_id,
-      targetTables: ['customer', 'project'],
-      targetTableIds: {
-        customer: 'tbl_customer_pilot',
-        project: 'tbl_project_pilot',
-      },
+async function setup(auditLogRepository: InMemoryAuditLogRepository = new InMemoryAuditLogRepository()) {
+  const repository = new InMemoryTaskRepository();
+  const runManifestRepository = new InMemoryRunManifestRepository();
+  const writer = new CaptureBatchWriter();
+  const service = new ScreenshotService(repository, {
+    ocrEngine: new MockOcrEngine(),
+    governanceClient: new PassGovernanceClient(),
+    batchWriter: writer,
+    feishuWriteContext: {
       targetBaseToken: 'base_pilot',
-    }));
+      customerTableId: 'tbl_customer_pilot',
+      projectTableId: 'tbl_project_pilot',
+    },
+    auditLogRepository,
+    writeLogRepository: new InMemoryWriteLogRepository(),
+    runManifestRepository,
+    productionPilotRunId: 'pilot-run-propagation',
+  });
+  const created = await service.createScreenshot({
+    source_system: 'test', source_record_id: `source_${Date.now()}`,
+    submitted_at: new Date().toISOString(),
+    image_base64: Buffer.from(`pilot-${Date.now()}`).toString('base64'),
+  });
+  const evidence = await service.getScreenshotEvidence(created.ingestion_id);
+  return { service, writer, runManifestRepository, auditLogRepository, ingestionId: created.ingestion_id, candidateId: evidence.candidate_v1.candidate_id };
+}
 
-    const result = await service.confirmWrite(created.ingestion_id, {
-      reviewer_id: 'reviewer_pilot',
-      candidate_v1_id: evidence.candidate_v1.candidate_id,
-      pilot_run_id: 'pilot-run-001',
-      human_confirmed: true,
-      production_pilot_preview: preview,
-    });
+async function authorize(context: Awaited<ReturnType<typeof setup>>) {
+  const preview = await context.service.createProductionPilotPreview(
+    context.ingestionId,
+    { candidate_v1_id: context.candidateId },
+    'operator-propagation',
+  );
+  await context.service.confirmProductionPilotPreview(
+    preview.preview_id,
+    'operator-propagation',
+    preview.nonce,
+  );
+  return preview;
+}
+
+describe('ScreenshotService production-pilot confirmation propagation', () => {
+  it('passes only the server manifest binding and opaque token to the guarded writer', async () => {
+    const context = await setup();
+    const preview = await authorize(context);
+    const result = await context.service.confirmWrite(
+      context.ingestionId,
+      {
+        reviewer_id: 'spoofed-body-operator',
+        candidate_v1_id: context.candidateId,
+        production_pilot_preview_id: preview.preview_id,
+        production_pilot_nonce: preview.nonce,
+      },
+      'operator-propagation',
+    );
 
     expect(result.status).toBe('write_succeeded');
-    expect(writer.input?.pilotRunId).toBe('pilot-run-001');
-    expect(writer.input?.humanConfirmed).toBe(true);
-    expect(writer.input?.productionPilotPreview?.previewId).toBe(preview.previewId);
-
-    const events = await auditLogRepository.findByIngestionId(created.ingestion_id);
-    const eventTypes = events.map((event) => event.event_type);
-    expect(eventTypes).toEqual(expect.arrayContaining([
-      'pilot_preview_generated',
-      'pilot_confirmed',
-      'pilot_write_started',
-      'pilot_record_created',
-      'pilot_relation_verified',
-      'pilot_write_completed',
-    ]));
-    const serializedEvents = JSON.stringify(events);
-    expect(serializedEvents).not.toContain('base_pilot');
-    expect(serializedEvents).not.toContain('tbl_customer_pilot');
-    expect(serializedEvents).not.toContain('pilot-run-001');
-    expect((await runManifestRepository.findByPreviewId(preview.previewId))?.status).toBe('succeeded');
-
-    const replay = await service.confirmWrite(created.ingestion_id, {
-      reviewer_id: 'reviewer_pilot',
-      candidate_v1_id: evidence.candidate_v1.candidate_id,
-      pilot_run_id: 'pilot-run-001',
-      human_confirmed: true,
-      production_pilot_preview: preview,
-    });
-    expect(replay.status).toBe('write_succeeded');
-    expect(writer.calls).toBe(1);
-  });
-
-  it('does not generate or confirm a manifest when writer preflight denies the pilot', async () => {
-    const repository = new InMemoryTaskRepository();
-    const auditLogRepository = new InMemoryAuditLogRepository();
-    const runManifestRepository = new InMemoryRunManifestRepository();
-    const writer = new BlockingBatchWriter();
-    const service = new ScreenshotService(repository, {
-      ocrEngine: new MockOcrEngine(),
-      governanceClient: new PassGovernanceClient(),
-      batchWriter: writer,
-      feishuWriteContext: {
-        targetBaseToken: 'base_pilot',
-        customerTableId: 'tbl_customer_pilot',
-        projectTableId: 'tbl_project_pilot',
-      },
-      auditLogRepository,
-      writeLogRepository: new InMemoryWriteLogRepository(),
-      runManifestRepository,
-    });
-
-    const created = await service.createScreenshot({
-      source_system: 'test',
-      source_record_id: 'source_pilot_preflight_blocked',
-      submitted_at: new Date().toISOString(),
-      image_base64: Buffer.from('pilot-preflight-blocked').toString('base64'),
-    });
-    const evidence = await service.getScreenshotEvidence(created.ingestion_id);
-    const preview = confirmProductionWritePreview(previewProductionWrite({
-      ingestionId: created.ingestion_id,
-      targetTables: ['customer', 'project'],
-      targetTableIds: {
-        customer: 'tbl_customer_pilot',
-        project: 'tbl_project_pilot',
-      },
-      targetBaseToken: 'base_pilot',
-    }));
-
-    const result = await service.confirmWrite(created.ingestion_id, {
-      reviewer_id: 'reviewer_pilot',
-      candidate_v1_id: evidence.candidate_v1.candidate_id,
-      pilot_run_id: 'pilot-run-preflight-blocked',
-      human_confirmed: true,
-      production_pilot_preview: preview,
-    });
-
-    expect(result.error_code).toBe('GATE_BLOCKED');
-    expect(writer.calls).toBe(0);
-    expect(await runManifestRepository.findByPreviewId(preview.previewId)).toBeNull();
-    const events = await auditLogRepository.findByIngestionId(created.ingestion_id);
-    expect(events.map((event) => event.event_type)).not.toContain('pilot_preview_generated');
-    expect(events.map((event) => event.event_type)).toContain('pilot_write_blocked');
-  });
-
-  it('rejects an expired server manifest before calling the writer', async () => {
-    const repository = new InMemoryTaskRepository();
-    const auditLogRepository = new InMemoryAuditLogRepository();
-    const runManifestRepository = new InMemoryRunManifestRepository();
-    const writer = new CaptureBatchWriter();
-    const service = new ScreenshotService(repository, {
-      ocrEngine: new MockOcrEngine(),
-      governanceClient: new PassGovernanceClient(),
-      batchWriter: writer,
-      feishuWriteContext: {
-        targetBaseToken: 'base_pilot',
-        customerTableId: 'tbl_customer_pilot',
-        projectTableId: 'tbl_project_pilot',
-      },
-      auditLogRepository,
-      writeLogRepository: new InMemoryWriteLogRepository(),
-      runManifestRepository,
-      productionPilotManifestTtlMs: 0,
-    });
-
-    const created = await service.createScreenshot({
-      source_system: 'test',
-      source_record_id: 'source_pilot_expired',
-      submitted_at: new Date().toISOString(),
-      image_base64: Buffer.from('pilot-expired').toString('base64'),
-    });
-    const evidence = await service.getScreenshotEvidence(created.ingestion_id);
-    const preview = confirmProductionWritePreview(previewProductionWrite({
-      ingestionId: created.ingestion_id,
-      targetTables: ['customer', 'project'],
-      targetTableIds: {
-        customer: 'tbl_customer_pilot',
-        project: 'tbl_project_pilot',
-      },
-      targetBaseToken: 'base_pilot',
-    }));
-
-    const result = await service.confirmWrite(created.ingestion_id, {
-      reviewer_id: 'reviewer_pilot',
-      candidate_v1_id: evidence.candidate_v1.candidate_id,
-      pilot_run_id: 'pilot-run-expired',
-      human_confirmed: true,
-      production_pilot_preview: preview,
-    });
-
-    expect(result.error_code).toBe('PILOT_MANIFEST_CONFIRM_FAILED');
-    expect(writer.calls).toBe(0);
+    expect(context.writer.input?.pilotPreviewId).toBe(preview.preview_id);
+    expect(context.writer.input?.operator).toBe('operator-propagation');
+    expect((context.writer.input as unknown as Record<string, unknown>).humanConfirmed).toBeUndefined();
+    expect((context.writer.input as unknown as Record<string, unknown>).productionPilotPreview).toBeUndefined();
+    expect((await context.runManifestRepository.findByPreviewId(preview.preview_id))?.status).toBe('succeeded');
   });
 
   it('does not report pilot success when the final audit write fails', async () => {
-    const repository = new InMemoryTaskRepository();
-    const auditLogRepository = new FailingWriteSucceededAuditRepository();
-    const runManifestRepository = new InMemoryRunManifestRepository();
-    const writer = new RecoverableBatchWriter();
-    const service = new ScreenshotService(repository, {
-      ocrEngine: new MockOcrEngine(),
-      governanceClient: new PassGovernanceClient(),
-      batchWriter: writer,
-      feishuWriteContext: {
-        targetBaseToken: 'base_pilot',
-        customerTableId: 'tbl_customer_pilot',
-        projectTableId: 'tbl_project_pilot',
+    const context = await setup(new FailingWriteSucceededAuditRepository());
+    const preview = await authorize(context);
+    const result = await context.service.confirmWrite(
+      context.ingestionId,
+      {
+        reviewer_id: 'operator-propagation',
+        candidate_v1_id: context.candidateId,
+        production_pilot_preview_id: preview.preview_id,
+        production_pilot_nonce: preview.nonce,
       },
-      auditLogRepository,
-      writeLogRepository: new InMemoryWriteLogRepository(),
-      runManifestRepository,
-    });
-
-    const created = await service.createScreenshot({
-      source_system: 'test',
-      source_record_id: 'source_pilot_audit_failure',
-      submitted_at: new Date().toISOString(),
-      image_base64: Buffer.from('pilot-audit-failure').toString('base64'),
-    });
-    const evidence = await service.getScreenshotEvidence(created.ingestion_id);
-    const preview = confirmProductionWritePreview(previewProductionWrite({
-      ingestionId: created.ingestion_id,
-      targetTables: ['customer', 'project'],
-      targetTableIds: {
-        customer: 'tbl_customer_pilot',
-        project: 'tbl_project_pilot',
-      },
-      targetBaseToken: 'base_pilot',
-    }));
-
-    const result = await service.confirmWrite(created.ingestion_id, {
-      reviewer_id: 'reviewer_pilot',
-      candidate_v1_id: evidence.candidate_v1.candidate_id,
-      pilot_run_id: 'pilot-run-audit-failure',
-      human_confirmed: true,
-      production_pilot_preview: preview,
-    });
+      'operator-propagation',
+    );
 
     expect(result.status).toBe('write_failed');
     expect(result.error_code).toBe('PILOT_AUDIT_PERSIST_FAILED');
-    expect(writer.recoveryCalls).toBe(1);
-    expect((await runManifestRepository.findByPreviewId(preview.previewId))?.status)
+    expect((await context.runManifestRepository.findByPreviewId(preview.preview_id))?.status)
       .toBe('compensation_required');
   });
 
-  it('blocks a production-pilot target_tables override instead of letting the client choose entities', async () => {
-    const repository = new InMemoryTaskRepository();
-    const auditLogRepository = new InMemoryAuditLogRepository();
-    const writer = new CaptureBatchWriter();
-    const service = new ScreenshotService(repository, {
-      ocrEngine: new MockOcrEngine(),
-      governanceClient: new PassGovernanceClient(),
-      batchWriter: writer,
-      feishuWriteContext: {
-        targetBaseToken: 'base_pilot',
-        customerTableId: 'tbl_customer_pilot',
-        projectTableId: 'tbl_project_pilot',
-      },
-      auditLogRepository,
-      writeLogRepository: new InMemoryWriteLogRepository(),
-      runManifestRepository: new InMemoryRunManifestRepository(),
-    });
+  it('does not leave a confirmed preview executable when confirmation audit persistence fails', async () => {
+    const context = await setup(new FailingPilotConfirmationAuditRepository());
+    const preview = await context.service.createProductionPilotPreview(
+      context.ingestionId,
+      { candidate_v1_id: context.candidateId },
+      'operator-propagation',
+    );
 
-    const created = await service.createScreenshot({
-      source_system: 'test',
-      source_record_id: 'source_pilot_target_override',
-      submitted_at: new Date().toISOString(),
-      image_base64: Buffer.from('pilot-target-override').toString('base64'),
-    });
-    const evidence = await service.getScreenshotEvidence(created.ingestion_id);
-    const preview = confirmProductionWritePreview(previewProductionWrite({
-      ingestionId: created.ingestion_id,
-      targetTables: ['customer', 'project'],
-      targetTableIds: {
-        customer: 'tbl_customer_pilot',
-        project: 'tbl_project_pilot',
-      },
-      targetBaseToken: 'base_pilot',
-    }));
-
-    const result = await service.confirmWrite(created.ingestion_id, {
-      reviewer_id: 'reviewer_pilot',
-      candidate_v1_id: evidence.candidate_v1.candidate_id,
-      pilot_run_id: 'pilot-run-target-override',
-      human_confirmed: true,
-      production_pilot_preview: preview,
-      target_tables: ['project'],
-    });
-
-    expect(result.status).toBe('write_failed');
-    expect(result.error_code).toBe('TARGET_PLAN_MISMATCH');
-    expect(writer.calls).toBe(0);
-    expect(result.write_results?.every((item) => item.status === 'not_attempted')).toBe(true);
+    await expect(
+      context.service.confirmProductionPilotPreview(
+        preview.preview_id,
+        'operator-propagation',
+        preview.nonce,
+      ),
+    ).rejects.toThrow('confirmation audit');
+    expect((await context.runManifestRepository.findByPreviewId(preview.preview_id))?.status)
+      .toBe('compensated');
   });
 
-  it('records compensation outcome without persisting raw target identifiers', async () => {
-    const repository = new InMemoryTaskRepository();
-    const auditLogRepository = new InMemoryAuditLogRepository();
-    const service = new ScreenshotService(repository, {
-      ocrEngine: new MockOcrEngine(),
-      governanceClient: new PassGovernanceClient(),
-      batchWriter: new CompensationBatchWriter(),
-      feishuWriteContext: {
-        targetBaseToken: 'base_pilot',
-        customerTableId: 'tbl_customer_pilot',
-        projectTableId: 'tbl_project_pilot',
+  it('rejects a client target-plan override before the writer is called', async () => {
+    const context = await setup();
+    const preview = await authorize(context);
+    const result = await context.service.confirmWrite(
+      context.ingestionId,
+      {
+        reviewer_id: 'operator-propagation',
+        candidate_v1_id: context.candidateId,
+        target_tables: ['project'],
+        production_pilot_preview_id: preview.preview_id,
+        production_pilot_nonce: preview.nonce,
       },
-      auditLogRepository,
-      writeLogRepository: new InMemoryWriteLogRepository(),
-      runManifestRepository: new InMemoryRunManifestRepository(),
-    });
+      'operator-propagation',
+    );
 
-    const created = await service.createScreenshot({
-      source_system: 'test',
-      source_record_id: 'source_pilot_compensation_001',
-      submitted_at: new Date().toISOString(),
-      image_base64: Buffer.from('pilot-compensation').toString('base64'),
-    });
-    const evidence = await service.getScreenshotEvidence(created.ingestion_id);
-    const preview = confirmProductionWritePreview(previewProductionWrite({
-      ingestionId: created.ingestion_id,
-      targetTables: ['customer', 'project'],
-      targetTableIds: {
-        customer: 'tbl_customer_pilot',
-        project: 'tbl_project_pilot',
-      },
-      targetBaseToken: 'base_pilot',
-    }));
-
-    const result = await service.confirmWrite(created.ingestion_id, {
-      reviewer_id: 'reviewer_pilot',
-      candidate_v1_id: evidence.candidate_v1.candidate_id,
-      pilot_run_id: 'pilot-run-compensation-001',
-      human_confirmed: true,
-      production_pilot_preview: preview,
-      target_tables: ['customer', 'project'],
-    });
-
-    expect(result.status).toBe('write_failed');
-    const events = await auditLogRepository.findByIngestionId(created.ingestion_id);
-    expect(events.map((event) => event.event_type)).toEqual(expect.arrayContaining([
-      'pilot_write_failed',
-      'pilot_compensation_started',
-      'pilot_compensation_completed',
-    ]));
-    const serializedEvents = JSON.stringify(events);
-    expect(serializedEvents).not.toContain('base_pilot');
-    expect(serializedEvents).not.toContain('tbl_project_pilot');
-    expect(serializedEvents).not.toContain('pilot-run-compensation-001');
+    expect(result.error_code).toBe('TARGET_PLAN_MISMATCH');
+    expect(context.writer.calls).toBe(0);
   });
 });

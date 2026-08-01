@@ -9,6 +9,7 @@ import {
 import { FeishuApiError } from '../feishu/feishu-errors.js';
 import { FeishuCommitFailedError } from '../domain/errors.js';
 import { assertExpectedFields } from './post-write-verification.js';
+import { CreateLifecyclePersistenceError, type CreateRecordLifecycle } from './create-lifecycle.js';
 
 /**
  * 项目表业务字段白名单。
@@ -57,6 +58,7 @@ export interface ProjectRecordWriterResult {
 export interface ProjectRecordWriterInput {
   ingestionId: string;
   normalizedFields: Record<string, unknown>;
+  createLifecycle?: CreateRecordLifecycle;
 }
 
 /**
@@ -67,6 +69,7 @@ export interface ProjectRecordWriterInput {
 export interface ProjectRecordWriter {
   write(input: ProjectRecordWriterInput): Promise<ProjectRecordWriterResult>;
   verifyRecord?(recordId: string, input: ProjectRecordWriterInput): Promise<void>;
+  findByIngestionId?(ingestionId: string): Promise<string[]>;
   /** 删除记录（用于事务回滚补偿）。 */
   deleteRecord(recordId: string): Promise<void>;
 }
@@ -117,16 +120,32 @@ export class FeishuProjectRecordWriter implements ProjectRecordWriter {
     }
 
     const fields = this.buildFields(input.normalizedFields, input.ingestionId);
+    const operationKey = `project-record:${this.options.projectTableId}:${input.ingestionId}`;
+    const clientToken = createStableClientToken(operationKey);
+    await input.createLifecycle?.beforeCreate?.({
+      entity: 'project',
+      tableId: this.options.projectTableId,
+      ingestionId: input.ingestionId,
+      operationKey,
+      clientToken,
+      createdAt: new Date().toISOString(),
+    });
     let recordId: string;
     try {
       recordId = await this.client.createRecord(
         this.options.projectTableId,
         fields,
-        createStableClientToken(
-          `project-record:${this.options.projectTableId}:${input.ingestionId}`
-        )
+        clientToken
       );
+      try {
+        await input.createLifecycle?.afterCreate?.(recordId);
+      } catch (error) {
+        throw new CreateLifecyclePersistenceError(recordId, error);
+      }
     } catch (e) {
+      if (e instanceof CreateLifecyclePersistenceError) {
+        throw e;
+      }
       throw this.toCommitFailed(e);
     }
     return {
@@ -141,6 +160,21 @@ export class FeishuProjectRecordWriter implements ProjectRecordWriter {
     } catch (e) {
       throw this.toCommitFailed(e);
     }
+  }
+
+  async findByIngestionId(ingestionId: string): Promise<string[]> {
+    const records = await this.client.searchRecords(this.options.projectTableId, {
+      filter: {
+        conjunction: 'and',
+        conditions: [{
+          field_name: COLLATOR_INGESTION_ID_FIELD,
+          operator: 'is',
+          value: [ingestionId],
+        }],
+      },
+      page_size: 10,
+    });
+    return records.map((record) => record.record_id);
   }
 
   async verifyRecord(recordId: string, input: ProjectRecordWriterInput): Promise<void> {

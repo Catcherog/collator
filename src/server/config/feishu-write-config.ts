@@ -14,13 +14,11 @@
 //
 // The legacy test gate remains unchanged. The production-pilot gate is a
 // separate, stricter path with its own whitelist, one-shot run id, record
-// limit, preview confirmation and human confirmation.
+// limit, server-owned preview confirmation and an authenticated operator.
 //
-import {
-  isProductionWritePreviewValid,
-  type ProductionWritePreview,
-  type ProductionWritePreviewRequest,
-} from './production-pilot.js';
+import type { WriteTable } from '../business/write-plan.js';
+import type { ProductionPilotRunManifest } from '../repositories/run-manifest-repository.js';
+import { sha256Hex } from './production-pilot.js';
 
 // Security (AC-C12): reasons are static diagnostic strings. They never echo
 // env values, secrets, tokens, or PII — so logging a blocked reason cannot
@@ -351,12 +349,15 @@ export interface ProductionPilotWriteGateInput {
   governanceDecision: GovernanceDecisionInput;
   targetBaseToken?: string;
   targetTableId?: string;
-  targetTables: ProductionWritePreviewRequest['targetTables'];
-  targetTableIds: ProductionWritePreviewRequest['targetTableIds'];
+  targetTables: readonly WriteTable[];
+  targetTableIds: Partial<Record<WriteTable, string | undefined>>;
   repositoryReadiness?: ProductionPilotRepositoryReadiness;
   pilotRunId?: string;
-  humanConfirmed?: boolean;
-  preview?: ProductionWritePreview;
+  operator?: string;
+  candidateDigest?: string;
+  governanceDigest?: string;
+  authoritativePlanDigest?: string;
+  manifest?: ProductionPilotRunManifest;
 }
 
 /**
@@ -422,7 +423,7 @@ export function isProductionPilotWriteAllowed(
   }
 
   if (!pilot.pilotRunId || !input.pilotRunId || pilot.pilotRunId !== input.pilotRunId) {
-    return { allowed: false, reason: 'Production pilot blocked: pilot_run_id is not bound.' };
+    return { allowed: false, reason: 'Production pilot blocked: the server-bound pilot run is missing or mismatched.' };
   }
   if (
     input.targetTables.length === 0 ||
@@ -432,18 +433,44 @@ export function isProductionPilotWriteAllowed(
   ) {
     return { allowed: false, reason: 'Production pilot blocked: target plan is empty, duplicated, or exceeds the record limit.' };
   }
-  if (input.humanConfirmed !== true) {
-    return { allowed: false, reason: 'Production pilot blocked: human confirmation is missing.' };
+  if (!input.operator) {
+    return { allowed: false, reason: 'Production pilot blocked: authenticated operator is missing.' };
   }
-
-  const previewRequest: ProductionWritePreviewRequest = {
-    ingestionId: input.ingestionId,
-    targetTables: input.targetTables,
-    targetTableIds: input.targetTableIds,
-    targetBaseToken: input.targetBaseToken,
-  };
-  if (!isProductionWritePreviewValid(input.preview, previewRequest)) {
-    return { allowed: false, reason: 'Production pilot blocked: preview is missing or unconfirmed.' };
+  const manifest = input.manifest;
+  if (!manifest || manifest.status !== 'consumed') {
+    return { allowed: false, reason: 'Production pilot blocked: server manifest is not consumed.' };
+  }
+  if (
+    manifest.ingestionId !== input.ingestionId
+    || manifest.operator !== input.operator
+    || manifest.runId !== input.pilotRunId
+  ) {
+    return { allowed: false, reason: 'Production pilot blocked: server manifest binding does not match execution context.' };
+  }
+  if (
+    !manifest.targetTables
+    || manifest.targetTables.length !== input.targetTables.length
+    || manifest.targetTables.some((table, index) => table !== input.targetTables[index])
+  ) {
+    return { allowed: false, reason: 'Production pilot blocked: authoritative target plan does not match the manifest.' };
+  }
+  if (input.candidateDigest && manifest.candidateDigest !== input.candidateDigest) {
+    return { allowed: false, reason: 'Production pilot blocked: candidate binding does not match the manifest.' };
+  }
+  if (input.governanceDigest && manifest.governanceDigest !== input.governanceDigest) {
+    return { allowed: false, reason: 'Production pilot blocked: governance binding does not match the manifest.' };
+  }
+  if (input.authoritativePlanDigest && manifest.authoritativePlanDigest !== input.authoritativePlanDigest) {
+    return { allowed: false, reason: 'Production pilot blocked: write-plan binding does not match the manifest.' };
+  }
+  for (const table of input.targetTables) {
+    const tableId = input.targetTableIds[table];
+    if (!tableId || manifest.targetTableDigests?.[table] !== sha256Hex(tableId)) {
+      return { allowed: false, reason: 'Production pilot blocked: target table binding does not match the manifest.' };
+    }
+  }
+  if (manifest.baseTokenDigest !== sha256Hex(input.targetBaseToken ?? '')) {
+    return { allowed: false, reason: 'Production pilot blocked: target Base binding does not match the manifest.' };
   }
 
   return {

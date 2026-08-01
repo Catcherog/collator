@@ -14,10 +14,17 @@ import type { ModelRecordWriter } from './model-record-writer.js';
 import type { WriteLogRepository } from '../repositories/write-log-repository.js';
 import type {
   RunManifestRepository,
+  ProductionPilotRunManifest,
 } from '../repositories/run-manifest-repository.js';
+import { RunManifestStateError } from '../repositories/run-manifest-repository.js';
 import { FeishuCommitFailedError } from '../domain/errors.js';
 import type { WriteResult } from '../../contracts/screenshot-api-v1.js';
 import { PostWriteVerificationError } from './post-write-verification.js';
+import {
+  CreateLifecyclePersistenceError,
+  type CreateLifecycleIntent,
+  type CreateRecordLifecycle,
+} from './create-lifecycle.js';
 
 export interface WriteContext {
   customerRecordId?: string;
@@ -150,7 +157,15 @@ export class TransactionalBatchWriter {
     // 按顺序写入：Customer → Project → Model
     for (const table of executionTables) {
       const tableId = this.getTableId(table, input);
-      const result = await this.writeSingle(table, input, tableId, writeContext, targetTables);
+      const result = await this.writeSingle(
+        table,
+        input,
+        tableId,
+        writeContext,
+        targetTables,
+        manifestRepository,
+        pilotPreviewId,
+      );
       results.push(result);
 
       if (result.status === 'succeeded' && result.business_record_id) {
@@ -161,34 +176,6 @@ export class TransactionalBatchWriter {
       if (result.status === 'succeeded' && result.created) {
         createdRecords.push({ type: table, recordId: result.business_record_id! });
         recordsCreated++;
-        if (pilotPreviewId && manifestRepository) {
-          try {
-            await manifestRepository.recordCreated(pilotPreviewId, {
-              entity: table,
-              recordId: result.business_record_id!,
-              createdAt: new Date().toISOString(),
-            });
-          } catch {
-            const rollbackResult = await this.rollback(
-              createdRecords,
-              input,
-              manifestRepository,
-              pilotPreviewId,
-            );
-            recordsRolledBack = rollbackResult.rolledBack;
-            compensationEventsEmitted ||= rollbackResult.compensationEventsEmitted;
-            return {
-              write_results: results,
-              transaction_snapshot_id: snapshotId,
-              status: rollbackResult.fullRollback ? 'rolled_back' : 'partial',
-              records_created: recordsCreated,
-              records_rolled_back: recordsRolledBack,
-              error_code: 'RUN_MANIFEST_PERSIST_FAILED',
-              post_write_verified: false,
-              compensation_events_emitted: compensationEventsEmitted,
-            };
-          }
-        }
       } else if (result.status === 'failed') {
         // A post-write verification failure happens after Feishu returned a
         // real record_id. Treat that exact record as created so compensation
@@ -197,16 +184,9 @@ export class TransactionalBatchWriter {
           createdRecords.push({ type: table, recordId: result.business_record_id });
           recordsCreated++;
           if (pilotPreviewId && manifestRepository) {
-            try {
-              await manifestRepository.recordCreated(pilotPreviewId, {
-                entity: table,
-                recordId: result.business_record_id,
-                createdAt: new Date().toISOString(),
-              });
-            } catch {
-              // Keep the local exact id in the compensation set. The
-              // manifest persistence failure itself is surfaced below.
-            }
+            // The concrete writer records CREATE_CONFIRMED before returning.
+            // Keep the exact local id here as a second compensation fence when
+            // the process failed while persisting that boundary.
           }
         }
         // 写入失败 → 反向回滚已创建的记录（AC-A10）
@@ -280,7 +260,9 @@ export class TransactionalBatchWriter {
     input: TransactionalBatchWriterInput,
     tableId: string,
     writeContext: WriteContext,
-    targetTables: Array<'customer' | 'project' | 'model'>
+    targetTables: Array<'customer' | 'project' | 'model'>,
+    manifestRepository?: RunManifestRepository,
+    pilotPreviewId?: string,
   ): Promise<WriteResult> {
     const baseResult: WriteResult = {
       entity_type: table,
@@ -295,6 +277,12 @@ export class TransactionalBatchWriter {
         const result = await this.customerWriter.write({
           ingestionId: input.ingestionId,
           normalizedFields: input.normalizedFields,
+          createLifecycle: this.createLifecycle(
+            table,
+            tableId,
+            manifestRepository,
+            pilotPreviewId,
+          ),
         });
         if (input.verifyAfterWrite) {
           await this.verifyWrittenRecord(table, result.business_record_id, result.created, input);
@@ -313,6 +301,12 @@ export class TransactionalBatchWriter {
         const result = await this.projectWriter.write({
           ingestionId: input.ingestionId,
           normalizedFields,
+          createLifecycle: this.createLifecycle(
+            table,
+            tableId,
+            manifestRepository,
+            pilotPreviewId,
+          ),
         });
         if (input.verifyAfterWrite) {
           await this.verifyWrittenRecord(table, result.business_record_id, result.created, {
@@ -331,6 +325,12 @@ export class TransactionalBatchWriter {
         const result = await this.modelWriter.write({
           ingestionId: input.ingestionId,
           normalizedFields: input.normalizedFields,
+          createLifecycle: this.createLifecycle(
+            table,
+            tableId,
+            manifestRepository,
+            pilotPreviewId,
+          ),
         });
         if (input.verifyAfterWrite) {
           await this.verifyWrittenRecord(table, result.business_record_id, result.created, input);
@@ -358,6 +358,15 @@ export class TransactionalBatchWriter {
           error_code: e.code,
         };
       }
+      if (e instanceof CreateLifecyclePersistenceError) {
+        return {
+          ...baseResult,
+          business_record_id: e.recordId,
+          created: true,
+          status: 'failed',
+          error_code: 'RUN_MANIFEST_PERSIST_FAILED',
+        };
+      }
       if (e instanceof RelationContextError) {
         return {
           ...baseResult,
@@ -372,6 +381,34 @@ export class TransactionalBatchWriter {
         error_code: errorCode,
       };
     }
+  }
+
+  private createLifecycle(
+    table: 'customer' | 'project' | 'model',
+    tableId: string,
+    manifestRepository?: RunManifestRepository,
+    pilotPreviewId?: string,
+  ): CreateRecordLifecycle | undefined {
+    if (!manifestRepository || !pilotPreviewId) return undefined;
+    let intent: CreateLifecycleIntent | undefined;
+    return {
+      beforeCreate: async (candidate) => {
+        intent = candidate;
+        await manifestRepository.recordCreateIntent(pilotPreviewId, candidate);
+      },
+      afterCreate: async (recordId) => {
+        if (!intent) {
+          throw new Error('CREATE_INTENT missing before CREATE_CONFIRMED');
+        }
+        await manifestRepository.recordCreated(pilotPreviewId, {
+          entity: table,
+          tableId,
+          operationKey: intent.operationKey,
+          recordId,
+          createdAt: intent.createdAt,
+        });
+      },
+    };
   }
 
   private async verifyWrittenRecord(
@@ -459,6 +496,22 @@ export class TransactionalBatchWriter {
       right.createdAt.localeCompare(left.createdAt)
     );
     if (recordsToDelete.length === 0) {
+      if (manifestRepository && pilotPreviewId) {
+        const manifest = await manifestRepository.findByPreviewId(pilotPreviewId).catch(() => null);
+        if (manifest?.createIntents.some((intent) => intent.state === 'PENDING')) {
+          // A process may have died after Create Record but before
+          // CREATE_CONFIRMED. Leave compensation_required durable so restart
+          // recovery can resolve the intent by ingestion id.
+          return { rolledBack, fullRollback: false, compensationEventsEmitted };
+        }
+      }
+      if (manifestRepository && pilotPreviewId) {
+        try {
+          await manifestRepository.completeCompensation(pilotPreviewId, true);
+        } catch {
+          fullRollback = false;
+        }
+      }
       void input;
       return { rolledBack, fullRollback, compensationEventsEmitted };
     }
@@ -525,6 +578,10 @@ export class TransactionalBatchWriter {
     }
 
     if (manifestRepository && pilotPreviewId) {
+      const manifest = await manifestRepository.findByPreviewId(pilotPreviewId).catch(() => null);
+      if (manifest?.createIntents.some((intent) => intent.state === 'PENDING')) {
+        return { rolledBack, fullRollback: false, compensationEventsEmitted };
+      }
       try {
         await manifestRepository.completeCompensation(pilotPreviewId, fullRollback);
       } catch {
@@ -549,27 +606,77 @@ export class TransactionalBatchWriter {
     const pending = await this.runManifestRepository.findPendingCompensation();
     const outcomes: Array<{ previewId: string; status: 'compensated' | 'compensation_failed' }> = [];
     for (const manifest of pending) {
-      const records = manifest.createdRecords
+      if (manifest.status === 'confirmed') {
+        await this.runManifestRepository.markCompensationRequired(manifest.previewId);
+      }
+      await this.resolvePendingCreateIntents(manifest);
+      const recoveredManifest = await this.runManifestRepository.findByPreviewId(manifest.previewId);
+      if (!recoveredManifest) {
+        throw new RunManifestStateError(
+          'RUN_MANIFEST_NOT_FOUND',
+          `Production-pilot manifest ${manifest.previewId} disappeared during recovery`
+        );
+      }
+      const records = recoveredManifest.createdRecords
         .filter((record) => record.state !== 'DELETED')
         .map((record) => ({ type: record.entity, recordId: record.recordId }));
       const result = await this.rollback(
         records,
         {
-          ingestionId: manifest.ingestionId,
+          ingestionId: recoveredManifest.ingestionId,
           normalizedFields: {},
           targetTables: records.map((record) => record.type),
           onCompensationStarted: hooks?.onCompensationStarted,
           onCompensationCompleted: hooks?.onCompensationCompleted,
         },
         this.runManifestRepository,
-        manifest.previewId,
+        recoveredManifest.previewId,
       );
       outcomes.push({
-        previewId: manifest.previewId,
+        previewId: recoveredManifest.previewId,
         status: result.fullRollback ? 'compensated' : 'compensation_failed',
       });
     }
     return outcomes;
+  }
+
+  private async resolvePendingCreateIntents(manifest: ProductionPilotRunManifest): Promise<void> {
+    const pendingIntents = manifest.createIntents.filter((intent) => intent.state === 'PENDING');
+    for (const intent of pendingIntents) {
+      const writer = intent.entity === 'customer'
+        ? this.customerWriter
+        : intent.entity === 'project'
+          ? this.projectWriter
+          : this.modelWriter;
+      if (!writer?.findByIngestionId) {
+        throw new RunManifestStateError(
+          'RUN_MANIFEST_RECOVERY_AMBIGUOUS',
+          `Cannot recover CREATE_INTENT ${intent.operationKey} without an ingestion lookup`
+        );
+      }
+      const recordIds = await writer.findByIngestionId(manifest.ingestionId);
+      if (recordIds.length > 1) {
+        throw new RunManifestStateError(
+          'RUN_MANIFEST_RECOVERY_AMBIGUOUS',
+          `CREATE_INTENT ${intent.operationKey} matched multiple records`
+        );
+      }
+      if (recordIds.length === 1) {
+        await this.runManifestRepository!.recordCreated(manifest.previewId, {
+          entity: intent.entity,
+          tableId: intent.tableId,
+          operationKey: intent.operationKey,
+          recordId: recordIds[0],
+          createdAt: intent.createdAt,
+        });
+      } else {
+        await this.runManifestRepository!.markCreateIntentResolved(
+          manifest.previewId,
+          intent.operationKey,
+          'NOT_FOUND',
+        );
+      }
+    }
   }
 
   private getTableId(

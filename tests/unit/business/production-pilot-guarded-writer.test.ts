@@ -6,10 +6,8 @@ import type {
   TransactionalBatchWriterResult,
 } from '../../../src/server/business/transactional-batch-writer.js';
 import type { FeishuWriteConfig } from '../../../src/server/config/feishu-write-config.js';
-import {
-  confirmProductionWritePreview,
-  previewProductionWrite,
-} from '../../../src/server/config/production-pilot.js';
+import { sha256Hex } from '../../../src/server/config/production-pilot.js';
+import { InMemoryRunManifestRepository } from '../../../src/server/repositories/run-manifest-repository.js';
 
 const BASE = 'base_prod_pilot';
 const TABLES = {
@@ -77,14 +75,36 @@ function createSpyInner(): { inner: BatchWriterPort; calls: number } {
   return { inner, get calls() { return state.calls; } };
 }
 
-function input(overrides: Record<string, unknown> = {}) {
+async function input(overrides: Record<string, unknown> = {}) {
   const previewRequest = {
     ingestionId: 'ing_pilot_001',
     targetTables: ['customer', 'project'] as Array<'customer' | 'project'>,
     targetTableIds: TABLES,
     targetBaseToken: BASE,
   };
-  const preview = confirmProductionWritePreview(previewProductionWrite(previewRequest));
+  const runManifestRepository = new InMemoryRunManifestRepository();
+  const previewId = 'preview_guarded_writer_001';
+  await runManifestRepository.createGenerated({
+    previewId,
+    ingestionId: previewRequest.ingestionId,
+    runId: 'pilot-run-001',
+    previewDigest: 'a'.repeat(64),
+    operator: 'operator-001',
+    createdAt: '2026-08-01T07:00:00.000Z',
+    expiresAt: '2026-08-01T08:00:00.000Z',
+    targetTables: previewRequest.targetTables,
+    targetTableDigests: {
+      customer: sha256Hex(TABLES.customer),
+      project: sha256Hex(TABLES.project),
+    },
+    baseTokenDigest: sha256Hex(BASE),
+  });
+  await runManifestRepository.confirm(previewId, 'operator-001', '2026-08-01T07:00:01.000Z');
+  const manifest = await runManifestRepository.consume(
+    previewId,
+    '2026-08-01T07:00:02.000Z',
+    'operator-001',
+  );
   return {
     ingestionId: previewRequest.ingestionId,
     normalizedFields: { 项目名称: '脱敏项目' },
@@ -94,18 +114,19 @@ function input(overrides: Record<string, unknown> = {}) {
     governanceDecision: { decision: 'PASS' },
     targetBaseToken: BASE,
     pilotRunId: 'pilot-run-001',
-    humanConfirmed: true,
-    productionPilotPreview: preview,
+    operator: 'operator-001',
+    pilotManifest: manifest,
+    runManifestRepository,
     ...overrides,
   };
 }
 
 describe('GuardedBatchWriter — production-pilot', () => {
-  it('delegates only after a confirmed public-safe preview and human confirmation', async () => {
+  it('delegates only after a consumed server-owned manifest', async () => {
     const spy = createSpyInner();
     const guarded = new GuardedBatchWriter(pilotConfig(), spy.inner, DURABLE_PILOT_REPOSITORIES);
 
-    const result = await guarded.writeBatch(input());
+    const result = await guarded.writeBatch(await input());
 
     expect(result.status).toBe('committed');
     expect(result.gate.allowed).toBe(true);
@@ -116,15 +137,15 @@ describe('GuardedBatchWriter — production-pilot', () => {
   });
 
   it.each([
-    ['preview missing', { productionPilotPreview: undefined }],
-    ['human confirmation missing', { humanConfirmed: false }],
+    ['manifest missing', { pilotManifest: undefined }],
+    ['operator missing', { operator: undefined }],
     ['run id mismatch', { pilotRunId: 'pilot-run-002' }],
     ['target table outside whitelist', { projectTableId: 'tbl_other' }],
   ])('%s blocks without delegating', async (_label, overrides) => {
     const spy = createSpyInner();
     const guarded = new GuardedBatchWriter(pilotConfig(), spy.inner);
 
-    const result = await guarded.writeBatch(input(overrides));
+    const result = await guarded.writeBatch(await input(overrides));
 
     expect(result.status).toBe('blocked');
     expect(result.error_code).toBe('GATE_BLOCKED');
@@ -138,7 +159,7 @@ describe('GuardedBatchWriter — production-pilot', () => {
       runManifestRepository: false,
     });
 
-    const result = await guarded.writeBatch(input());
+    const result = await guarded.writeBatch(await input());
 
     expect(result.status).toBe('blocked');
     expect(result.gate.reason).toContain('durable repositories');
@@ -152,7 +173,7 @@ describe('GuardedBatchWriter — production-pilot', () => {
       spy.inner
     );
 
-    const result = await guarded.writeBatch(input());
+    const result = await guarded.writeBatch(await input());
 
     expect(result.status).toBe('blocked');
     expect(spy.calls).toBe(0);

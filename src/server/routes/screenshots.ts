@@ -21,6 +21,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { ScreenshotService } from '../services/screenshot-service.js';
+import { UnauthorizedError } from '../domain/errors.js';
 
 // ============================================================================
 // 请求体 Schema（zod 校验）
@@ -51,20 +52,18 @@ const confirmWriteSchema = z.object({
   candidate_v1_id: z.string().min(1),
   dry_run: z.boolean().optional(),
   target_tables: z.array(z.enum(['customer', 'project', 'model'])).optional(),
-  pilot_run_id: z.string().min(1).optional(),
-  human_confirmed: z.boolean().optional(),
-  production_pilot_preview: z.object({
-    previewId: z.string().regex(/^[a-f0-9]{64}$/),
-    generatedAt: z.string().datetime(),
-    writeMode: z.literal('production-pilot'),
-    plannedRecordCount: z.number().int().nonnegative(),
-    targetTableAliases: z.array(z.enum(['customer', 'project', 'model'])),
-    targetTableDigests: z.record(z.string().regex(/^[a-f0-9]{64}$/)),
-    baseTokenDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-    confirmed: z.boolean(),
-    confirmedAt: z.string().datetime().optional(),
-  }).optional(),
-});
+  production_pilot_preview_id: z.string().uuid().optional(),
+  production_pilot_nonce: z.string().uuid().optional(),
+}).strict();
+
+const createProductionPilotPreviewSchema = z.object({
+  screenshot_id: z.string().min(1),
+  candidate_v1_id: z.string().min(1),
+}).strict();
+
+const confirmProductionPilotPreviewSchema = z.object({
+  nonce: z.string().uuid(),
+}).strict();
 
 const escalateReviewSchema = z.object({
   reviewer_id: z.string().min(1),
@@ -72,6 +71,13 @@ const escalateReviewSchema = z.object({
   reason: z.string().min(1),
   suggested_fields: z.record(z.unknown()).optional(),
 });
+
+function getAuthenticatedOperator(request: { headers: Record<string, string | string[] | undefined> }): string {
+  const value = request.headers['x-operator-id'] ?? request.headers['x-authenticated-operator'];
+  const operator = Array.isArray(value) ? value[0] : value;
+  if (!operator?.trim()) throw new UnauthorizedError('Authenticated operator header is required');
+  return operator;
+}
 
 // ============================================================================
 // 路由注册
@@ -81,6 +87,29 @@ export async function screenshotRoutes(
   app: FastifyInstance,
   service: ScreenshotService
 ): Promise<void> {
+  const createPilotPreview = async (request: { body?: unknown }, reply: { send: (body: unknown) => unknown }) => {
+    const body = createProductionPilotPreviewSchema.parse(request.body);
+    const operator = getAuthenticatedOperator(request as { headers: Record<string, string | string[] | undefined> });
+    const result = await service.createProductionPilotPreview(
+      body.screenshot_id,
+      { candidate_v1_id: body.candidate_v1_id },
+      operator,
+    );
+    return reply.send(result);
+  };
+  const confirmPilotPreview = async (
+    request: { body?: unknown; params?: unknown; headers: Record<string, string | string[] | undefined> },
+  ) => {
+    const body = confirmProductionPilotPreviewSchema.parse(request.body);
+    const { id } = request.params as { id: string };
+    return service.confirmProductionPilotPreview(id, getAuthenticatedOperator(request), body.nonce);
+  };
+
+  app.post('/v1/production-pilot/previews', createPilotPreview);
+  app.post('/production-pilot/previews', createPilotPreview);
+  app.post('/v1/production-pilot/previews/:id/confirm', confirmPilotPreview);
+  app.post('/production-pilot/previews/:id/confirm', confirmPilotPreview);
+
   // 1. POST /v1/screenshots — 创建截图提交
   app.post('/v1/screenshots', async (request, reply) => {
     const body = createScreenshotSchema.parse(request.body);
@@ -112,8 +141,20 @@ export async function screenshotRoutes(
   app.post('/v1/screenshots/:id/confirm', async (request) => {
     const { id } = request.params as { id: string };
     const body = confirmWriteSchema.parse(request.body);
-    return await service.confirmWrite(id, body);
+    const operator = body.production_pilot_preview_id || body.production_pilot_nonce
+      ? getAuthenticatedOperator(request)
+      : undefined;
+    return await service.confirmWrite(id, body, operator);
   });
+
+  const executeProductionPilotWrite = async (request: { body?: unknown; params?: unknown; headers: Record<string, string | string[] | undefined> }) => {
+    const { id } = request.params as { id: string };
+    const body = confirmWriteSchema.parse(request.body);
+    const operator = getAuthenticatedOperator(request);
+    return service.confirmWrite(id, body, operator);
+  };
+  app.post('/v1/screenshots/:id/confirm-write', executeProductionPilotWrite);
+  app.post('/screenshots/:id/confirm-write', executeProductionPilotWrite);
 
   // 6. POST /v1/screenshots/:id/escalate-review — 转人工复核
   app.post('/v1/screenshots/:id/escalate-review', async (request) => {

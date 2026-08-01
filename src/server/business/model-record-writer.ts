@@ -9,6 +9,7 @@ import {
 import { FeishuApiError } from '../feishu/feishu-errors.js';
 import { FeishuCommitFailedError } from '../domain/errors.js';
 import { assertExpectedFields } from './post-write-verification.js';
+import { CreateLifecyclePersistenceError, type CreateRecordLifecycle } from './create-lifecycle.js';
 
 const MODEL_FIELD_WHITELIST = [
   '模特姓名',
@@ -28,11 +29,13 @@ export interface ModelRecordWriterResult {
 export interface ModelRecordWriterInput {
   ingestionId: string;
   normalizedFields: Record<string, unknown>;
+  createLifecycle?: CreateRecordLifecycle;
 }
 
 export interface ModelRecordWriter {
   write(input: ModelRecordWriterInput): Promise<ModelRecordWriterResult>;
   verifyRecord?(recordId: string, input: ModelRecordWriterInput): Promise<void>;
+  findByIngestionId?(ingestionId: string): Promise<string[]>;
   deleteRecord(recordId: string): Promise<void>;
 }
 
@@ -74,16 +77,32 @@ export class FeishuModelRecordWriter implements ModelRecordWriter {
     }
 
     const fields = this.buildFields(input.normalizedFields, input.ingestionId);
+    const operationKey = `model-record:${this.options.modelTableId}:${input.ingestionId}`;
+    const clientToken = createStableClientToken(operationKey);
+    await input.createLifecycle?.beforeCreate?.({
+      entity: 'model',
+      tableId: this.options.modelTableId,
+      ingestionId: input.ingestionId,
+      operationKey,
+      clientToken,
+      createdAt: new Date().toISOString(),
+    });
     let recordId: string;
     try {
       recordId = await this.client.createRecord(
         this.options.modelTableId,
         fields,
-        createStableClientToken(
-          `model-record:${this.options.modelTableId}:${input.ingestionId}`
-        )
+        clientToken
       );
+      try {
+        await input.createLifecycle?.afterCreate?.(recordId);
+      } catch (error) {
+        throw new CreateLifecyclePersistenceError(recordId, error);
+      }
     } catch (e) {
+      if (e instanceof CreateLifecyclePersistenceError) {
+        throw e;
+      }
       throw this.toCommitFailed(e);
     }
     return {
@@ -98,6 +117,21 @@ export class FeishuModelRecordWriter implements ModelRecordWriter {
     } catch (e) {
       throw this.toCommitFailed(e);
     }
+  }
+
+  async findByIngestionId(ingestionId: string): Promise<string[]> {
+    const records = await this.client.searchRecords(this.options.modelTableId, {
+      filter: {
+        conjunction: 'and',
+        conditions: [{
+          field_name: COLLATOR_INGESTION_ID_FIELD,
+          operator: 'is',
+          value: [ingestionId],
+        }],
+      },
+      page_size: 10,
+    });
+    return records.map((record) => record.record_id);
   }
 
   async verifyRecord(recordId: string, input: ModelRecordWriterInput): Promise<void> {

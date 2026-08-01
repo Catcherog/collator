@@ -10,6 +10,7 @@ import {
 import { FeishuApiError } from '../feishu/feishu-errors.js';
 import { FeishuCommitFailedError } from '../domain/errors.js';
 import { assertExpectedFields } from './post-write-verification.js';
+import { CreateLifecyclePersistenceError, type CreateRecordLifecycle } from './create-lifecycle.js';
 
 /**
  * Whitelist of customer-table business fields the writer is allowed to
@@ -69,6 +70,7 @@ export interface CustomerRecordWriterResult {
 export interface CustomerRecordWriterInput {
   ingestionId: string;
   normalizedFields: Record<string, unknown>;
+  createLifecycle?: CreateRecordLifecycle;
 }
 
 /**
@@ -89,6 +91,7 @@ export interface CustomerRecordWriterInput {
 export interface CustomerRecordWriter {
   write(input: CustomerRecordWriterInput): Promise<CustomerRecordWriterResult>;
   verifyRecord?(recordId: string, input: CustomerRecordWriterInput): Promise<void>;
+  findByIngestionId?(ingestionId: string): Promise<string[]>;
   /**
    * Delete a customer record by its exact Feishu record_id. Used for
    * transactional rollback / cleanup compensation (AC-C10). Implementations
@@ -163,16 +166,32 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
 
     // Step 2: build whitelisted field payload + create.
     const fields = this.buildFields(input.normalizedFields, input.ingestionId);
+    const operationKey = `customer-record:${this.options.customerTableId}:${input.ingestionId}`;
+    const clientToken = createStableClientToken(operationKey);
+    await input.createLifecycle?.beforeCreate?.({
+      entity: 'customer',
+      tableId: this.options.customerTableId,
+      ingestionId: input.ingestionId,
+      operationKey,
+      clientToken,
+      createdAt: new Date().toISOString(),
+    });
     let recordId: string;
     try {
       recordId = await this.client.createRecord(
         this.options.customerTableId,
         fields,
-        createStableClientToken(
-          `customer-record:${this.options.customerTableId}:${input.ingestionId}`
-        )
+        clientToken
       );
+      try {
+        await input.createLifecycle?.afterCreate?.(recordId);
+      } catch (error) {
+        throw new CreateLifecyclePersistenceError(recordId, error);
+      }
     } catch (e) {
+      if (e instanceof CreateLifecyclePersistenceError) {
+        throw e;
+      }
       throw this.toCommitFailed(e);
     }
     return {
@@ -194,6 +213,21 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
     } catch (e) {
       throw this.toCommitFailed(e);
     }
+  }
+
+  async findByIngestionId(ingestionId: string): Promise<string[]> {
+    const records = await this.client.searchRecords(this.options.customerTableId, {
+      filter: {
+        conjunction: 'and',
+        conditions: [{
+          field_name: COLLATOR_INGESTION_ID_FIELD,
+          operator: 'is',
+          value: [ingestionId],
+        }],
+      },
+      page_size: 10,
+    });
+    return records.map((record) => record.record_id);
   }
 
   async verifyRecord(recordId: string, input: CustomerRecordWriterInput): Promise<void> {

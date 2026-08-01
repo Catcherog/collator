@@ -444,6 +444,34 @@ describe('Screenshot Routes — 主线 A1 截图纵向闭环', () => {
       expect(body.error_code).toBeDefined();
       expect(batchWriter.callCount).toBe(1);
     });
+
+    it('rejects a client-supplied full production preview or human-confirmation flag', async () => {
+      const { app, batchWriter } = await setup();
+      const created = await createScreenshot(app);
+      const evidenceResp = await app.inject({
+        method: 'GET',
+        url: `/v1/screenshots/${created.screenshot_id}/evidence`,
+      });
+      const candidateId = evidenceResp.json().candidate_v1.candidate_id;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/screenshots/${created.screenshot_id}/confirm-write`,
+        headers: { 'x-operator-id': 'operator-route-test' },
+        payload: {
+          reviewer_id: 'spoofed-body-operator',
+          candidate_v1_id: candidateId,
+          human_confirmed: true,
+          production_pilot_preview: {
+            writeMode: 'production-pilot',
+            previewId: 'client-controlled-preview',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(batchWriter.callCount).toBe(0);
+    });
   });
 
   // ============================================================

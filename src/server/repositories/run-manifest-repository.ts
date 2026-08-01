@@ -22,11 +22,29 @@ export type RunManifestStatus =
 
 export type CreatedPilotRecordState = 'CREATED' | 'DELETED' | 'DELETE_FAILED';
 
+export type CreateIntentState = 'PENDING' | 'CREATED' | 'NOT_FOUND';
+
+export type PilotEntity = 'customer' | 'project' | 'model';
+
+export interface CreateRecordIntent {
+  entity: PilotEntity;
+  tableId: string;
+  ingestionId: string;
+  operationKey: string;
+  clientToken: string;
+  createdAt: string;
+  state: CreateIntentState;
+  recordId?: string;
+  resolvedAt?: string;
+}
+
 export interface CreatedPilotRecord {
-  entity: 'customer' | 'project' | 'model';
+  entity: PilotEntity;
   recordId: string;
   createdAt: string;
   state: CreatedPilotRecordState;
+  operationKey?: string;
+  tableId?: string;
   deletedAt?: string;
   errorCode?: string;
 }
@@ -39,6 +57,13 @@ export interface CreateRunManifestInput {
   operator: string;
   createdAt: string;
   expiresAt: string;
+  /** Server-owned bindings. They are persisted but never accepted from the execute request. */
+  candidateDigest?: string;
+  governanceDigest?: string;
+  authoritativePlanDigest?: string;
+  targetTables?: PilotEntity[];
+  targetTableDigests?: Partial<Record<PilotEntity, string>>;
+  baseTokenDigest?: string;
 }
 
 export interface ProductionPilotRunManifest extends CreateRunManifestInput {
@@ -48,6 +73,7 @@ export interface ProductionPilotRunManifest extends CreateRunManifestInput {
   consumedAt?: string;
   completedAt?: string;
   createdRecords: CreatedPilotRecord[];
+  createIntents: CreateRecordIntent[];
 }
 
 export type RunManifestStateErrorCode =
@@ -57,6 +83,9 @@ export type RunManifestStateErrorCode =
   | 'RUN_MANIFEST_OPERATOR_MISMATCH'
   | 'RUN_MANIFEST_RECORD_NOT_FOUND'
   | 'RUN_MANIFEST_RECORD_DUPLICATE'
+  | 'RUN_MANIFEST_NONCE_MISMATCH'
+  | 'RUN_MANIFEST_CREATE_INTENT_NOT_FOUND'
+  | 'RUN_MANIFEST_RECOVERY_AMBIGUOUS'
   | 'RUN_MANIFEST_STORAGE_INVALID';
 
 export class RunManifestStateError extends Error {
@@ -76,12 +105,32 @@ export interface RunManifestRepository {
   confirm(
     previewId: string,
     operator: string,
-    now: string
+    now: string,
+    nonce?: string
   ): Promise<ProductionPilotRunManifest>;
-  consume(previewId: string, now: string): Promise<ProductionPilotRunManifest>;
+  consume(
+    previewId: string,
+    now: string,
+    operator?: string,
+    nonce?: string
+  ): Promise<ProductionPilotRunManifest>;
+  recordCreateIntent(
+    previewId: string,
+    intent: Omit<CreateRecordIntent, 'state'> & { state?: CreateIntentState }
+  ): Promise<ProductionPilotRunManifest>;
+  markCreateIntentResolved(
+    previewId: string,
+    operationKey: string,
+    state: Exclude<CreateIntentState, 'PENDING'>,
+    recordId?: string,
+    now?: string
+  ): Promise<ProductionPilotRunManifest>;
   recordCreated(
     previewId: string,
-    record: Omit<CreatedPilotRecord, 'state'> & { state?: CreatedPilotRecordState }
+    record: Omit<CreatedPilotRecord, 'state'> & {
+      state?: CreatedPilotRecordState;
+      operationKey?: string;
+    }
   ): Promise<ProductionPilotRunManifest>;
   markCompensationRequired(previewId: string): Promise<ProductionPilotRunManifest>;
   markRecordDeleted(
@@ -103,6 +152,7 @@ export interface RunManifestRepository {
   ): Promise<ProductionPilotRunManifest>;
   completeSuccess(previewId: string, now?: string): Promise<ProductionPilotRunManifest>;
   findPendingCompensation(): Promise<ProductionPilotRunManifest[]>;
+  validate(): Promise<void>;
 }
 
 function cloneManifest(manifest: ProductionPilotRunManifest): ProductionPilotRunManifest {
@@ -115,6 +165,7 @@ function createManifest(input: CreateRunManifestInput): ProductionPilotRunManife
     nonce: randomUUID(),
     status: 'generated',
     createdRecords: [],
+    createIntents: [],
   };
 }
 
@@ -137,6 +188,15 @@ function assertOperator(manifest: ProductionPilotRunManifest, operator: string):
     throw new RunManifestStateError(
       'RUN_MANIFEST_OPERATOR_MISMATCH',
       `Operator ${operator} is not authorized for preview ${manifest.previewId}`
+    );
+  }
+}
+
+function assertNonce(manifest: ProductionPilotRunManifest, nonce: string | undefined): void {
+  if (nonce !== undefined && manifest.nonce !== nonce) {
+    throw new RunManifestStateError(
+      'RUN_MANIFEST_NONCE_MISMATCH',
+      `Nonce does not match production-pilot preview ${manifest.previewId}`
     );
   }
 }
@@ -175,6 +235,22 @@ function findByRunIdInMap(
   return null;
 }
 
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sameServerBindings(
+  existing: ProductionPilotRunManifest,
+  input: CreateRunManifestInput,
+): boolean {
+  return existing.candidateDigest === input.candidateDigest
+    && existing.governanceDigest === input.governanceDigest
+    && existing.authoritativePlanDigest === input.authoritativePlanDigest
+    && existing.baseTokenDigest === input.baseTokenDigest
+    && sameJson(existing.targetTables, input.targetTables)
+    && sameJson(existing.targetTableDigests, input.targetTableDigests);
+}
+
 function applyCreateGenerated(
   manifests: Map<string, ProductionPilotRunManifest>,
   input: CreateRunManifestInput
@@ -187,6 +263,7 @@ function applyCreateGenerated(
         || existing.runId !== input.runId
         || existing.previewDigest !== input.previewDigest
         || existing.operator !== input.operator
+        || !sameServerBindings(existing, input)
       ) {
         throw new RunManifestStateError(
           'RUN_MANIFEST_STATE_INVALID',
@@ -218,11 +295,13 @@ function applyConfirm(
   manifests: Map<string, ProductionPilotRunManifest>,
   previewId: string,
   operator: string,
-  now: string
+  now: string,
+  nonce?: string
 ): ProductionPilotRunManifest {
   const manifest = requireManifest(manifests, previewId);
   assertStatus(manifest, 'generated', 'confirm');
   assertOperator(manifest, operator);
+  assertNonce(manifest, nonce);
   assertNotExpired(manifest, now);
   manifest.status = 'confirmed';
   manifest.confirmedAt = now;
@@ -232,36 +311,161 @@ function applyConfirm(
 function applyConsume(
   manifests: Map<string, ProductionPilotRunManifest>,
   previewId: string,
-  now: string
+  now: string,
+  operator?: string,
+  nonce?: string
 ): ProductionPilotRunManifest {
   const manifest = requireManifest(manifests, previewId);
   assertStatus(manifest, 'confirmed', 'consume');
+  if (operator !== undefined) assertOperator(manifest, operator);
+  assertNonce(manifest, nonce);
   assertNotExpired(manifest, now);
   manifest.status = 'consumed';
   manifest.consumedAt = now;
   return manifest;
 }
 
+function applyCreateIntent(
+  manifests: Map<string, ProductionPilotRunManifest>,
+  previewId: string,
+  intent: Omit<CreateRecordIntent, 'state'> & { state?: CreateIntentState }
+): ProductionPilotRunManifest {
+  const manifest = requireManifest(manifests, previewId);
+  const state = intent.state ?? 'PENDING';
+  if (state === 'CREATED' && !intent.recordId) {
+    throw new RunManifestStateError(
+      'RUN_MANIFEST_STATE_INVALID',
+      `CREATE_INTENT ${intent.operationKey} requires a record id when created`
+    );
+  }
+  if (state === 'NOT_FOUND' && intent.recordId !== undefined) {
+    throw new RunManifestStateError(
+      'RUN_MANIFEST_STATE_INVALID',
+      `CREATE_INTENT ${intent.operationKey} cannot carry a record id when not found`
+    );
+  }
+  if (!['consumed', 'compensation_required'].includes(manifest.status)) {
+    throw new RunManifestStateError(
+      'RUN_MANIFEST_STATE_INVALID',
+      `Cannot record a CREATE_INTENT while manifest ${previewId} is ${manifest.status}`
+    );
+  }
+  const existing = manifest.createIntents.find((candidate) => candidate.operationKey === intent.operationKey);
+  if (existing) {
+    if (
+      existing.entity !== intent.entity
+      || existing.tableId !== intent.tableId
+      || existing.clientToken !== intent.clientToken
+      || existing.ingestionId !== intent.ingestionId
+    ) {
+      throw new RunManifestStateError(
+        'RUN_MANIFEST_STATE_INVALID',
+        `CREATE_INTENT ${intent.operationKey} is bound to a different record operation`
+      );
+    }
+    return manifest;
+  }
+  manifest.createIntents.push({ ...intent, state });
+  return manifest;
+}
+
+function applyMarkCreateIntentResolved(
+  manifests: Map<string, ProductionPilotRunManifest>,
+  previewId: string,
+  operationKey: string,
+  state: Exclude<CreateIntentState, 'PENDING'>,
+  recordId: string | undefined,
+  now: string
+): ProductionPilotRunManifest {
+  const manifest = requireManifest(manifests, previewId);
+  if (state === 'CREATED' && !recordId) {
+    throw new RunManifestStateError(
+      'RUN_MANIFEST_STATE_INVALID',
+      `CREATE_INTENT ${operationKey} requires a record id when resolved as CREATED`
+    );
+  }
+  if (state === 'NOT_FOUND' && recordId !== undefined) {
+    throw new RunManifestStateError(
+      'RUN_MANIFEST_STATE_INVALID',
+      `CREATE_INTENT ${operationKey} cannot carry a record id when resolved as NOT_FOUND`
+    );
+  }
+  if (!['consumed', 'compensation_required'].includes(manifest.status)) {
+    throw new RunManifestStateError(
+      'RUN_MANIFEST_STATE_INVALID',
+      `Cannot resolve a CREATE_INTENT while manifest ${previewId} is ${manifest.status}`
+    );
+  }
+  const intent = manifest.createIntents.find((candidate) => candidate.operationKey === operationKey);
+  if (!intent) {
+    throw new RunManifestStateError(
+      'RUN_MANIFEST_CREATE_INTENT_NOT_FOUND',
+      `No CREATE_INTENT ${operationKey} exists for ${previewId}`
+    );
+  }
+  if (intent.state !== 'PENDING') {
+    if (intent.state === state && intent.recordId === recordId) return manifest;
+    throw new RunManifestStateError(
+      'RUN_MANIFEST_STATE_INVALID',
+      `CREATE_INTENT ${operationKey} is already resolved for ${previewId}`
+    );
+  }
+  intent.state = state;
+  intent.recordId = recordId;
+  intent.resolvedAt = now;
+  return manifest;
+}
+
 function applyRecordCreated(
   manifests: Map<string, ProductionPilotRunManifest>,
   previewId: string,
-  record: Omit<CreatedPilotRecord, 'state'> & { state?: CreatedPilotRecordState }
+  record: Omit<CreatedPilotRecord, 'state'> & { state?: CreatedPilotRecordState; operationKey?: string }
 ): ProductionPilotRunManifest {
   const manifest = requireManifest(manifests, previewId);
-  if (!['consumed', 'compensation_required', 'failed', 'succeeded'].includes(manifest.status)) {
+  if (!['consumed', 'compensation_required'].includes(manifest.status)) {
     throw new RunManifestStateError(
       'RUN_MANIFEST_STATE_INVALID',
       `Cannot record a created record while manifest ${previewId} is ${manifest.status}`
     );
   }
+  if (manifest.createIntents.length > 0 && !record.operationKey) {
+    throw new RunManifestStateError(
+      'RUN_MANIFEST_STATE_INVALID',
+      `CREATE_CONFIRMED for ${previewId} must reference its CREATE_INTENT`
+    );
+  }
+  const intent = record.operationKey
+    ? manifest.createIntents.find((candidate) => candidate.operationKey === record.operationKey)
+    : undefined;
+  if (record.operationKey && !intent) {
+    throw new RunManifestStateError(
+      'RUN_MANIFEST_CREATE_INTENT_NOT_FOUND',
+      `No CREATE_INTENT ${record.operationKey} exists for ${previewId}`
+    );
+  }
+  if (intent) {
+    if (intent.entity !== record.entity || intent.tableId !== record.tableId) {
+      throw new RunManifestStateError(
+        'RUN_MANIFEST_STATE_INVALID',
+        `CREATE_CONFIRMED ${record.operationKey} does not match its CREATE_INTENT`
+      );
+    }
+    if (intent.state === 'CREATED' && intent.recordId === record.recordId) return manifest;
+    if (intent.state !== 'PENDING') {
+      throw new RunManifestStateError(
+        'RUN_MANIFEST_STATE_INVALID',
+        `CREATE_INTENT ${intent.operationKey} is not pending for ${previewId}`
+      );
+    }
+    intent.state = 'CREATED';
+    intent.recordId = record.recordId;
+    intent.resolvedAt = record.createdAt;
+  }
   const duplicate = manifest.createdRecords.some(
     (created) => created.entity === record.entity && created.recordId === record.recordId
   );
   if (duplicate) {
-    throw new RunManifestStateError(
-      'RUN_MANIFEST_RECORD_DUPLICATE',
-      `Record ${record.entity}/${record.recordId} is already recorded for ${previewId}`
-    );
+    return manifest;
   }
   manifest.createdRecords.push({
     ...record,
@@ -278,7 +482,7 @@ function applyMarkCompensationRequired(
   if (manifest.status === 'compensation_required') {
     return manifest;
   }
-  if (!['consumed', 'failed', 'succeeded'].includes(manifest.status)) {
+  if (!['confirmed', 'consumed', 'failed', 'succeeded'].includes(manifest.status)) {
     throw new RunManifestStateError(
       'RUN_MANIFEST_STATE_INVALID',
       `Cannot start compensation while manifest ${previewId} is ${manifest.status}`
@@ -372,7 +576,11 @@ class ManifestStateStore {
   private readonly manifests = new Map<string, ProductionPilotRunManifest>();
 
   restore(manifest: ProductionPilotRunManifest): void {
-    this.manifests.set(manifest.previewId, manifest);
+    this.manifests.set(manifest.previewId, {
+      ...manifest,
+      createdRecords: manifest.createdRecords === undefined ? [] : manifest.createdRecords,
+      createIntents: manifest.createIntents === undefined ? [] : manifest.createIntents,
+    });
   }
 
   toArray(): ProductionPilotRunManifest[] {
@@ -391,17 +599,34 @@ class ManifestStateStore {
     return findByRunIdInMap(this.manifests, runId);
   }
 
-  confirm(previewId: string, operator: string, now: string): ProductionPilotRunManifest {
-    return applyConfirm(this.manifests, previewId, operator, now);
+  confirm(previewId: string, operator: string, now: string, nonce?: string): ProductionPilotRunManifest {
+    return applyConfirm(this.manifests, previewId, operator, now, nonce);
   }
 
-  consume(previewId: string, now: string): ProductionPilotRunManifest {
-    return applyConsume(this.manifests, previewId, now);
+  consume(previewId: string, now: string, operator?: string, nonce?: string): ProductionPilotRunManifest {
+    return applyConsume(this.manifests, previewId, now, operator, nonce);
+  }
+
+  recordCreateIntent(
+    previewId: string,
+    intent: Omit<CreateRecordIntent, 'state'> & { state?: CreateIntentState }
+  ): ProductionPilotRunManifest {
+    return applyCreateIntent(this.manifests, previewId, intent);
+  }
+
+  markCreateIntentResolved(
+    previewId: string,
+    operationKey: string,
+    state: Exclude<CreateIntentState, 'PENDING'>,
+    recordId?: string,
+    now = new Date().toISOString()
+  ): ProductionPilotRunManifest {
+    return applyMarkCreateIntentResolved(this.manifests, previewId, operationKey, state, recordId, now);
   }
 
   recordCreated(
     previewId: string,
-    record: Omit<CreatedPilotRecord, 'state'> & { state?: CreatedPilotRecordState }
+    record: Omit<CreatedPilotRecord, 'state'> & { state?: CreatedPilotRecordState; operationKey?: string }
   ): ProductionPilotRunManifest {
     return applyRecordCreated(this.manifests, previewId, record);
   }
@@ -441,9 +666,86 @@ class ManifestStateStore {
   }
 
   findPendingCompensation(): ProductionPilotRunManifest[] {
-    return Array.from(this.manifests.values()).filter((manifest) =>
-      ['compensation_required', 'compensation_failed'].includes(manifest.status)
-    );
+    const now = Date.now();
+    return Array.from(this.manifests.values()).filter((manifest) => {
+      if (['compensation_required', 'compensation_failed'].includes(manifest.status)) return true;
+      if (manifest.status === 'consumed') {
+        return manifest.createdRecords.some((record) => record.state !== 'DELETED')
+          || manifest.createIntents.some((intent) => intent.state === 'PENDING');
+      }
+      return manifest.status === 'confirmed' && new Date(manifest.expiresAt).getTime() <= now;
+    });
+  }
+
+  validate(): void {
+    const entities = new Set<PilotEntity>(['customer', 'project', 'model']);
+    const recordStates = new Set<CreatedPilotRecordState>(['CREATED', 'DELETED', 'DELETE_FAILED']);
+    const intentStates = new Set<CreateIntentState>(['PENDING', 'CREATED', 'NOT_FOUND']);
+    const statuses = new Set<RunManifestStatus>([
+      'generated', 'confirmed', 'consumed', 'succeeded', 'failed',
+      'compensation_required', 'compensated', 'compensation_failed',
+    ]);
+    for (const manifest of this.manifests.values()) {
+      const targetTablesValid = manifest.targetTables === undefined
+        || (
+          Array.isArray(manifest.targetTables)
+          && manifest.targetTables.length > 0
+          && new Set(manifest.targetTables).size === manifest.targetTables.length
+          && manifest.targetTables.every((table) => entities.has(table))
+        );
+      const targetDigestsValid = manifest.targetTableDigests === undefined
+        || (
+          typeof manifest.targetTableDigests === 'object'
+          && manifest.targetTableDigests !== null
+          && !Array.isArray(manifest.targetTableDigests)
+          && Object.values(manifest.targetTableDigests).every((digest) => typeof digest === 'string')
+        );
+      const recordsValid = Array.isArray(manifest.createdRecords)
+        && manifest.createdRecords.every((record) => (
+          record
+          && entities.has(record.entity)
+          && typeof record.recordId === 'string'
+          && typeof record.createdAt === 'string'
+          && recordStates.has(record.state)
+          && (record.operationKey === undefined || typeof record.operationKey === 'string')
+          && (record.tableId === undefined || typeof record.tableId === 'string')
+        ));
+      const intentsValid = Array.isArray(manifest.createIntents)
+        && manifest.createIntents.every((intent) => (
+          intent
+          && entities.has(intent.entity)
+          && typeof intent.tableId === 'string'
+          && typeof intent.ingestionId === 'string'
+          && typeof intent.operationKey === 'string'
+          && typeof intent.clientToken === 'string'
+          && typeof intent.createdAt === 'string'
+          && intentStates.has(intent.state)
+          && (intent.recordId === undefined || typeof intent.recordId === 'string')
+          && (intent.resolvedAt === undefined || typeof intent.resolvedAt === 'string')
+          && (intent.state !== 'CREATED' || typeof intent.recordId === 'string')
+          && (intent.state !== 'NOT_FOUND' || intent.recordId === undefined)
+        ));
+      if (
+        !manifest.previewId
+        || !manifest.ingestionId
+        || !manifest.runId
+        || !manifest.nonce
+        || !manifest.previewDigest
+        || !manifest.operator
+        || !manifest.createdAt
+        || !manifest.expiresAt
+        || !statuses.has(manifest.status)
+        || !targetTablesValid
+        || !targetDigestsValid
+        || !recordsValid
+        || !intentsValid
+      ) {
+        throw new RunManifestStateError(
+          'RUN_MANIFEST_STORAGE_INVALID',
+          'Run manifest store contains an invalid manifest'
+        );
+      }
+    }
   }
 }
 
@@ -467,18 +769,41 @@ export class InMemoryRunManifestRepository implements RunManifestRepository {
   async confirm(
     previewId: string,
     operator: string,
-    now: string
+    now: string,
+    nonce?: string
   ): Promise<ProductionPilotRunManifest> {
-    return cloneManifest(this.store.confirm(previewId, operator, now));
+    return cloneManifest(this.store.confirm(previewId, operator, now, nonce));
   }
 
-  async consume(previewId: string, now: string): Promise<ProductionPilotRunManifest> {
-    return cloneManifest(this.store.consume(previewId, now));
+  async consume(
+    previewId: string,
+    now: string,
+    operator?: string,
+    nonce?: string
+  ): Promise<ProductionPilotRunManifest> {
+    return cloneManifest(this.store.consume(previewId, now, operator, nonce));
+  }
+
+  async recordCreateIntent(
+    previewId: string,
+    intent: Omit<CreateRecordIntent, 'state'> & { state?: CreateIntentState }
+  ): Promise<ProductionPilotRunManifest> {
+    return cloneManifest(this.store.recordCreateIntent(previewId, intent));
+  }
+
+  async markCreateIntentResolved(
+    previewId: string,
+    operationKey: string,
+    state: Exclude<CreateIntentState, 'PENDING'>,
+    recordId?: string,
+    now = new Date().toISOString()
+  ): Promise<ProductionPilotRunManifest> {
+    return cloneManifest(this.store.markCreateIntentResolved(previewId, operationKey, state, recordId, now));
   }
 
   async recordCreated(
     previewId: string,
-    record: Omit<CreatedPilotRecord, 'state'> & { state?: CreatedPilotRecordState }
+    record: Omit<CreatedPilotRecord, 'state'> & { state?: CreatedPilotRecordState; operationKey?: string }
   ): Promise<ProductionPilotRunManifest> {
     return cloneManifest(this.store.recordCreated(previewId, record));
   }
@@ -522,6 +847,10 @@ export class InMemoryRunManifestRepository implements RunManifestRepository {
 
   async findPendingCompensation(): Promise<ProductionPilotRunManifest[]> {
     return this.store.findPendingCompensation().map(cloneManifest);
+  }
+
+  async validate(): Promise<void> {
+    this.store.validate();
   }
 }
 
@@ -605,6 +934,7 @@ export class FileRunManifestRepository implements RunManifestRepository {
         }
         store.restore(item as ProductionPilotRunManifest);
       }
+      store.validate();
       return store;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -653,18 +983,41 @@ export class FileRunManifestRepository implements RunManifestRepository {
   async confirm(
     previewId: string,
     operator: string,
-    now: string
+    now: string,
+    nonce?: string
   ): Promise<ProductionPilotRunManifest> {
-    return this.update((store) => store.confirm(previewId, operator, now));
+    return this.update((store) => store.confirm(previewId, operator, now, nonce));
   }
 
-  async consume(previewId: string, now: string): Promise<ProductionPilotRunManifest> {
-    return this.update((store) => store.consume(previewId, now));
+  async consume(
+    previewId: string,
+    now: string,
+    operator?: string,
+    nonce?: string
+  ): Promise<ProductionPilotRunManifest> {
+    return this.update((store) => store.consume(previewId, now, operator, nonce));
+  }
+
+  async recordCreateIntent(
+    previewId: string,
+    intent: Omit<CreateRecordIntent, 'state'> & { state?: CreateIntentState }
+  ): Promise<ProductionPilotRunManifest> {
+    return this.update((store) => store.recordCreateIntent(previewId, intent));
+  }
+
+  async markCreateIntentResolved(
+    previewId: string,
+    operationKey: string,
+    state: Exclude<CreateIntentState, 'PENDING'>,
+    recordId?: string,
+    now = new Date().toISOString()
+  ): Promise<ProductionPilotRunManifest> {
+    return this.update((store) => store.markCreateIntentResolved(previewId, operationKey, state, recordId, now));
   }
 
   async recordCreated(
     previewId: string,
-    record: Omit<CreatedPilotRecord, 'state'> & { state?: CreatedPilotRecordState }
+    record: Omit<CreatedPilotRecord, 'state'> & { state?: CreatedPilotRecordState; operationKey?: string }
   ): Promise<ProductionPilotRunManifest> {
     return this.update((store) => store.recordCreated(previewId, record));
   }
@@ -710,6 +1063,12 @@ export class FileRunManifestRepository implements RunManifestRepository {
     return this.enqueue(async () => {
       const store = await this.readStore();
       return store.findPendingCompensation().map(cloneManifest);
+    });
+  }
+
+  async validate(): Promise<void> {
+    await this.enqueue(async () => {
+      await this.readStore();
     });
   }
 }
