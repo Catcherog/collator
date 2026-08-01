@@ -8,6 +8,7 @@ import {
 } from '../feishu/feishu-client.js';
 import { FeishuApiError } from '../feishu/feishu-errors.js';
 import { FeishuCommitFailedError } from '../domain/errors.js';
+import { assertExpectedFields } from './post-write-verification.js';
 
 /**
  * 项目表业务字段白名单。
@@ -65,6 +66,7 @@ export interface ProjectRecordWriterInput {
  */
 export interface ProjectRecordWriter {
   write(input: ProjectRecordWriterInput): Promise<ProjectRecordWriterResult>;
+  verifyRecord?(recordId: string, input: ProjectRecordWriterInput): Promise<void>;
   /** 删除记录（用于事务回滚补偿）。 */
   deleteRecord(recordId: string): Promise<void>;
 }
@@ -139,6 +141,11 @@ export class FeishuProjectRecordWriter implements ProjectRecordWriter {
     } catch (e) {
       throw this.toCommitFailed(e);
     }
+  }
+
+  async verifyRecord(recordId: string, input: ProjectRecordWriterInput): Promise<void> {
+    const record = await this.client.getRecord(this.options.projectTableId, recordId);
+    assertExpectedFields(record.fields, this.buildFields(input.normalizedFields, input.ingestionId));
   }
 
   private buildFields(

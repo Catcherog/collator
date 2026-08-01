@@ -41,7 +41,18 @@ export type AuditEventType =
   | 'write_started'
   | 'write_succeeded'
   | 'write_failed'
-  | 'idempotency_replay';
+  | 'idempotency_replay'
+  | 'pilot_preview_generated'
+  | 'pilot_confirmed'
+  | 'pilot_write_started'
+  | 'pilot_record_created'
+  | 'pilot_relation_verified'
+  | 'pilot_write_completed'
+  | 'pilot_write_failed'
+  | 'pilot_write_blocked'
+  | 'pilot_compensation_started'
+  | 'pilot_compensation_completed'
+  | 'pilot_compensation_failed';
 
 /**
  * 一条已持久化的审计日志记录。

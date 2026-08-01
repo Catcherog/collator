@@ -37,6 +37,7 @@ interface MockClient {
     ) => Promise<FeishuRecord[]>
   >;
   deleteRecord: Mock<(tableId: string, recordId: string) => Promise<void>>;
+  getRecord: Mock<(tableId: string, recordId: string) => Promise<FeishuRecord>>;
 }
 
 function createMockClient(): MockClient {
@@ -46,6 +47,7 @@ function createMockClient(): MockClient {
     }),
     searchRecords: vi.fn(async () => []),
     deleteRecord: vi.fn(async () => {}),
+    getRecord: vi.fn(async () => ({ record_id: 'rec_project_new_001', fields: {} })),
   };
 }
 
@@ -212,6 +214,52 @@ describe('FeishuProjectRecordWriter', () => {
       });
 
       await expect(writer.deleteRecord('rec_missing')).rejects.toThrow(FeishuCommitFailedError);
+    });
+  });
+
+  describe('verifyRecord', () => {
+    it('reads back the exact record and verifies the intended fields', async () => {
+      client.getRecord = vi.fn(async () => ({
+        record_id: 'rec_project_new_001',
+        fields: {
+          'Collator 摄入 ID': 'ing_verify_001',
+          项目名称: '核验项目',
+          客户关联: [{ record_id: 'rec_customer_001', text: '核验客户' }],
+        },
+      }));
+
+      await writer.verifyRecord('rec_project_new_001', {
+        ingestionId: 'ing_verify_001',
+        normalizedFields: {
+          项目名称: '核验项目',
+          客户关联: 'rec_customer_001',
+        },
+      });
+
+      expect(client.getRecord).toHaveBeenCalledWith(PROJECT_TABLE_ID, 'rec_project_new_001');
+    });
+
+    it('rejects a read-back field mismatch without including the field value', async () => {
+      client.getRecord = vi.fn(async () => ({
+        record_id: 'rec_project_new_001',
+        fields: {
+          'Collator 摄入 ID': 'ing_verify_002',
+          项目名称: '不应出现在错误中的值',
+        },
+      }));
+
+      await expect(
+        writer.verifyRecord('rec_project_new_001', {
+          ingestionId: 'ing_verify_002',
+          normalizedFields: { 项目名称: '期望项目' },
+        }),
+      ).rejects.toThrow('Post-write verification failed');
+      await expect(
+        writer.verifyRecord('rec_project_new_001', {
+          ingestionId: 'ing_verify_002',
+          normalizedFields: { 项目名称: '期望项目' },
+        }),
+      ).rejects.not.toThrow('期望项目');
     });
   });
 

@@ -3,17 +3,25 @@
 // Create Record API calls.
 //
 // Layer 1 (existing `config.ts`): TASK_REPOSITORY + DRY_RUN.
-// Layer 2 (THIS file): ENABLE_REAL_FEISHU_WRITE + FEISHU_WRITE_ENV + test
-// whitelist.
+// Layer 2 (THIS file): ENABLE_REAL_FEISHU_WRITE + FEISHU_WRITE_ENV + the
+// environment-specific whitelist. Production uses a separate
+// `production-pilot` mode and never the generic `production` value.
 //
 // The gate function `isRealWriteAllowed` is the SINGLE fail-closed decision
 // point. It checks ALL 6 conditions from Amendment 6. If ANY condition is
 // missing it returns `{ allowed: false, reason }` and the caller MUST NOT
 // call the Feishu Create Record API.
 //
-// This batch does NOT enable FEISHU_WRITE_ENV=production. The gate only
-// allows `feishuWriteEnv === 'test'` and only against the test whitelist.
+// The legacy test gate remains unchanged. The production-pilot gate is a
+// separate, stricter path with its own whitelist, one-shot run id, record
+// limit, preview confirmation and human confirmation.
 //
+import {
+  isProductionWritePreviewValid,
+  type ProductionWritePreview,
+  type ProductionWritePreviewRequest,
+} from './production-pilot.js';
+
 // Security (AC-C12): reasons are static diagnostic strings. They never echo
 // env values, secrets, tokens, or PII — so logging a blocked reason cannot
 // leak FEISHU_APP_SECRET or any other credential.
@@ -25,7 +33,23 @@
  * batch — `isRealWriteAllowed` only returns `allowed: true` when
  * `feishuWriteEnv === 'test'`.
  */
-export type FeishuWriteEnv = 'test' | 'production';
+export type FeishuWriteEnv = 'test' | 'production-pilot' | 'production';
+
+export type FeishuWriteMode = 'test' | 'production-pilot' | 'blocked';
+
+export interface FeishuTargetWhitelist {
+  baseAppToken?: string;
+  tableIds: string[];
+}
+
+export interface ProductionPilotConfig {
+  enabled: boolean;
+  maxRecords: number;
+  /** One run id bound when the process starts; empty means blocked. */
+  pilotRunId?: string;
+  /** Notifications stay off for the first controlled pilot. */
+  notificationsEnabled: boolean;
+}
 
 /**
  * Aggregate of every input the gate needs to evaluate. This is the
@@ -55,6 +79,12 @@ export interface FeishuWriteConfig {
     baseAppToken?: string;
     tableIds: string[];
   };
+  /** Explicit mode. Generic `production` resolves to `blocked`. */
+  writeMode?: FeishuWriteMode;
+  /** Separate exact whitelist for the controlled production pilot. */
+  productionPilotWhitelist?: FeishuTargetWhitelist;
+  /** Fail-closed pilot controls. */
+  productionPilot?: ProductionPilotConfig;
 }
 
 /**
@@ -90,6 +120,12 @@ function parseBooleanEnv(value: string | undefined, defaultValue: boolean): bool
   return value.trim().toLowerCase() === 'true';
 }
 
+function parseNonNegativeInteger(value: string | undefined, defaultValue: number): number {
+  if (value === undefined || value.trim() === '') return defaultValue;
+  const parsed = Number(value.trim());
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : defaultValue;
+}
+
 /**
  * Load the double-layer gate config from an environment map (defaults to
  * `process.env`).
@@ -98,9 +134,12 @@ function parseBooleanEnv(value: string | undefined, defaultValue: boolean): bool
  * - `TASK_REPOSITORY`             → `taskRepository` (`'feishu'` only; else `'memory'`)
  * - `DRY_RUN`                     → `dryRun` (parsed via `parseBooleanEnv`)
  * - `ENABLE_REAL_FEISHU_WRITE`    → `enableRealFeishuWrite` (default `false`)
- * - `FEISHU_WRITE_ENV`            → `feishuWriteEnv` (`'test'` | `'production'`; else `undefined`)
+ * - `FEISHU_WRITE_ENV`            → `feishuWriteEnv` (`'test'` | `'production-pilot'` | `'production'`; else `undefined`)
  * - `FEISHU_TEST_BASE_APP_TOKEN`  → `testWhitelist.baseAppToken`
  * - `FEISHU_TEST_TABLE_IDS`       → `testWhitelist.tableIds` (comma-separated)
+ * - `FEISHU_PRODUCTION_PILOT_BASE_APP_TOKEN` / `_TABLE_IDS` → separate pilot whitelist
+ * - `ENABLE_PRODUCTION_PILOT`, `PRODUCTION_PILOT_MAX_RECORDS`,
+ *   `PRODUCTION_PILOT_RUN_ID`, `ENABLE_PRODUCTION_PILOT_NOTIFICATIONS`
  *
  * This function NEVER throws on a missing layer-2 value: a missing value is
  * a legitimate "blocked" state that the gate reports via its `reason`. The
@@ -118,7 +157,16 @@ export function loadFeishuWriteConfig(
 
   const rawEnv = env.FEISHU_WRITE_ENV?.trim().toLowerCase();
   const feishuWriteEnv: FeishuWriteEnv | undefined =
-    rawEnv === 'test' ? 'test' : rawEnv === 'production' ? 'production' : undefined;
+    rawEnv === 'test'
+      ? 'test'
+      : rawEnv === 'production-pilot'
+        ? 'production-pilot'
+        : rawEnv === 'production'
+          ? 'production'
+          : undefined;
+
+  const writeMode: FeishuWriteMode =
+    rawEnv === 'test' ? 'test' : rawEnv === 'production-pilot' ? 'production-pilot' : 'blocked';
 
   const baseAppTokenRaw = env.FEISHU_TEST_BASE_APP_TOKEN?.trim();
   const baseAppToken = baseAppTokenRaw && baseAppTokenRaw.length > 0 ? baseAppTokenRaw : undefined;
@@ -129,6 +177,16 @@ export function loadFeishuWriteConfig(
     .map((id) => id.trim())
     .filter((id) => id.length > 0);
 
+  const pilotBaseAppTokenRaw = env.FEISHU_PRODUCTION_PILOT_BASE_APP_TOKEN?.trim();
+  const pilotBaseAppToken =
+    pilotBaseAppTokenRaw && pilotBaseAppTokenRaw.length > 0 ? pilotBaseAppTokenRaw : undefined;
+  const pilotTableIds = (env.FEISHU_PRODUCTION_PILOT_TABLE_IDS ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+  const pilotRunIdRaw = env.PRODUCTION_PILOT_RUN_ID?.trim();
+  const pilotRunId = pilotRunIdRaw && pilotRunIdRaw.length > 0 ? pilotRunIdRaw : undefined;
+
   return {
     taskRepository,
     dryRun,
@@ -137,6 +195,20 @@ export function loadFeishuWriteConfig(
     testWhitelist: {
       baseAppToken,
       tableIds,
+    },
+    writeMode,
+    productionPilotWhitelist: {
+      baseAppToken: pilotBaseAppToken,
+      tableIds: pilotTableIds,
+    },
+    productionPilot: {
+      enabled: parseBooleanEnv(env.ENABLE_PRODUCTION_PILOT, false),
+      maxRecords: parseNonNegativeInteger(env.PRODUCTION_PILOT_MAX_RECORDS, 0),
+      pilotRunId,
+      notificationsEnabled: parseBooleanEnv(
+        env.ENABLE_PRODUCTION_PILOT_NOTIFICATIONS,
+        false
+      ),
     },
   };
 }
@@ -264,5 +336,98 @@ export function isRealWriteAllowed(
   return {
     allowed: true,
     reason: 'All 6 gate conditions met: real Feishu write allowed (test env, whitelisted target).',
+  };
+}
+
+export interface ProductionPilotWriteGateInput {
+  ingestionId: string;
+  governanceDecision: GovernanceDecisionInput;
+  targetBaseToken?: string;
+  targetTableId?: string;
+  targetTables: ProductionWritePreviewRequest['targetTables'];
+  targetTableIds: ProductionWritePreviewRequest['targetTableIds'];
+  pilotRunId?: string;
+  humanConfirmed?: boolean;
+  preview?: ProductionWritePreview;
+}
+
+/**
+ * Independent production-pilot gate. It deliberately does not reuse the
+ * test whitelist or accept the generic `production` environment.
+ */
+export function isProductionPilotWriteAllowed(
+  config: FeishuWriteConfig,
+  input: ProductionPilotWriteGateInput
+): RealWriteGateResult {
+  if (config.taskRepository !== 'feishu') {
+    return { allowed: false, reason: 'Production pilot blocked: TASK_REPOSITORY is not feishu.' };
+  }
+  if (config.dryRun) {
+    return { allowed: false, reason: 'Production pilot blocked: DRY_RUN is enabled.' };
+  }
+  if (!config.enableRealFeishuWrite) {
+    return {
+      allowed: false,
+      reason: 'Production pilot blocked: real Feishu writes are disabled.',
+    };
+  }
+  if (config.writeMode !== 'production-pilot' || config.feishuWriteEnv !== 'production-pilot') {
+    return {
+      allowed: false,
+      reason: 'Production pilot blocked: write mode is not production-pilot.',
+    };
+  }
+
+  const pilot = config.productionPilot;
+  if (!pilot?.enabled) {
+    return { allowed: false, reason: 'Production pilot blocked: pilot enablement is false.' };
+  }
+  if (pilot.notificationsEnabled) {
+    return { allowed: false, reason: 'Production pilot blocked: notifications are enabled.' };
+  }
+
+  const whitelist = config.productionPilotWhitelist;
+  if (!whitelist?.baseAppToken || whitelist.tableIds.length === 0) {
+    return { allowed: false, reason: 'Production pilot blocked: production whitelist is empty.' };
+  }
+  if (!input.targetBaseToken || input.targetBaseToken !== whitelist.baseAppToken) {
+    return { allowed: false, reason: 'Production pilot blocked: target Base is not allow-listed.' };
+  }
+  if (!input.targetTableId || !whitelist.tableIds.includes(input.targetTableId)) {
+    return { allowed: false, reason: 'Production pilot blocked: target table is not allow-listed.' };
+  }
+
+  if (normalizeDecision(input.governanceDecision) !== 'PASS') {
+    return { allowed: false, reason: 'Production pilot blocked: SOP decision is not PASS.' };
+  }
+
+  if (!pilot.pilotRunId || !input.pilotRunId || pilot.pilotRunId !== input.pilotRunId) {
+    return { allowed: false, reason: 'Production pilot blocked: pilot_run_id is not bound.' };
+  }
+  if (
+    input.targetTables.length === 0 ||
+    new Set(input.targetTables).size !== input.targetTables.length ||
+    pilot.maxRecords <= 0 ||
+    input.targetTables.length > pilot.maxRecords
+  ) {
+    return { allowed: false, reason: 'Production pilot blocked: target plan is empty, duplicated, or exceeds the record limit.' };
+  }
+  if (input.humanConfirmed !== true) {
+    return { allowed: false, reason: 'Production pilot blocked: human confirmation is missing.' };
+  }
+
+  const previewRequest: ProductionWritePreviewRequest = {
+    ingestionId: input.ingestionId,
+    targetTables: input.targetTables,
+    targetTableIds: input.targetTableIds,
+    targetBaseToken: input.targetBaseToken,
+  };
+  if (!isProductionWritePreviewValid(input.preview, previewRequest)) {
+    return { allowed: false, reason: 'Production pilot blocked: preview is missing or unconfirmed.' };
+  }
+
+  return {
+    allowed: true,
+    reason: 'Production pilot conditions satisfied; controlled write may proceed.',
   };
 }

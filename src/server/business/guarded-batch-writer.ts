@@ -10,10 +10,12 @@
 // writeBatch 输入中带上 governanceDecision 与 targetBaseToken。
 
 import {
+  isProductionPilotWriteAllowed,
   isRealWriteAllowed,
   type FeishuWriteConfig,
   type GovernanceDecisionInput,
 } from '../config/feishu-write-config.js';
+import type { ProductionWritePreview } from '../config/production-pilot.js';
 import type { BatchWriterPort, TransactionalBatchWriterInput, TransactionalBatchWriterResult } from './transactional-batch-writer.js';
 import type { WriteResult } from '../../contracts/screenshot-api-v1.js';
 
@@ -26,6 +28,14 @@ import type { WriteResult } from '../../contracts/screenshot-api-v1.js';
 export interface GuardedWriteBatchInput extends TransactionalBatchWriterInput {
   governanceDecision: GovernanceDecisionInput;
   targetBaseToken?: string;
+  /** Single run id bound by the production-pilot process configuration. */
+  pilotRunId?: string;
+  /** Explicit operator confirmation that the source/candidate is confirmed. */
+  humanConfirmed?: boolean;
+  /** Public-safe preview previously shown and explicitly confirmed. */
+  productionPilotPreview?: ProductionWritePreview;
+  /** Short alias accepted by adapters that call the field simply `preview`. */
+  preview?: ProductionWritePreview;
 }
 
 /**
@@ -39,6 +49,7 @@ export interface GuardedBatchWriterResult {
   records_created: number;
   records_rolled_back: number;
   error_code?: string;
+  post_write_verified?: boolean;
   /** The gate evaluation that decided this write. */
   gate: { allowed: boolean; reason: string };
 }
@@ -55,7 +66,8 @@ export interface GuardedBatchWriterResult {
  *   `status: 'blocked'` with `error_code: 'GATE_BLOCKED'`.
  *
  * When the gate allows all targets, the call delegates to the inner
- * `BatchWriterPort` (typically `TransactionalBatchWriter`) unchanged.
+ * `BatchWriterPort` (typically `TransactionalBatchWriter`). Production-pilot
+ * mode adds the mandatory read-back verification flag before delegation.
  */
 export class GuardedBatchWriter {
   constructor(
@@ -66,23 +78,48 @@ export class GuardedBatchWriter {
   async writeBatch(input: GuardedWriteBatchInput): Promise<GuardedBatchWriterResult> {
     const targetTables = input.targetTables ?? ['customer', 'project', 'model'];
 
+    if (targetTables.length === 0) {
+      return this.blockedResult(
+        input.ingestionId,
+        targetTables,
+        input,
+        'Write gate blocked: no target tables were planned.'
+      );
+    }
+
     // Evaluate the gate for each target table. Fail closed on the first
     // disallowed target so NO Create Record call is ever issued.
     for (const table of targetTables) {
       const tableId = this.getTableId(table, input);
-      const gate = isRealWriteAllowed(
-        this.gateConfig,
-        input.governanceDecision,
-        input.targetBaseToken,
-        tableId
-      );
+      const gate = this.gateConfig.writeMode === 'production-pilot'
+        ? isProductionPilotWriteAllowed(this.gateConfig, {
+            ingestionId: input.ingestionId,
+            governanceDecision: input.governanceDecision,
+            targetBaseToken: input.targetBaseToken,
+            targetTableId: tableId,
+            targetTables,
+            targetTableIds: this.getTargetTableIds(targetTables, input),
+            pilotRunId: input.pilotRunId,
+            humanConfirmed: input.humanConfirmed,
+            preview: input.productionPilotPreview ?? input.preview,
+          })
+        : isRealWriteAllowed(
+            this.gateConfig,
+            input.governanceDecision,
+            input.targetBaseToken,
+            tableId
+          );
       if (!gate.allowed) {
         return this.blockedResult(input.ingestionId, targetTables, input, gate.reason);
       }
     }
 
-    // All targets allowed — delegate to the inner writer.
-    const innerResult = await this.inner.writeBatch(input);
+    // All targets allowed — delegate to the inner writer. Production-pilot
+    // writes must read records back before they can be reported committed.
+    const innerInput = this.gateConfig.writeMode === 'production-pilot'
+      ? { ...input, verifyAfterWrite: true }
+      : input;
+    const innerResult = await this.inner.writeBatch(innerInput);
     return {
       write_results: innerResult.write_results,
       transaction_snapshot_id: innerResult.transaction_snapshot_id,
@@ -90,6 +127,7 @@ export class GuardedBatchWriter {
       records_created: innerResult.records_created,
       records_rolled_back: innerResult.records_rolled_back,
       error_code: innerResult.error_code,
+      post_write_verified: innerResult.post_write_verified,
       gate: { allowed: true, reason: 'All gate conditions met; inner writer invoked.' },
     };
   }
@@ -125,5 +163,16 @@ export class GuardedBatchWriter {
     if (table === 'customer') return input.customerTableId ?? 'customer';
     if (table === 'project') return input.projectTableId ?? 'project';
     return input.modelTableId ?? 'model';
+  }
+
+  private getTargetTableIds(
+    targetTables: Array<'customer' | 'project' | 'model'>,
+    input: GuardedWriteBatchInput
+  ): Partial<Record<'customer' | 'project' | 'model', string>> {
+    const targetTableIds: Partial<Record<'customer' | 'project' | 'model', string>> = {};
+    for (const table of targetTables) {
+      targetTableIds[table] = this.getTableId(table, input);
+    }
+    return targetTableIds;
   }
 }

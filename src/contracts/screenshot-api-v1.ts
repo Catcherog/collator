@@ -31,6 +31,7 @@ export const SCREENSHOT_API_VERSION = 'v1' as const;
 export type ScreenshotStatus =
   | 'received'          // 截图已接收
   | 'ocr_processing'   // OCR 进行中
+  | 'ocr_failed'       // OCR 失败
   | 'ocr_completed'    // OCR 完成
   | 'candidate_drafted' // 候选已生成
   | 'governance_passed' // 治理通过
@@ -235,6 +236,29 @@ export interface ConfirmWriteRequest {
   dry_run?: boolean;
   /** 目标写入表 */
   target_tables?: Array<'customer' | 'project' | 'model'>;
+  /** One-shot production-pilot run binding; ignored by test-mode writers. */
+  pilot_run_id?: string;
+  /** Explicit operator confirmation that the candidate/source was reviewed. */
+  human_confirmed?: boolean;
+  /** Public-safe preview previously shown and explicitly confirmed. */
+  production_pilot_preview?: ProductionPilotPreview;
+}
+
+/**
+ * Public-safe production-pilot preview payload. It contains only stable
+ * digests and logical aliases; raw Base/Table/record identifiers are never
+ * accepted in the preview body.
+ */
+export interface ProductionPilotPreview {
+  previewId: string;
+  generatedAt: string;
+  writeMode: 'production-pilot';
+  plannedRecordCount: number;
+  targetTableAliases: Array<'customer' | 'project' | 'model'>;
+  targetTableDigests: Partial<Record<'customer' | 'project' | 'model', string>>;
+  baseTokenDigest?: string;
+  confirmed: boolean;
+  confirmedAt?: string;
 }
 
 export interface ConfirmWriteResponse {

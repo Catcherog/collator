@@ -51,6 +51,19 @@ const confirmWriteSchema = z.object({
   candidate_v1_id: z.string().min(1),
   dry_run: z.boolean().optional(),
   target_tables: z.array(z.enum(['customer', 'project', 'model'])).optional(),
+  pilot_run_id: z.string().min(1).optional(),
+  human_confirmed: z.boolean().optional(),
+  production_pilot_preview: z.object({
+    previewId: z.string().regex(/^[a-f0-9]{64}$/),
+    generatedAt: z.string().datetime(),
+    writeMode: z.literal('production-pilot'),
+    plannedRecordCount: z.number().int().nonnegative(),
+    targetTableAliases: z.array(z.enum(['customer', 'project', 'model'])),
+    targetTableDigests: z.record(z.string().regex(/^[a-f0-9]{64}$/)),
+    baseTokenDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    confirmed: z.boolean(),
+    confirmedAt: z.string().datetime().optional(),
+  }).optional(),
 });
 
 const escalateReviewSchema = z.object({

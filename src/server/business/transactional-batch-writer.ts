@@ -14,6 +14,7 @@ import type { ModelRecordWriter } from './model-record-writer.js';
 import type { WriteLogRepository } from '../repositories/write-log-repository.js';
 import { FeishuCommitFailedError } from '../domain/errors.js';
 import type { WriteResult } from '../../contracts/screenshot-api-v1.js';
+import { PostWriteVerificationError } from './post-write-verification.js';
 
 export interface TransactionalBatchWriterInput {
   ingestionId: string;
@@ -29,6 +30,8 @@ export interface TransactionalBatchWriterInput {
   projectTableId?: string;
   /** Model 表 ID（用于写入日志） */
   modelTableId?: string;
+  /** Read the created/existing record back and verify the intended fields. */
+  verifyAfterWrite?: boolean;
 }
 
 export interface TransactionalBatchWriterResult {
@@ -38,6 +41,8 @@ export interface TransactionalBatchWriterResult {
   records_created: number;
   records_rolled_back: number;
   error_code?: string;
+  /** True only when every planned write was read back and verified. */
+  post_write_verified?: boolean;
 }
 
 /**
@@ -98,6 +103,7 @@ export class TransactionalBatchWriter {
         status: 'committed',
         records_created: 0,
         records_rolled_back: 0,
+        post_write_verified: false,
       };
     }
 
@@ -111,6 +117,13 @@ export class TransactionalBatchWriter {
         createdRecords.push({ type: table, recordId: result.business_record_id! });
         recordsCreated++;
       } else if (result.status === 'failed') {
+        // A post-write verification failure happens after Feishu returned a
+        // real record_id. Treat that exact record as created so compensation
+        // can remove it instead of leaving a ghost record behind.
+        if (result.created && result.business_record_id) {
+          createdRecords.push({ type: table, recordId: result.business_record_id });
+          recordsCreated++;
+        }
         // 写入失败 → 反向回滚已创建的记录（AC-A10）
         const rollbackResult = await this.rollback(createdRecords, input);
         recordsRolledBack = rollbackResult.rolledBack;
@@ -125,6 +138,7 @@ export class TransactionalBatchWriter {
           records_created: recordsCreated,
           records_rolled_back: recordsRolledBack,
           error_code: result.error_code,
+          post_write_verified: false,
         };
       }
     }
@@ -138,6 +152,7 @@ export class TransactionalBatchWriter {
       status: 'committed',
       records_created: recordsCreated,
       records_rolled_back: 0,
+      post_write_verified: Boolean(input.verifyAfterWrite),
     };
   }
 
@@ -160,6 +175,9 @@ export class TransactionalBatchWriter {
           ingestionId: input.ingestionId,
           normalizedFields: input.normalizedFields,
         });
+        if (input.verifyAfterWrite) {
+          await this.verifyWrittenRecord(table, result.business_record_id, result.created, input);
+        }
         return {
           ...baseResult,
           business_record_id: result.business_record_id,
@@ -172,6 +190,9 @@ export class TransactionalBatchWriter {
           ingestionId: input.ingestionId,
           normalizedFields: input.normalizedFields,
         });
+        if (input.verifyAfterWrite) {
+          await this.verifyWrittenRecord(table, result.business_record_id, result.created, input);
+        }
         return {
           ...baseResult,
           business_record_id: result.business_record_id,
@@ -184,6 +205,9 @@ export class TransactionalBatchWriter {
           ingestionId: input.ingestionId,
           normalizedFields: input.normalizedFields,
         });
+        if (input.verifyAfterWrite) {
+          await this.verifyWrittenRecord(table, result.business_record_id, result.created, input);
+        }
         return {
           ...baseResult,
           business_record_id: result.business_record_id,
@@ -191,15 +215,54 @@ export class TransactionalBatchWriter {
           status: 'succeeded',
         };
       }
-      // Writer 未配置 → not_attempted
-      return baseResult;
+      // A production pilot must never report committed when its target writer
+      // was not assembled. Preserve the legacy test-mode not_attempted
+      // behavior, but fail closed when read-back verification is mandatory.
+      return input.verifyAfterWrite
+        ? { ...baseResult, status: 'failed', error_code: 'WRITER_NOT_CONFIGURED' }
+        : baseResult;
     } catch (e) {
+      if (e instanceof PostWriteVerificationError) {
+        return {
+          ...baseResult,
+          business_record_id: e.recordId,
+          created: e.created,
+          status: 'failed',
+          error_code: e.code,
+        };
+      }
       const errorCode = e instanceof FeishuCommitFailedError ? 'FEISHU_COMMIT_FAILED' : 'COMMIT_FAILED';
       return {
         ...baseResult,
         status: 'failed',
         error_code: errorCode,
       };
+    }
+  }
+
+  private async verifyWrittenRecord(
+    table: 'customer' | 'project' | 'model',
+    recordId: string,
+    created: boolean,
+    input: TransactionalBatchWriterInput
+  ): Promise<void> {
+    const writer = table === 'customer'
+      ? this.customerWriter
+      : table === 'project'
+        ? this.projectWriter
+        : this.modelWriter;
+    if (!writer?.verifyRecord) {
+      throw new PostWriteVerificationError(recordId, created);
+    }
+    try {
+      await writer.verifyRecord(recordId, {
+        ingestionId: input.ingestionId,
+        normalizedFields: input.normalizedFields,
+      });
+    } catch {
+      // Do not propagate field values or Feishu error details into the API or
+      // audit path. The caller receives only the stable error code above.
+      throw new PostWriteVerificationError(recordId, created);
     }
   }
 

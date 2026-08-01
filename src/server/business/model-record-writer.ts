@@ -8,6 +8,7 @@ import {
 } from '../feishu/feishu-client.js';
 import { FeishuApiError } from '../feishu/feishu-errors.js';
 import { FeishuCommitFailedError } from '../domain/errors.js';
+import { assertExpectedFields } from './post-write-verification.js';
 
 const MODEL_FIELD_WHITELIST = [
   '模特姓名',
@@ -31,6 +32,7 @@ export interface ModelRecordWriterInput {
 
 export interface ModelRecordWriter {
   write(input: ModelRecordWriterInput): Promise<ModelRecordWriterResult>;
+  verifyRecord?(recordId: string, input: ModelRecordWriterInput): Promise<void>;
   deleteRecord(recordId: string): Promise<void>;
 }
 
@@ -96,6 +98,11 @@ export class FeishuModelRecordWriter implements ModelRecordWriter {
     } catch (e) {
       throw this.toCommitFailed(e);
     }
+  }
+
+  async verifyRecord(recordId: string, input: ModelRecordWriterInput): Promise<void> {
+    const record = await this.client.getRecord(this.options.modelTableId, recordId);
+    assertExpectedFields(record.fields, this.buildFields(input.normalizedFields, input.ingestionId));
   }
 
   private buildFields(

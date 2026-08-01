@@ -231,6 +231,24 @@ describe('GuardedBatchWriter — idempotent replay (AC-C11 / AC-C04)', () => {
     expect(logs.every((l) => l.status === 'succeeded')).toBe(true);
     expect(logs.every((l) => l.business_record_id !== undefined)).toBe(true);
   });
+
+  it('keeps idempotency after the writer is reconstructed', async () => {
+    const input = buildInput({ ingestionId: 'ing_test_reconstructed_001' });
+
+    const firstWriter = buildGuardedWriter(client, writeLogRepo);
+    const first = await firstWriter.writeBatch(input);
+    expect(first.status).toBe('committed');
+    expect(calls.createRecord).toHaveLength(3);
+
+    // Simulate a new process/container instance. The second writer has no
+    // in-memory state from the first call and must rely on Feishu's durable
+    // Collator 摄入 ID search boundary.
+    const secondWriter = buildGuardedWriter(client, writeLogRepo);
+    const second = await secondWriter.writeBatch(input);
+
+    expect(second.status).toBe('committed');
+    expect(calls.createRecord).toHaveLength(3);
+  });
 });
 
 describe('GuardedBatchWriter — partial failure (AC-C09 / AC-C10)', () => {

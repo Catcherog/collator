@@ -9,6 +9,7 @@ import {
 } from '../feishu/feishu-client.js';
 import { FeishuApiError } from '../feishu/feishu-errors.js';
 import { FeishuCommitFailedError } from '../domain/errors.js';
+import { assertExpectedFields } from './post-write-verification.js';
 
 /**
  * Whitelist of customer-table business fields the writer is allowed to
@@ -87,6 +88,7 @@ export interface CustomerRecordWriterInput {
  */
 export interface CustomerRecordWriter {
   write(input: CustomerRecordWriterInput): Promise<CustomerRecordWriterResult>;
+  verifyRecord?(recordId: string, input: CustomerRecordWriterInput): Promise<void>;
   /**
    * Delete a customer record by its exact Feishu record_id. Used for
    * transactional rollback / cleanup compensation (AC-C10). Implementations
@@ -192,6 +194,11 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
     } catch (e) {
       throw this.toCommitFailed(e);
     }
+  }
+
+  async verifyRecord(recordId: string, input: CustomerRecordWriterInput): Promise<void> {
+    const record = await this.client.getRecord(this.options.customerTableId, recordId);
+    assertExpectedFields(record.fields, this.buildFields(input.normalizedFields, input.ingestionId));
   }
 
   /**

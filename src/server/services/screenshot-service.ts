@@ -102,6 +102,7 @@ function mapToIngestionStatus(status: ScreenshotStatus): IngestionTask['status']
   const mapping: Record<ScreenshotStatus, IngestionTask['status']> = {
     received: 'received',
     ocr_processing: 'extracting',
+    ocr_failed: 'extract_failed',
     ocr_completed: 'candidate_received',
     candidate_drafted: 'candidate_received',
     governance_passed: 'approved',
@@ -300,6 +301,7 @@ interface BatchWriterResultView {
   records_created: number;
   records_rolled_back: number;
   error_code?: string;
+  post_write_verified?: boolean;
 }
 
 /**
@@ -803,12 +805,47 @@ export class ScreenshotService {
       state.governance_result_v1
     );
 
+    const pilotRequested = Boolean(
+      req.production_pilot_preview?.writeMode === 'production-pilot'
+      || req.pilot_run_id !== undefined
+      || req.human_confirmed !== undefined
+    );
+    const pilotPreview = req.production_pilot_preview;
+    const pilotAuditContext: Record<string, unknown> = {
+      target_aliases: pilotPreview?.targetTableAliases ?? effectiveTargetTables,
+      ...(pilotPreview ? {
+        preview_id_digest: sha256Hex(pilotPreview.previewId),
+        planned_record_count: pilotPreview.plannedRecordCount,
+        table_digests: pilotPreview.targetTableDigests,
+        base_digest: pilotPreview.baseTokenDigest,
+      } : {}),
+      ...(req.pilot_run_id ? { run_id_digest: sha256Hex(req.pilot_run_id) } : {}),
+    };
+
+    if (pilotRequested && pilotPreview) {
+      await this.auditRecord(task.ingestion_id, 'pilot_preview_generated', 'previewed', {
+        ...pilotAuditContext,
+        confirmed: pilotPreview.confirmed,
+      });
+      if (pilotPreview.confirmed && req.human_confirmed === true) {
+        await this.auditRecord(task.ingestion_id, 'pilot_confirmed', 'confirmed', {
+          ...pilotAuditContext,
+          confirmation: 'human',
+        });
+      }
+    }
+
+    let batchPostWriteVerified = false;
+
     // AC-A10: 写入失败不会错误报告 SUCCEEDED
     if (this.options.batchWriter) {
       // Workstream D/E: 审计 — 写入开始。
       await this.auditRecord(task.ingestion_id, 'write_started', 'committing', {
         target_tables: effectiveTargetTables,
       });
+      if (pilotRequested) {
+        await this.auditRecord(task.ingestion_id, 'pilot_write_started', 'committing', pilotAuditContext);
+      }
       // Workstream C/E: 透传双层放行门所需上下文（governanceDecision +
       // targetBaseToken + 各表 ID）。GuardedBatchWriter 在 Create Record 前校验
       // 6 条件（Amendment 6）；普通写入器/Fake 忽略额外字段。
@@ -823,7 +860,11 @@ export class ScreenshotService {
         customerTableId: ctx?.customerTableId,
         projectTableId: ctx?.projectTableId,
         modelTableId: ctx?.modelTableId,
+        pilotRunId: req.pilot_run_id,
+        humanConfirmed: req.human_confirmed,
+        productionPilotPreview: req.production_pilot_preview,
       });
+      batchPostWriteVerified = batchResult.post_write_verified === true;
 
       state.write_results = batchResult.write_results;
       // BatchWriterResultView.status 为 string（GuardedBatchWriter 可能返回 'blocked'）。
@@ -850,6 +891,32 @@ export class ScreenshotService {
         } catch {
           // 审计失败不掩盖写入失败响应。
         }
+        if (pilotRequested) {
+          const pilotFailureEvent = batchResult.error_code === 'GATE_BLOCKED'
+            ? 'pilot_write_blocked'
+            : 'pilot_write_failed';
+          await this.auditRecord(task.ingestion_id, pilotFailureEvent, 'failed', {
+            ...pilotAuditContext,
+            error_code: batchResult.error_code ?? 'WRITE_FAILED',
+          });
+          if (batchResult.records_rolled_back > 0) {
+            await this.auditRecord(task.ingestion_id, 'pilot_compensation_started', 'started', {
+              ...pilotAuditContext,
+              records_rolled_back: batchResult.records_rolled_back,
+            });
+            await this.auditRecord(
+              task.ingestion_id,
+              batchResult.status === 'rolled_back'
+                ? 'pilot_compensation_completed'
+                : 'pilot_compensation_failed',
+              batchResult.status === 'rolled_back' ? 'completed' : 'failed',
+              {
+                ...pilotAuditContext,
+                records_rolled_back: batchResult.records_rolled_back,
+              },
+            );
+          }
+        }
         return {
           screenshot_id: task.ingestion_id,
           ingestion_id: task.ingestion_id,
@@ -874,6 +941,32 @@ export class ScreenshotService {
     }
 
     await this.repository.save(withScreenshotState(task, state));
+
+    if (pilotRequested) {
+      const createdResults = (state.write_results ?? []).filter(
+        (result) => result.status === 'succeeded' && result.created && result.business_record_id,
+      );
+      const verifiedResults = (state.write_results ?? []).filter(
+        (result) => result.status === 'succeeded' && result.business_record_id,
+      );
+      if (createdResults.length > 0) {
+        await this.auditRecord(task.ingestion_id, 'pilot_record_created', 'succeeded', {
+          ...pilotAuditContext,
+          record_count: createdResults.length,
+          record_digests: createdResults.map((result) => sha256Hex(result.business_record_id!)),
+        });
+      }
+      if (batchPostWriteVerified && verifiedResults.some((result) => result.entity_type === 'project')) {
+        await this.auditRecord(task.ingestion_id, 'pilot_relation_verified', 'verified', {
+          ...pilotAuditContext,
+          verified_record_count: verifiedResults.length,
+        });
+      }
+      await this.auditRecord(task.ingestion_id, 'pilot_write_completed', 'succeeded', {
+        ...pilotAuditContext,
+        record_count: verifiedResults.length,
+      });
+    }
 
     // Workstream D/E: 审计 — 写入成功。业务写入已落库，审计失败应 fail-closed。
     await this.auditRecord(task.ingestion_id, 'write_succeeded', 'succeeded', {
