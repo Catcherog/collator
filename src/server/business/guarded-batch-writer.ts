@@ -14,8 +14,10 @@ import {
   isRealWriteAllowed,
   type FeishuWriteConfig,
   type GovernanceDecisionInput,
+  type ProductionPilotRepositoryReadiness,
 } from '../config/feishu-write-config.js';
 import type { ProductionWritePreview } from '../config/production-pilot.js';
+import type { RunManifestRepository } from '../repositories/run-manifest-repository.js';
 import type { BatchWriterPort, TransactionalBatchWriterInput, TransactionalBatchWriterResult } from './transactional-batch-writer.js';
 import type { WriteResult } from '../../contracts/screenshot-api-v1.js';
 
@@ -72,19 +74,20 @@ export interface GuardedBatchWriterResult {
 export class GuardedBatchWriter {
   constructor(
     private readonly gateConfig: FeishuWriteConfig,
-    private readonly inner: BatchWriterPort
+    private readonly inner: BatchWriterPort,
+    private readonly pilotRepositoryReadiness: ProductionPilotRepositoryReadiness = {
+      auditLogRepository: false,
+      writeLogRepository: false,
+      runManifestRepository: false,
+    },
+    private readonly runManifestRepository?: RunManifestRepository
   ) {}
 
-  async writeBatch(input: GuardedWriteBatchInput): Promise<GuardedBatchWriterResult> {
+  async preflight(input: GuardedWriteBatchInput): Promise<{ allowed: boolean; reason: string }> {
     const targetTables = input.targetTables ?? ['customer', 'project', 'model'];
 
     if (targetTables.length === 0) {
-      return this.blockedResult(
-        input.ingestionId,
-        targetTables,
-        input,
-        'Write gate blocked: no target tables were planned.'
-      );
+      return { allowed: false, reason: 'Write gate blocked: no target tables were planned.' };
     }
 
     // Evaluate the gate for each target table. Fail closed on the first
@@ -99,6 +102,7 @@ export class GuardedBatchWriter {
             targetTableId: tableId,
             targetTables,
             targetTableIds: this.getTargetTableIds(targetTables, input),
+            repositoryReadiness: this.pilotRepositoryReadiness,
             pilotRunId: input.pilotRunId,
             humanConfirmed: input.humanConfirmed,
             preview: input.productionPilotPreview ?? input.preview,
@@ -110,14 +114,30 @@ export class GuardedBatchWriter {
             tableId
           );
       if (!gate.allowed) {
-        return this.blockedResult(input.ingestionId, targetTables, input, gate.reason);
+        return gate;
       }
+    }
+
+    return { allowed: true, reason: 'All gate conditions met; inner writer may be invoked.' };
+  }
+
+  async writeBatch(input: GuardedWriteBatchInput): Promise<GuardedBatchWriterResult> {
+    const targetTables = input.targetTables ?? ['customer', 'project', 'model'];
+    const gate = await this.preflight(input);
+    if (!gate.allowed) {
+      return this.blockedResult(input.ingestionId, targetTables, input, gate.reason);
     }
 
     // All targets allowed — delegate to the inner writer. Production-pilot
     // writes must read records back before they can be reported committed.
     const innerInput = this.gateConfig.writeMode === 'production-pilot'
-      ? { ...input, verifyAfterWrite: true }
+      ? {
+          ...input,
+          verifyAfterWrite: true,
+          enforceProjectRelationContext: true,
+          requireDurableWriteLogs: true,
+          runManifestRepository: input.runManifestRepository ?? this.runManifestRepository,
+        }
       : input;
     const innerResult = await this.inner.writeBatch(innerInput);
     return {
@@ -128,8 +148,15 @@ export class GuardedBatchWriter {
       records_rolled_back: innerResult.records_rolled_back,
       error_code: innerResult.error_code,
       post_write_verified: innerResult.post_write_verified,
-      gate: { allowed: true, reason: 'All gate conditions met; inner writer invoked.' },
+      gate,
     };
+  }
+
+  async recoverPendingCompensations(hooks?: {
+    onCompensationStarted?: (recordCount: number) => Promise<void>;
+    onCompensationCompleted?: (status: 'completed' | 'failed', recordCount: number) => Promise<void>;
+  }): Promise<Array<{ previewId: string; status: 'compensated' | 'compensation_failed' }>> {
+    return this.inner.recoverPendingCompensations?.(hooks) ?? [];
   }
 
   private blockedResult(

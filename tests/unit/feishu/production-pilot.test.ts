@@ -117,6 +117,11 @@ describe('production-pilot gate', () => {
       targetTableId: REQUEST.targetTableIds.project,
       targetTables: REQUEST.targetTables,
       targetTableIds: REQUEST.targetTableIds,
+      repositoryReadiness: {
+        auditLogRepository: true,
+        writeLogRepository: true,
+        runManifestRepository: true,
+      },
       pilotRunId: 'pilot-run-001',
       humanConfirmed: true,
       preview,
@@ -142,6 +147,11 @@ describe('production-pilot gate', () => {
       targetTableId: REQUEST.targetTableIds.project,
       targetTables: REQUEST.targetTables,
       targetTableIds: REQUEST.targetTableIds,
+      repositoryReadiness: {
+        auditLogRepository: true,
+        writeLogRepository: true,
+        runManifestRepository: true,
+      },
       pilotRunId: 'pilot-run-001',
       humanConfirmed: true,
       preview,

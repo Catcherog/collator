@@ -39,6 +39,12 @@ function pilotConfig(overrides: Partial<FeishuWriteConfig> = {}): FeishuWriteCon
   };
 }
 
+const DURABLE_PILOT_REPOSITORIES = {
+  auditLogRepository: true,
+  writeLogRepository: true,
+  runManifestRepository: true,
+};
+
 function createSpyInner(): { inner: BatchWriterPort; calls: number } {
   const state = { calls: 0 };
   const inner: BatchWriterPort = {
@@ -97,7 +103,7 @@ function input(overrides: Record<string, unknown> = {}) {
 describe('GuardedBatchWriter — production-pilot', () => {
   it('delegates only after a confirmed public-safe preview and human confirmation', async () => {
     const spy = createSpyInner();
-    const guarded = new GuardedBatchWriter(pilotConfig(), spy.inner);
+    const guarded = new GuardedBatchWriter(pilotConfig(), spy.inner, DURABLE_PILOT_REPOSITORIES);
 
     const result = await guarded.writeBatch(input());
 
@@ -122,6 +128,20 @@ describe('GuardedBatchWriter — production-pilot', () => {
 
     expect(result.status).toBe('blocked');
     expect(result.error_code).toBe('GATE_BLOCKED');
+    expect(spy.calls).toBe(0);
+  });
+
+  it('blocks when any durable pilot repository is not assembled', async () => {
+    const spy = createSpyInner();
+    const guarded = new GuardedBatchWriter(pilotConfig(), spy.inner, {
+      ...DURABLE_PILOT_REPOSITORIES,
+      runManifestRepository: false,
+    });
+
+    const result = await guarded.writeBatch(input());
+
+    expect(result.status).toBe('blocked');
+    expect(result.gate.reason).toContain('durable repositories');
     expect(spy.calls).toBe(0);
   });
 

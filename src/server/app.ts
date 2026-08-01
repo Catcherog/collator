@@ -23,6 +23,10 @@ import {
 import type { TaskRepository } from './repositories/task-repository.js';
 import type { ReviewRepository } from './repositories/review-repository.js';
 import type { WriteLogRepository } from './repositories/write-log-repository.js';
+import {
+  FileRunManifestRepository,
+  type RunManifestRepository,
+} from './repositories/run-manifest-repository.js';
 import type { CustomerRecordWriter } from './business/customer-record-writer.js';
 import type { PreWriteClient } from './governance/pre-write-client.js';
 import {
@@ -42,6 +46,8 @@ export interface BuildAppOptions {
    */
   customerRecordWriter?: CustomerRecordWriter;
   writeLogRepository?: WriteLogRepository;
+  /** Optional durable production-pilot manifest repository for tests or hosts. */
+  runManifestRepository?: RunManifestRepository;
   /**
    * FAMP-CONTRACT-ADOPTION-GATE-01-R1 / AC-R1-02
    * FAMP-CONTRACT-ADOPTION-GATE-01-R1-FIX / RF-02 / RF-FIX-02
@@ -96,6 +102,7 @@ export async function buildApp(options?: BuildAppOptions) {
   let reviewRepository: ReviewRepository;
   let customerRecordWriter: CustomerRecordWriter | undefined;
   let writeLogRepository: WriteLogRepository | undefined;
+  let runManifestRepository: RunManifestRepository | undefined = options?.runManifestRepository;
   // R1: PRE_WRITE 治理客户端。RF-02: 测试模式必须显式注入，生产模式默认 SopPreWriteClient。
   let preWriteClient: PreWriteClient;
   if (options?.repository && options?.reviewRepository) {
@@ -151,6 +158,20 @@ export async function buildApp(options?: BuildAppOptions) {
 
   // 主线 A1: 截图纵向闭环 — 装配 ScreenshotService
   const screenshotServiceOptions: ScreenshotServiceOptions = options?.screenshotServiceOptions ?? {};
+  if (!runManifestRepository && screenshotServiceOptions.runManifestRepository) {
+    runManifestRepository = screenshotServiceOptions.runManifestRepository;
+  }
+  if (!runManifestRepository && !options?.repository) {
+    runManifestRepository = new FileRunManifestRepository(
+      process.env.PRODUCTION_PILOT_MANIFEST_FILE ?? 'data/production-pilot-manifests.json'
+    );
+  }
+  screenshotServiceOptions.writeLogRepository =
+    screenshotServiceOptions.writeLogRepository ?? writeLogRepository;
+  screenshotServiceOptions.auditLogRepository =
+    screenshotServiceOptions.auditLogRepository ?? auditLogRepository;
+  screenshotServiceOptions.runManifestRepository =
+    screenshotServiceOptions.runManifestRepository ?? runManifestRepository;
   // 生产模式自动装配 OCR + Governance Client（测试模式由调用方注入）
   if (!options?.screenshotServiceOptions) {
     // Workstream B/E: 真实 OCR 引擎由工厂装配（amendment 3 fail-closed）。
@@ -159,9 +180,6 @@ export async function buildApp(options?: BuildAppOptions) {
     screenshotServiceOptions.ocrEngine =
       screenshotServiceOptions.ocrEngine ?? createOcrEngineFromEnv(process.env);
     screenshotServiceOptions.governanceClient = screenshotServiceOptions.governanceClient ?? new SopScreenshotGovernanceClient();
-    screenshotServiceOptions.writeLogRepository = screenshotServiceOptions.writeLogRepository ?? writeLogRepository;
-    // Workstream D/E: 审计仓库透传到截图服务。
-    screenshotServiceOptions.auditLogRepository = screenshotServiceOptions.auditLogRepository ?? auditLogRepository;
     // 仅在 feishu 模式且有 project/model 表 ID 时装配 batch writer
     if (
       !screenshotServiceOptions.batchWriter &&
@@ -184,13 +202,18 @@ export async function buildApp(options?: BuildAppOptions) {
         customerRecordWriter,
         projectWriter,
         modelWriter,
-        writeLogRepository
+        writeLogRepository,
+        runManifestRepository
       );
       // Workstream C/E: 用 GuardedBatchWriter 包裹 TransactionalBatchWriter，
       // 在 Create Record 前执行双层放行门（Amendment 6）。默认配置下门禁全部
       // fail-closed（6 条件任一不满足即 blocked，绝不调用 Create Record API）。
       const gateConfig = loadFeishuWriteConfig();
-      screenshotServiceOptions.batchWriter = new GuardedBatchWriter(gateConfig, innerWriter);
+      screenshotServiceOptions.batchWriter = new GuardedBatchWriter(gateConfig, innerWriter, {
+        auditLogRepository: Boolean(auditLogRepository),
+        writeLogRepository: Boolean(writeLogRepository),
+        runManifestRepository: Boolean(runManifestRepository),
+      }, runManifestRepository);
       // 透传写入门禁上下文（目标 Base/Table ID）供 GuardedBatchWriter 校验白名单。
       screenshotServiceOptions.feishuWriteContext = {
         targetBaseToken: config.feishuBaseAppToken,

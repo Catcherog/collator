@@ -51,6 +51,13 @@ export interface ProductionPilotConfig {
   notificationsEnabled: boolean;
 }
 
+/** Runtime readiness of the three durable production-pilot boundaries. */
+export interface ProductionPilotRepositoryReadiness {
+  auditLogRepository: boolean;
+  writeLogRepository: boolean;
+  runManifestRepository: boolean;
+}
+
 /**
  * Aggregate of every input the gate needs to evaluate. This is the
  * "double-layer gate config": it carries both layer-1 fields
@@ -346,6 +353,7 @@ export interface ProductionPilotWriteGateInput {
   targetTableId?: string;
   targetTables: ProductionWritePreviewRequest['targetTables'];
   targetTableIds: ProductionWritePreviewRequest['targetTableIds'];
+  repositoryReadiness?: ProductionPilotRepositoryReadiness;
   pilotRunId?: string;
   humanConfirmed?: boolean;
   preview?: ProductionWritePreview;
@@ -384,6 +392,18 @@ export function isProductionPilotWriteAllowed(
   }
   if (pilot.notificationsEnabled) {
     return { allowed: false, reason: 'Production pilot blocked: notifications are enabled.' };
+  }
+
+  const readiness = input.repositoryReadiness;
+  if (
+    !readiness?.auditLogRepository
+    || !readiness.writeLogRepository
+    || !readiness.runManifestRepository
+  ) {
+    return {
+      allowed: false,
+      reason: 'Production pilot blocked: durable repositories (audit, write log, run manifest) are not all assembled.',
+    };
   }
 
   const whitelist = config.productionPilotWhitelist;
