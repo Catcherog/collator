@@ -146,7 +146,11 @@ class FakeInternalBatchWriter {
   }
 }
 
-async function createInternalContext(mode: WriterMode = 'success', internalWriteTimeoutMs?: number) {
+async function createInternalContext(
+  mode: WriterMode = 'success',
+  internalWriteTimeoutMs?: number,
+  config: FeishuWriteConfig = internalConfig(),
+) {
   const repository = new InMemoryTaskRepository();
   const internalWriteRepository = new InMemoryInternalWriteRepository();
   const writer = new FakeInternalBatchWriter();
@@ -158,7 +162,7 @@ async function createInternalContext(mode: WriterMode = 'success', internalWrite
     auditLogRepository: new InMemoryAuditLogRepository(),
     internalWriteRepository,
     internalWriteQueue: new InternalWriteQueue(),
-    internalWriteConfig: internalConfig(),
+    internalWriteConfig: config,
     internalWriteTimeoutMs,
     feishuWriteContext: {
       targetBaseToken: BASE,
@@ -284,6 +288,17 @@ describe('InternalWriteQueue', () => {
 });
 
 describe('ScreenshotService internal-controlled write flow', () => {
+  it('returns INTERNAL_WRITE_DISABLED before any write when the lane is off', async () => {
+    const disabledConfig = internalConfig({ ENABLE_INTERNAL_CONTROLLED_WRITE: 'false' });
+    const context = await createInternalContext('success', undefined, disabledConfig);
+    await expect(context.service.createInternalWritePreview(
+      context.ingestionId,
+      { candidate_v1_id: context.candidateId },
+      'operator-internal',
+    )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_DISABLED' });
+    expect(context.writer.calls).toBe(0);
+  });
+
   it('requires authenticated human confirmation and never calls the writer early', async () => {
     const context = await createInternalContext();
     const preview = await context.service.createInternalWritePreview(
@@ -401,6 +416,43 @@ describe('ScreenshotService internal-controlled write flow', () => {
     expect(result.additional_create_calls).toBe(0);
     expect(result.write_results.some((item) => item.business_record_id === 'rec_reconciled_customer')).toBe(true);
     expect(context.writer.calls).toBe(1);
+  });
+
+  it('keeps none and multiple reconciliation outcomes unresolved without creating', async () => {
+    const noneContext = await createInternalContext('unknown');
+    const nonePreview = await authorize(noneContext);
+    await noneContext.service.executeInternalControlledWrite(
+      nonePreview.preview_id,
+      { nonce: nonePreview.nonce, candidate_v1_id: noneContext.candidateId },
+      'operator-internal',
+    );
+    noneContext.writer.findByIngestionId.mockResolvedValue([]);
+    const noneResult = await noneContext.service.reconcileInternalControlledWrite(
+      nonePreview.preview_id,
+      'operator-internal',
+    );
+    expect(noneResult.status).toBe('needs_reconciliation');
+    expect(noneResult.reconciliation).toBe('none');
+    expect(noneResult.additional_create_calls).toBe(0);
+    expect(noneContext.writer.calls).toBe(1);
+
+    const multipleContext = await createInternalContext('unknown');
+    const multiplePreview = await authorize(multipleContext);
+    await multipleContext.service.executeInternalControlledWrite(
+      multiplePreview.preview_id,
+      { nonce: multiplePreview.nonce, candidate_v1_id: multipleContext.candidateId },
+      'operator-internal',
+    );
+    multipleContext.writer.findByIngestionId.mockResolvedValue(['rec_a', 'rec_b']);
+    const multipleResult = await multipleContext.service.reconcileInternalControlledWrite(
+      multiplePreview.preview_id,
+      'operator-internal',
+    );
+    expect(multipleResult.status).toBe('needs_reconciliation');
+    expect(multipleResult.error_code).toBe('DUPLICATE_CANDIDATES_FOUND');
+    expect(multipleResult.reconciliation).toBe('multiple');
+    expect(multipleResult.additional_create_calls).toBe(0);
+    expect(multipleContext.writer.calls).toBe(1);
   });
 
   it('keeps partial record IDs and does not automatically delete business records', async () => {
