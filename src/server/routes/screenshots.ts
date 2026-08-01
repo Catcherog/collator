@@ -18,7 +18,7 @@
 // AC-A09: 重复确认/复核幂等 — 由 service.confirmWrite/escalateReview 保证。
 // AC-A03: 人工修正标记为 CONFIRMED — 由 service.submitCorrections 保证。
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { ScreenshotService } from '../services/screenshot-service.js';
 import { UnauthorizedError } from '../domain/errors.js';
@@ -72,7 +72,28 @@ const escalateReviewSchema = z.object({
   suggested_fields: z.record(z.unknown()).optional(),
 });
 
-function getAuthenticatedOperator(request: { headers: Record<string, string | string[] | undefined> }): string {
+export type AuthenticatedOperatorResolver = (
+  request: FastifyRequest,
+) => string | undefined | Promise<string | undefined>;
+
+export interface ScreenshotRouteOptions {
+  /** Principal supplied by a verified OAuth/JWT/reverse-proxy middleware. */
+  authenticatedOperatorResolver?: AuthenticatedOperatorResolver;
+  /** Production-pilot must never fall back to a client-controlled header. */
+  requireVerifiedOperator?: boolean;
+}
+
+async function getAuthenticatedOperator(
+  request: FastifyRequest,
+  options: ScreenshotRouteOptions,
+): Promise<string> {
+  if (options.authenticatedOperatorResolver) {
+    const principal = await options.authenticatedOperatorResolver(request);
+    if (principal?.trim()) return principal;
+  }
+  if (options.requireVerifiedOperator) {
+    throw new UnauthorizedError('Verified operator principal is required');
+  }
   const value = request.headers['x-operator-id'] ?? request.headers['x-authenticated-operator'];
   const operator = Array.isArray(value) ? value[0] : value;
   if (!operator?.trim()) throw new UnauthorizedError('Authenticated operator header is required');
@@ -85,11 +106,12 @@ function getAuthenticatedOperator(request: { headers: Record<string, string | st
 
 export async function screenshotRoutes(
   app: FastifyInstance,
-  service: ScreenshotService
+  service: ScreenshotService,
+  options: ScreenshotRouteOptions = {},
 ): Promise<void> {
-  const createPilotPreview = async (request: { body?: unknown }, reply: { send: (body: unknown) => unknown }) => {
+  const createPilotPreview = async (request: { body?: unknown; headers: Record<string, string | string[] | undefined> }, reply: { send: (body: unknown) => unknown }) => {
     const body = createProductionPilotPreviewSchema.parse(request.body);
-    const operator = getAuthenticatedOperator(request as { headers: Record<string, string | string[] | undefined> });
+    const operator = await getAuthenticatedOperator(request as FastifyRequest, options);
     const result = await service.createProductionPilotPreview(
       body.screenshot_id,
       { candidate_v1_id: body.candidate_v1_id },
@@ -102,7 +124,7 @@ export async function screenshotRoutes(
   ) => {
     const body = confirmProductionPilotPreviewSchema.parse(request.body);
     const { id } = request.params as { id: string };
-    return service.confirmProductionPilotPreview(id, getAuthenticatedOperator(request), body.nonce);
+    return service.confirmProductionPilotPreview(id, await getAuthenticatedOperator(request as FastifyRequest, options), body.nonce);
   };
 
   app.post('/v1/production-pilot/previews', createPilotPreview);
@@ -142,7 +164,7 @@ export async function screenshotRoutes(
     const { id } = request.params as { id: string };
     const body = confirmWriteSchema.parse(request.body);
     const operator = body.production_pilot_preview_id || body.production_pilot_nonce
-      ? getAuthenticatedOperator(request)
+      ? await getAuthenticatedOperator(request, options)
       : undefined;
     return await service.confirmWrite(id, body, operator);
   });
@@ -150,7 +172,7 @@ export async function screenshotRoutes(
   const executeProductionPilotWrite = async (request: { body?: unknown; params?: unknown; headers: Record<string, string | string[] | undefined> }) => {
     const { id } = request.params as { id: string };
     const body = confirmWriteSchema.parse(request.body);
-    const operator = getAuthenticatedOperator(request);
+    const operator = await getAuthenticatedOperator(request as FastifyRequest, options);
     return service.confirmWrite(id, body, operator);
   };
   app.post('/v1/screenshots/:id/confirm-write', executeProductionPilotWrite);

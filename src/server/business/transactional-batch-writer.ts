@@ -492,8 +492,18 @@ export class TransactionalBatchWriter {
       }
     }
 
+    const compensationOrder: Record<'project' | 'model' | 'customer', number> = {
+      // Delete dependents before the records they reference. Timestamps are
+      // retained only as a deterministic tie-breaker, never as the ordering
+      // contract.
+      project: 0,
+      model: 1,
+      customer: 2,
+    };
     const recordsToDelete = Array.from(records.values()).sort((left, right) =>
-      right.createdAt.localeCompare(left.createdAt)
+      compensationOrder[left.type] - compensationOrder[right.type]
+      || right.createdAt.localeCompare(left.createdAt)
+      || left.recordId.localeCompare(right.recordId)
     );
     if (recordsToDelete.length === 0) {
       if (manifestRepository && pilotPreviewId) {

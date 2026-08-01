@@ -5,15 +5,19 @@ import {
   rename,
   stat,
   unlink,
-  writeFile,
 } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { WriteResult } from '../../contracts/screenshot-api-v1.js';
+import type { AuditEventType } from '../../audit/audit-log-repository.js';
 
 export type RunManifestStatus =
   | 'generated'
   | 'confirmed'
   | 'consumed'
+  | 'executing'
+  | 'verifying'
+  | 'committing'
   | 'succeeded'
   | 'failed'
   | 'compensation_required'
@@ -49,6 +53,23 @@ export interface CreatedPilotRecord {
   errorCode?: string;
 }
 
+export interface ProductionPilotAuditEvent {
+  eventType: AuditEventType;
+  resultStatus?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface ProductionPilotCommitPayload {
+  writeResults: WriteResult[];
+  transactionSnapshot: {
+    snapshot_id: string;
+    status: 'committed' | 'rolled_back' | 'partial';
+    records_created: number;
+    records_rolled_back: number;
+  };
+  auditEvents: ProductionPilotAuditEvent[];
+}
+
 export interface CreateRunManifestInput {
   previewId: string;
   ingestionId: string;
@@ -71,6 +92,10 @@ export interface ProductionPilotRunManifest extends CreateRunManifestInput {
   status: RunManifestStatus;
   confirmedAt?: string;
   consumedAt?: string;
+  executionStartedAt?: string;
+  verifyingAt?: string;
+  committingAt?: string;
+  commitPayload?: ProductionPilotCommitPayload;
   completedAt?: string;
   createdRecords: CreatedPilotRecord[];
   createIntents: CreateRecordIntent[];
@@ -114,6 +139,13 @@ export interface RunManifestRepository {
     operator?: string,
     nonce?: string
   ): Promise<ProductionPilotRunManifest>;
+  markExecuting(previewId: string, now?: string): Promise<ProductionPilotRunManifest>;
+  markVerifying(previewId: string, now?: string): Promise<ProductionPilotRunManifest>;
+  markCommitting(
+    previewId: string,
+    payload: ProductionPilotCommitPayload,
+    now?: string
+  ): Promise<ProductionPilotRunManifest>;
   recordCreateIntent(
     previewId: string,
     intent: Omit<CreateRecordIntent, 'state'> & { state?: CreateIntentState }
@@ -152,6 +184,7 @@ export interface RunManifestRepository {
   ): Promise<ProductionPilotRunManifest>;
   completeSuccess(previewId: string, now?: string): Promise<ProductionPilotRunManifest>;
   findPendingCompensation(): Promise<ProductionPilotRunManifest[]>;
+  findPendingCommits(): Promise<ProductionPilotRunManifest[]>;
   validate(): Promise<void>;
 }
 
@@ -325,6 +358,55 @@ function applyConsume(
   return manifest;
 }
 
+function applyMarkExecuting(
+  manifests: Map<string, ProductionPilotRunManifest>,
+  previewId: string,
+  now: string,
+): ProductionPilotRunManifest {
+  const manifest = requireManifest(manifests, previewId);
+  if (manifest.status === 'executing') return manifest;
+  assertStatus(manifest, 'consumed', 'start execution');
+  manifest.status = 'executing';
+  manifest.executionStartedAt = now;
+  return manifest;
+}
+
+function applyMarkVerifying(
+  manifests: Map<string, ProductionPilotRunManifest>,
+  previewId: string,
+  now: string,
+): ProductionPilotRunManifest {
+  const manifest = requireManifest(manifests, previewId);
+  if (manifest.status === 'verifying') return manifest;
+  assertStatus(manifest, 'executing', 'start verification');
+  manifest.status = 'verifying';
+  manifest.verifyingAt = now;
+  return manifest;
+}
+
+function applyMarkCommitting(
+  manifests: Map<string, ProductionPilotRunManifest>,
+  previewId: string,
+  payload: ProductionPilotCommitPayload,
+  now: string,
+): ProductionPilotRunManifest {
+  const manifest = requireManifest(manifests, previewId);
+  if (manifest.status === 'committing') {
+    if (!sameJson(manifest.commitPayload, payload)) {
+      throw new RunManifestStateError(
+        'RUN_MANIFEST_STATE_INVALID',
+        `Commit payload for ${previewId} changed while commit recovery is in flight`
+      );
+    }
+    return manifest;
+  }
+  assertStatus(manifest, 'verifying', 'start commit');
+  manifest.status = 'committing';
+  manifest.committingAt = now;
+  manifest.commitPayload = cloneValue(payload);
+  return manifest;
+}
+
 function applyCreateIntent(
   manifests: Map<string, ProductionPilotRunManifest>,
   previewId: string,
@@ -344,7 +426,7 @@ function applyCreateIntent(
       `CREATE_INTENT ${intent.operationKey} cannot carry a record id when not found`
     );
   }
-  if (!['consumed', 'compensation_required'].includes(manifest.status)) {
+  if (!['consumed', 'executing', 'verifying', 'compensation_required'].includes(manifest.status)) {
     throw new RunManifestStateError(
       'RUN_MANIFEST_STATE_INVALID',
       `Cannot record a CREATE_INTENT while manifest ${previewId} is ${manifest.status}`
@@ -390,7 +472,7 @@ function applyMarkCreateIntentResolved(
       `CREATE_INTENT ${operationKey} cannot carry a record id when resolved as NOT_FOUND`
     );
   }
-  if (!['consumed', 'compensation_required'].includes(manifest.status)) {
+  if (!['consumed', 'executing', 'verifying', 'compensation_required'].includes(manifest.status)) {
     throw new RunManifestStateError(
       'RUN_MANIFEST_STATE_INVALID',
       `Cannot resolve a CREATE_INTENT while manifest ${previewId} is ${manifest.status}`
@@ -422,7 +504,7 @@ function applyRecordCreated(
   record: Omit<CreatedPilotRecord, 'state'> & { state?: CreatedPilotRecordState; operationKey?: string }
 ): ProductionPilotRunManifest {
   const manifest = requireManifest(manifests, previewId);
-  if (!['consumed', 'compensation_required'].includes(manifest.status)) {
+  if (!['consumed', 'executing', 'verifying', 'compensation_required'].includes(manifest.status)) {
     throw new RunManifestStateError(
       'RUN_MANIFEST_STATE_INVALID',
       `Cannot record a created record while manifest ${previewId} is ${manifest.status}`
@@ -482,7 +564,11 @@ function applyMarkCompensationRequired(
   if (manifest.status === 'compensation_required') {
     return manifest;
   }
-  if (!['confirmed', 'consumed', 'failed', 'succeeded'].includes(manifest.status)) {
+  if (manifest.status === 'compensation_failed') {
+    manifest.status = 'compensation_required';
+    return manifest;
+  }
+  if (!['confirmed', 'consumed', 'executing', 'verifying', 'failed', 'succeeded'].includes(manifest.status)) {
     throw new RunManifestStateError(
       'RUN_MANIFEST_STATE_INVALID',
       `Cannot start compensation while manifest ${previewId} is ${manifest.status}`
@@ -561,7 +647,8 @@ function applyCompleteSuccess(
   now: string
 ): ProductionPilotRunManifest {
   const manifest = requireManifest(manifests, previewId);
-  if (!['consumed', 'succeeded'].includes(manifest.status)) {
+  if (manifest.status === 'succeeded') return manifest;
+  if (!['committing', 'succeeded'].includes(manifest.status)) {
     throw new RunManifestStateError(
       'RUN_MANIFEST_STATE_INVALID',
       `Cannot complete success while manifest ${previewId} is ${manifest.status}`
@@ -605,6 +692,22 @@ class ManifestStateStore {
 
   consume(previewId: string, now: string, operator?: string, nonce?: string): ProductionPilotRunManifest {
     return applyConsume(this.manifests, previewId, now, operator, nonce);
+  }
+
+  markExecuting(previewId: string, now: string): ProductionPilotRunManifest {
+    return applyMarkExecuting(this.manifests, previewId, now);
+  }
+
+  markVerifying(previewId: string, now: string): ProductionPilotRunManifest {
+    return applyMarkVerifying(this.manifests, previewId, now);
+  }
+
+  markCommitting(
+    previewId: string,
+    payload: ProductionPilotCommitPayload,
+    now: string,
+  ): ProductionPilotRunManifest {
+    return applyMarkCommitting(this.manifests, previewId, payload, now);
   }
 
   recordCreateIntent(
@@ -669,12 +772,18 @@ class ManifestStateStore {
     const now = Date.now();
     return Array.from(this.manifests.values()).filter((manifest) => {
       if (['compensation_required', 'compensation_failed'].includes(manifest.status)) return true;
-      if (manifest.status === 'consumed') {
-        return manifest.createdRecords.some((record) => record.state !== 'DELETED')
-          || manifest.createIntents.some((intent) => intent.state === 'PENDING');
+      if (['consumed', 'executing', 'verifying'].includes(manifest.status)) {
+        // A consumed/executing manifest is unfinished even when the process
+        // died before CREATE_INTENT. Recovery must close that window rather
+        // than treating an empty manifest as a successful no-op.
+        return true;
       }
       return manifest.status === 'confirmed' && new Date(manifest.expiresAt).getTime() <= now;
     });
+  }
+
+  findPendingCommits(): ProductionPilotRunManifest[] {
+    return Array.from(this.manifests.values()).filter((manifest) => manifest.status === 'committing');
   }
 
   validate(): void {
@@ -682,7 +791,7 @@ class ManifestStateStore {
     const recordStates = new Set<CreatedPilotRecordState>(['CREATED', 'DELETED', 'DELETE_FAILED']);
     const intentStates = new Set<CreateIntentState>(['PENDING', 'CREATED', 'NOT_FOUND']);
     const statuses = new Set<RunManifestStatus>([
-      'generated', 'confirmed', 'consumed', 'succeeded', 'failed',
+      'generated', 'confirmed', 'consumed', 'executing', 'verifying', 'committing', 'succeeded', 'failed',
       'compensation_required', 'compensated', 'compensation_failed',
     ]);
     for (const manifest of this.manifests.values()) {
@@ -725,6 +834,35 @@ class ManifestStateStore {
           && (intent.state !== 'CREATED' || typeof intent.recordId === 'string')
           && (intent.state !== 'NOT_FOUND' || intent.recordId === undefined)
         ));
+      const commitPayloadValid = manifest.commitPayload === undefined
+        || (
+          manifest.commitPayload
+          && Array.isArray(manifest.commitPayload.writeResults)
+          && manifest.commitPayload.writeResults.every((result) => (
+            result
+            && entities.has(result.entity_type)
+            && typeof result.target_table_id === 'string'
+            && (result.business_record_id === null || typeof result.business_record_id === 'string')
+            && typeof result.created === 'boolean'
+            && ['succeeded', 'failed', 'rolled_back', 'not_attempted'].includes(result.status)
+          ))
+          && manifest.commitPayload.transactionSnapshot
+          && typeof manifest.commitPayload.transactionSnapshot.snapshot_id === 'string'
+          && ['committed', 'rolled_back', 'partial'].includes(manifest.commitPayload.transactionSnapshot.status)
+          && Number.isInteger(manifest.commitPayload.transactionSnapshot.records_created)
+          && Number.isInteger(manifest.commitPayload.transactionSnapshot.records_rolled_back)
+          && Array.isArray(manifest.commitPayload.auditEvents)
+          && manifest.commitPayload.auditEvents.every((event) => (
+            event
+            && typeof event.eventType === 'string'
+            && typeof event.resultStatus !== 'object'
+            && (event.details === undefined || (
+              typeof event.details === 'object'
+              && event.details !== null
+              && !Array.isArray(event.details)
+            ))
+          ))
+        );
       if (
         !manifest.previewId
         || !manifest.ingestionId
@@ -739,6 +877,7 @@ class ManifestStateStore {
         || !targetDigestsValid
         || !recordsValid
         || !intentsValid
+        || !commitPayloadValid
       ) {
         throw new RunManifestStateError(
           'RUN_MANIFEST_STORAGE_INVALID',
@@ -782,6 +921,28 @@ export class InMemoryRunManifestRepository implements RunManifestRepository {
     nonce?: string
   ): Promise<ProductionPilotRunManifest> {
     return cloneManifest(this.store.consume(previewId, now, operator, nonce));
+  }
+
+  async markExecuting(
+    previewId: string,
+    now = new Date().toISOString(),
+  ): Promise<ProductionPilotRunManifest> {
+    return cloneManifest(this.store.markExecuting(previewId, now));
+  }
+
+  async markVerifying(
+    previewId: string,
+    now = new Date().toISOString(),
+  ): Promise<ProductionPilotRunManifest> {
+    return cloneManifest(this.store.markVerifying(previewId, now));
+  }
+
+  async markCommitting(
+    previewId: string,
+    payload: ProductionPilotCommitPayload,
+    now = new Date().toISOString(),
+  ): Promise<ProductionPilotRunManifest> {
+    return cloneManifest(this.store.markCommitting(previewId, payload, now));
   }
 
   async recordCreateIntent(
@@ -849,6 +1010,10 @@ export class InMemoryRunManifestRepository implements RunManifestRepository {
     return this.store.findPendingCompensation().map(cloneManifest);
   }
 
+  async findPendingCommits(): Promise<ProductionPilotRunManifest[]> {
+    return this.store.findPendingCommits().map(cloneManifest);
+  }
+
   async validate(): Promise<void> {
     this.store.validate();
   }
@@ -862,7 +1027,7 @@ export class FileRunManifestRepository implements RunManifestRepository {
     this.lockPath = `${filePath}.lock`;
   }
 
-  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+  private enqueue<T>(operation: (assertLockOwner: () => Promise<void>) => Promise<T>): Promise<T> {
     const run = this.operationTail.then(
       () => this.withFileLock(operation),
       () => this.withFileLock(operation)
@@ -874,14 +1039,24 @@ export class FileRunManifestRepository implements RunManifestRepository {
     return run;
   }
 
-  private async withFileLock<T>(operation: () => Promise<T>): Promise<T> {
+  private async withFileLock<T>(operation: (assertLockOwner: () => Promise<void>) => Promise<T>): Promise<T> {
     await mkdir(dirname(this.filePath), { recursive: true });
     const startedAt = Date.now();
     let lockHandle: Awaited<ReturnType<typeof open>> | undefined;
+    let lockToken: string | undefined;
     while (!lockHandle) {
       try {
         lockHandle = await open(this.lockPath, 'wx');
+        lockToken = randomUUID();
+        await lockHandle.writeFile(JSON.stringify({
+          token: lockToken,
+          pid: process.pid,
+          createdAt: new Date().toISOString(),
+        }), 'utf8');
+        await lockHandle.sync();
       } catch (error) {
+        await lockHandle?.close().catch(() => undefined);
+        lockHandle = undefined;
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
           throw error;
         }
@@ -906,11 +1081,52 @@ export class FileRunManifestRepository implements RunManifestRepository {
       }
     }
 
+    const assertLockOwner = async (): Promise<void> => {
+      if (!lockToken) {
+        throw new RunManifestStateError(
+          'RUN_MANIFEST_STORAGE_INVALID',
+          `Run manifest lock ${this.lockPath} has no owner token`
+        );
+      }
+      try {
+        const raw = await readFile(this.lockPath, 'utf8');
+        const parsed = JSON.parse(raw) as { token?: unknown };
+        if (parsed.token !== lockToken) {
+          throw new RunManifestStateError(
+            'RUN_MANIFEST_STORAGE_INVALID',
+            `Run manifest lock ownership was lost for ${this.filePath}`
+          );
+        }
+      } catch (error) {
+        if (error instanceof RunManifestStateError) throw error;
+        throw new RunManifestStateError(
+          'RUN_MANIFEST_STORAGE_INVALID',
+          `Run manifest lock ownership could not be verified for ${this.filePath}`
+        );
+      }
+    };
+    const heartbeat = setInterval(() => {
+      void lockHandle?.utimes(new Date(), new Date()).catch(() => undefined);
+    }, 5_000);
+
     try {
-      return await operation();
+      await assertLockOwner();
+      const result = await operation(assertLockOwner);
+      await assertLockOwner();
+      return result;
     } finally {
+      clearInterval(heartbeat);
       await lockHandle.close();
-      await unlink(this.lockPath).catch(() => undefined);
+      try {
+        const raw = await readFile(this.lockPath, 'utf8');
+        const parsed = JSON.parse(raw) as { token?: unknown };
+        if (parsed.token === lockToken) {
+          await unlink(this.lockPath).catch(() => undefined);
+        }
+      } catch {
+        // The lock may have been reclaimed by a newer owner. Owner fencing
+        // prevents this process from deleting that owner's lock.
+      }
     }
   }
 
@@ -944,18 +1160,52 @@ export class FileRunManifestRepository implements RunManifestRepository {
     }
   }
 
-  private async writeStore(store: ManifestStateStore): Promise<void> {
+  private async writeStore(
+    store: ManifestStateStore,
+    assertLockOwner: () => Promise<void>,
+  ): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     const temporaryPath = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(temporaryPath, JSON.stringify(store.toArray(), null, 2), 'utf8');
-    await rename(temporaryPath, this.filePath);
+    try {
+      await assertLockOwner();
+      const temporaryHandle = await open(temporaryPath, 'w');
+      try {
+        await temporaryHandle.writeFile(JSON.stringify(store.toArray(), null, 2), 'utf8');
+        await temporaryHandle.sync();
+      } finally {
+        await temporaryHandle.close();
+      }
+      await assertLockOwner();
+      await rename(temporaryPath, this.filePath);
+      await this.syncDirectory();
+    } finally {
+      await unlink(temporaryPath).catch(() => undefined);
+    }
+  }
+
+  private async syncDirectory(): Promise<void> {
+    let directoryHandle: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      directoryHandle = await open(dirname(this.filePath), 'r');
+      await directoryHandle.sync();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // Windows does not expose a synchronizable directory handle. The file
+      // fsync plus atomic rename still applies; unsupported directory fsync is
+      // explicit rather than pretending this JSON journal is a database WAL.
+      if (!['EINVAL', 'ENOTSUP', 'EBADF', 'EISDIR', 'EPERM'].includes(code ?? '')) {
+        throw error;
+      }
+    } finally {
+      await directoryHandle?.close().catch(() => undefined);
+    }
   }
 
   private async update<T>(operation: (store: ManifestStateStore) => T): Promise<T> {
-    return this.enqueue(async () => {
+    return this.enqueue(async (assertLockOwner) => {
       const store = await this.readStore();
       const result = operation(store);
-      await this.writeStore(store);
+      await this.writeStore(store, assertLockOwner);
       return cloneValue(result);
     });
   }
@@ -965,17 +1215,19 @@ export class FileRunManifestRepository implements RunManifestRepository {
   }
 
   async findByPreviewId(previewId: string): Promise<ProductionPilotRunManifest | null> {
-    return this.enqueue(async () => {
+    return this.enqueue(async (assertLockOwner) => {
       const store = await this.readStore();
       const manifest = store.findByPreviewId(previewId);
+      await assertLockOwner();
       return manifest ? cloneManifest(manifest) : null;
     });
   }
 
   async findByRunId(runId: string): Promise<ProductionPilotRunManifest | null> {
-    return this.enqueue(async () => {
+    return this.enqueue(async (assertLockOwner) => {
       const store = await this.readStore();
       const manifest = store.findByRunId(runId);
+      await assertLockOwner();
       return manifest ? cloneManifest(manifest) : null;
     });
   }
@@ -996,6 +1248,28 @@ export class FileRunManifestRepository implements RunManifestRepository {
     nonce?: string
   ): Promise<ProductionPilotRunManifest> {
     return this.update((store) => store.consume(previewId, now, operator, nonce));
+  }
+
+  async markExecuting(
+    previewId: string,
+    now = new Date().toISOString(),
+  ): Promise<ProductionPilotRunManifest> {
+    return this.update((store) => store.markExecuting(previewId, now));
+  }
+
+  async markVerifying(
+    previewId: string,
+    now = new Date().toISOString(),
+  ): Promise<ProductionPilotRunManifest> {
+    return this.update((store) => store.markVerifying(previewId, now));
+  }
+
+  async markCommitting(
+    previewId: string,
+    payload: ProductionPilotCommitPayload,
+    now = new Date().toISOString(),
+  ): Promise<ProductionPilotRunManifest> {
+    return this.update((store) => store.markCommitting(previewId, payload, now));
   }
 
   async recordCreateIntent(
@@ -1060,15 +1334,25 @@ export class FileRunManifestRepository implements RunManifestRepository {
   }
 
   async findPendingCompensation(): Promise<ProductionPilotRunManifest[]> {
-    return this.enqueue(async () => {
+    return this.enqueue(async (assertLockOwner) => {
       const store = await this.readStore();
+      await assertLockOwner();
       return store.findPendingCompensation().map(cloneManifest);
     });
   }
 
+  async findPendingCommits(): Promise<ProductionPilotRunManifest[]> {
+    return this.enqueue(async (assertLockOwner) => {
+      const store = await this.readStore();
+      await assertLockOwner();
+      return store.findPendingCommits().map(cloneManifest);
+    });
+  }
+
   async validate(): Promise<void> {
-    await this.enqueue(async () => {
+    await this.enqueue(async (assertLockOwner) => {
       await this.readStore();
+      await assertLockOwner();
     });
   }
 }

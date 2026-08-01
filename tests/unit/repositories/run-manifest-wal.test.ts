@@ -47,13 +47,53 @@ describe('production-pilot CREATE_INTENT write-ahead log', () => {
       recordId: 'rec_wal_customer',
       createdAt: '2026-08-01T07:00:04.000Z',
     });
+    await repository.recordCreated('preview_wal_001', {
+      entity: 'customer',
+      tableId: 'tbl_customer_wal',
+      operationKey: intent().operationKey,
+      recordId: 'rec_wal_customer',
+      createdAt: '2026-08-01T07:00:04.000Z',
+    });
     expect((await repository.findPendingCompensation()).at(0)?.createdRecords[0]?.recordId)
       .toBe('rec_wal_customer');
+    expect((await repository.findByPreviewId('preview_wal_001'))?.createdRecords).toHaveLength(1);
   });
 
-  it('rejects CREATE_CONFIRMED after a manifest is already succeeded', async () => {
+  it('compensates a consumed manifest that crashed before CREATE_INTENT', async () => {
+    const repository = new InMemoryRunManifestRepository();
+    await consumedManifest(repository, 'preview_wal_consumed_only', 'ing_wal_001');
+    const writer = new TransactionalBatchWriter(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      repository,
+    );
+
+    await expect(writer.recoverPendingCompensations()).resolves.toEqual([
+      { previewId: 'preview_wal_consumed_only', status: 'compensated' },
+    ]);
+    expect((await repository.findByPreviewId('preview_wal_consumed_only'))?.status)
+      .toBe('compensated');
+  });
+
+  it('does not allow success to skip the committing state', async () => {
     const repository = new InMemoryRunManifestRepository();
     await consumedManifest(repository, 'preview_wal_succeeded', 'ing_wal_succeeded');
+    await expect(repository.completeSuccess('preview_wal_succeeded')).rejects.toThrow('consumed');
+
+    await repository.markExecuting('preview_wal_succeeded');
+    await repository.markVerifying('preview_wal_succeeded');
+    await repository.markCommitting('preview_wal_succeeded', {
+      writeResults: [],
+      transactionSnapshot: {
+        snapshot_id: 'txn_wal_succeeded',
+        status: 'committed',
+        records_created: 0,
+        records_rolled_back: 0,
+      },
+      auditEvents: [],
+    });
     await repository.completeSuccess('preview_wal_succeeded');
 
     await expect(repository.recordCreated('preview_wal_succeeded', {

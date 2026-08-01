@@ -262,6 +262,53 @@ describe('TransactionalBatchWriter', () => {
   });
 
   describe('production-pilot durable compensation', () => {
+    it('deletes project before model before customer when timestamps tie', async () => {
+      const manifestRepository = new InMemoryRunManifestRepository();
+      const previewId = 'preview_compensation_dependency_order';
+      await manifestRepository.createGenerated({
+        previewId,
+        ingestionId: 'ing_compensation_dependency_order',
+        runId: 'pilot-compensation-dependency-order',
+        previewDigest: 'c'.repeat(64),
+        operator: 'reviewer_compensation_order',
+        createdAt: '2026-08-01T07:00:00.000Z',
+        expiresAt: '2026-08-01T07:15:00.000Z',
+      });
+      await manifestRepository.confirm(previewId, 'reviewer_compensation_order', '2026-08-01T07:00:01.000Z');
+      await manifestRepository.consume(previewId, '2026-08-01T07:00:02.000Z');
+      const tiedTimestamp = '2026-08-01T07:00:03.000Z';
+      await manifestRepository.recordCreated(previewId, {
+        entity: 'customer', recordId: 'rec_order_customer', createdAt: tiedTimestamp,
+      });
+      await manifestRepository.recordCreated(previewId, {
+        entity: 'model', recordId: 'rec_order_model', createdAt: tiedTimestamp,
+      });
+      await manifestRepository.recordCreated(previewId, {
+        entity: 'project', recordId: 'rec_order_project', createdAt: tiedTimestamp,
+      });
+      await manifestRepository.markCompensationRequired(previewId);
+
+      const deleteOrder: string[] = [];
+      customerWriter.deleteRecord = vi.fn(async (recordId) => { deleteOrder.push(recordId); });
+      modelWriter.deleteRecord = vi.fn(async (recordId) => { deleteOrder.push(recordId); });
+      projectWriter.deleteRecord = vi.fn(async (recordId) => { deleteOrder.push(recordId); });
+      const restartedWriter = new TransactionalBatchWriter(
+        customerWriter as unknown as CustomerRecordWriter,
+        projectWriter as unknown as ProjectRecordWriter,
+        modelWriter as unknown as ModelRecordWriter,
+        writeLogRepository,
+        manifestRepository,
+      );
+
+      await restartedWriter.recoverPendingCompensations();
+
+      expect(deleteOrder).toEqual([
+        'rec_order_project',
+        'rec_order_model',
+        'rec_order_customer',
+      ]);
+    });
+
     it('emits compensation started before delete and completed after delete', async () => {
       const events: string[] = [];
       customerWriter.deleteRecord = vi.fn(async () => {

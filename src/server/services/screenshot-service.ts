@@ -24,7 +24,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { TaskRepository } from '../repositories/task-repository.js';
 import type { WriteLogRepository } from '../repositories/write-log-repository.js';
-import type { RunManifestRepository } from '../repositories/run-manifest-repository.js';
+import type {
+  ProductionPilotCommitPayload,
+  ProductionPilotRunManifest,
+  RunManifestRepository,
+} from '../repositories/run-manifest-repository.js';
 import type { IngestionTask } from '../domain/ingestion.js';
 import { BadRequestError, NotFoundError, ConflictError } from '../domain/errors.js';
 import type { CandidateV1 } from '../../contracts/candidate-v1.js';
@@ -332,6 +336,11 @@ interface ScreenshotBatchWriter {
   }): Promise<Array<{ previewId: string; status: 'compensated' | 'compensation_failed' }>>;
 }
 
+export type ProductionPilotRecoveryOutcome = {
+  previewId: string;
+  status: 'compensated' | 'compensation_failed' | 'committed' | 'commit_recovery_failed';
+};
+
 export interface ScreenshotServiceOptions {
   ocrEngine?: ScreenshotOcrEngine;
   governanceClient?: ScreenshotGovernanceClient;
@@ -358,7 +367,7 @@ export interface ScreenshotServiceOptions {
    * 守卫跳过，既有测试行为不变。生产模式由 buildApp 注入 FileAuditRepository。
    */
   auditLogRepository?: AuditLogRepository;
-  /** Durable production-pilot run manifest; mandatory for pilot writes. */
+  /** Process-level production-pilot recovery journal; mandatory for pilot writes. */
   runManifestRepository?: RunManifestRepository;
   /** Confirmation window for a server-created manifest. */
   productionPilotManifestTtlMs?: number;
@@ -1203,6 +1212,73 @@ export class ScreenshotService {
   // 私有辅助方法
   // ==========================================================================
 
+  /**
+   * Reconciles production-pilot manifests after a process restart. In-flight
+   * execution states are compensated by the batch writer; a COMMITTING
+   * manifest is never compensated because its external records may already be
+   * reflected in the task repository. Its persisted commit payload is replayed
+   * idempotently until both stores converge.
+   */
+  async recoverPendingProductionPilotRuns(): Promise<ProductionPilotRecoveryOutcome[]> {
+    const manifestRepository = this.options.runManifestRepository;
+    const batchWriter = this.options.batchWriter;
+    if (!manifestRepository || !batchWriter?.recoverPendingCompensations) {
+      throw new ConflictError('Production pilot recovery journal is unavailable');
+    }
+
+    const outcomes: ProductionPilotRecoveryOutcome[] = await batchWriter.recoverPendingCompensations();
+    const pendingCommits = await manifestRepository.findPendingCommits();
+    for (const manifest of pendingCommits) {
+      try {
+        await this.reconcilePendingPilotCommit(manifest);
+        outcomes.push({ previewId: manifest.previewId, status: 'committed' });
+      } catch {
+        outcomes.push({ previewId: manifest.previewId, status: 'commit_recovery_failed' });
+      }
+    }
+    return outcomes;
+  }
+
+  private async reconcilePendingPilotCommit(
+    manifest: ProductionPilotRunManifest,
+  ): Promise<void> {
+    const payload = manifest.commitPayload;
+    const auditLogRepository = this.options.auditLogRepository;
+    const manifestRepository = this.options.runManifestRepository;
+    if (!payload || !auditLogRepository || !manifestRepository) {
+      throw new Error('RUN_MANIFEST_COMMIT_PAYLOAD_MISSING');
+    }
+    const task = await this.repository.findById(manifest.ingestionId);
+    if (!task) {
+      throw new Error('RUN_MANIFEST_TASK_NOT_FOUND');
+    }
+
+    for (const event of payload.auditEvents) {
+      await this.auditRecord(
+        manifest.ingestionId,
+        event.eventType,
+        event.resultStatus,
+        event.details,
+      );
+    }
+
+    const state = extractScreenshotState(task);
+    const expectedSnapshot = payload.transactionSnapshot;
+    const sameCommittedState = state.screenshot_status === 'write_succeeded'
+      && JSON.stringify(state.write_results) === JSON.stringify(payload.writeResults)
+      && JSON.stringify(state.transaction_snapshot) === JSON.stringify(expectedSnapshot);
+    if (state.screenshot_status === 'write_succeeded' && !sameCommittedState) {
+      throw new Error('RUN_MANIFEST_TASK_COMMIT_CONFLICT');
+    }
+    if (!sameCommittedState) {
+      state.write_results = payload.writeResults;
+      state.transaction_snapshot = expectedSnapshot;
+      state.screenshot_status = 'write_succeeded';
+      await this.repository.save(withScreenshotState(task, state));
+    }
+    await manifestRepository.completeSuccess(manifest.previewId);
+  }
+
   private async confirmProductionPilotExecution(
     id: string,
     req: ConfirmWriteRequest,
@@ -1224,7 +1300,7 @@ export class ScreenshotService {
     const manifestRepository = this.options.runManifestRepository;
     const batchWriter = this.options.batchWriter;
     if (!manifestRepository || !batchWriter?.preflight || !this.options.auditLogRepository || !this.options.writeLogRepository) {
-      throw new ConflictError('Production pilot durable boundary is unavailable');
+      throw new ConflictError('Production pilot recovery boundary is unavailable');
     }
     const manifest = await manifestRepository.findByPreviewId(req.production_pilot_preview_id);
     if (!manifest || manifest.ingestionId !== task.ingestion_id) {
@@ -1338,6 +1414,7 @@ export class ScreenshotService {
       await manifestRepository.completeCompensation(consumed.previewId, true);
       return this.persistPilotBlockedResult(task, state, targetTables, 'GATE_BLOCKED');
     }
+    await manifestRepository.markExecuting(consumed.previewId);
     await this.auditRecord(task.ingestion_id, 'pilot_write_started', 'committing', pilotAuditContext);
 
     let batchResult: BatchWriterResultView;
@@ -1383,8 +1460,7 @@ export class ScreenshotService {
       };
     }
 
-    state.screenshot_status = 'write_succeeded';
-    await this.repository.save(withScreenshotState(task, state));
+    await manifestRepository.markVerifying(consumed.previewId);
     try {
       const createdResults = batchResult.write_results.filter(
         (result) => result.status === 'succeeded' && result.created && result.business_record_id,
@@ -1392,32 +1468,60 @@ export class ScreenshotService {
       const verifiedResults = batchResult.write_results.filter(
         (result) => result.status === 'succeeded' && result.business_record_id,
       );
+      const auditEvents: ProductionPilotCommitPayload['auditEvents'] = [];
       if (createdResults.length > 0) {
-        await this.auditRecord(task.ingestion_id, 'pilot_record_created', 'succeeded', {
-          ...pilotAuditContext,
-          record_count: createdResults.length,
-          record_digests: createdResults.map((result) => sha256Hex(result.business_record_id!)),
+        auditEvents.push({
+          eventType: 'pilot_record_created',
+          resultStatus: 'succeeded',
+          details: {
+            ...pilotAuditContext,
+            record_count: createdResults.length,
+            record_digests: createdResults.map((result) => sha256Hex(result.business_record_id!)),
+          },
         });
       }
       if (batchResult.post_write_verified && verifiedResults.some((result) => result.entity_type === 'project')) {
-        await this.auditRecord(task.ingestion_id, 'pilot_relation_verified', 'verified', {
-          ...pilotAuditContext,
-          verified_record_count: verifiedResults.length,
+        auditEvents.push({
+          eventType: 'pilot_relation_verified',
+          resultStatus: 'verified',
+          details: {
+            ...pilotAuditContext,
+            verified_record_count: verifiedResults.length,
+          },
         });
       }
-      await this.auditRecord(task.ingestion_id, 'pilot_write_completed', 'succeeded', {
-        ...pilotAuditContext,
-        record_count: verifiedResults.length,
+      auditEvents.push({
+        eventType: 'pilot_write_completed',
+        resultStatus: 'succeeded',
+        details: {
+          ...pilotAuditContext,
+          record_count: verifiedResults.length,
+        },
       });
-      await this.auditRecord(task.ingestion_id, 'write_succeeded', 'succeeded', {
-        transaction_snapshot_id: batchResult.transaction_snapshot_id,
+      auditEvents.push({
+        eventType: 'write_succeeded',
+        resultStatus: 'succeeded',
+        details: {
+          transaction_snapshot_id: batchResult.transaction_snapshot_id,
+        },
       });
+
+      const commitPayload: ProductionPilotCommitPayload = {
+        writeResults: batchResult.write_results,
+        transactionSnapshot: state.transaction_snapshot!,
+        auditEvents,
+      };
+      // COMMITTING is the durable fence between external Feishu success and
+      // task/audit persistence. Recovery of this state completes the commit;
+      // it must never compensate records that may already be task-visible.
+      await manifestRepository.markCommitting(consumed.previewId, commitPayload);
+      for (const event of auditEvents) {
+        await this.auditRecord(task.ingestion_id, event.eventType, event.resultStatus, event.details);
+      }
+      state.screenshot_status = 'write_succeeded';
+      await this.repository.save(withScreenshotState(task, state));
       await manifestRepository.completeSuccess(consumed.previewId);
     } catch {
-      state.screenshot_status = 'write_failed';
-      await manifestRepository.markCompensationRequired(consumed.previewId).catch(() => undefined);
-      await batchWriter.recoverPendingCompensations?.().catch(() => undefined);
-      await this.repository.save(withScreenshotState(task, state));
       return {
         screenshot_id: task.ingestion_id,
         ingestion_id: task.ingestion_id,

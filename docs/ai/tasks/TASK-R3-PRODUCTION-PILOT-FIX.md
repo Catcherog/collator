@@ -2,7 +2,7 @@
 
 ## Status
 
-`CODEX_FIX_READY_FOR_TRAE_REVIEW` after the local Codex FIX commit.
+`CODEX_FIX_READY_FOR_GPTWEB_REVIEW` after the local Codex FIX commit.
 
 ## Scope
 
@@ -19,6 +19,18 @@ production pilot completion, merge, or deployment.
   immediate `CREATE_CONFIRMED` after the API returns and before read-back,
   exact-record compensation, restart recovery for pending intents, ambiguous
   lookup fail-closed behavior, and production-pilot startup recovery gating.
+- Cross-store execution now persists `executing → verifying → committing →
+  succeeded`; a `COMMITTING` manifest replays audit/task persistence instead of
+  compensating external records.
+- `consumed`, `executing`, and `verifying` manifests are all recovered, including
+  the crash window before the first `CREATE_INTENT`.
+- Production-pilot HTTP routes require a host-supplied verified principal
+  resolver (or the built-in expiring HS256 JWT adapter backed by
+  `PRODUCTION_PILOT_JWT_SECRET`); arbitrary operator headers are not accepted
+  in pilot mode.
+- Compensation order is explicit (`project → model → customer`). The file
+  journal uses file fsync, atomic rename, and owner-fenced lock refresh; it is
+  documented as a process-level recovery journal, not a database WAL.
 - Legacy full-preview and client confirmation fields are rejected by the strict
   HTTP schema.
 
@@ -40,6 +52,6 @@ production pilot completion, merge, or deployment.
   this FIX; the baseline full suite already failed before these changes. The
   integration suite also remains red on the same legacy/evaluation/old
   ingestion/Gate-D mock families and is not an RF-03/RF-04 regression.
-- Trae must inspect the local commit, rerun the required gates, and own push/PR
-  updates. The PR must remain unmerged until independent review and explicit
-  production authorization.
+- Codex will inspect the local commit, rerun the required gates, and push the
+  updated Draft PR for GPTweb's independent evidence review. The PR must remain
+  unmerged until independent review and explicit production authorization.

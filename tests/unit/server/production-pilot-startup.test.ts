@@ -35,9 +35,10 @@ function stubProductionPilotEnv(): void {
   vi.stubEnv('FEISHU_WRITE_ENV', 'production-pilot');
   vi.stubEnv('ENABLE_PRODUCTION_PILOT', 'true');
   vi.stubEnv('PRODUCTION_PILOT_RUN_ID', 'startup-test-run');
+  vi.stubEnv('PRODUCTION_PILOT_JWT_SECRET', '');
 }
 
-async function buildStartupApp(writer: RecoveryWriter) {
+async function buildStartupApp(writer: RecoveryWriter, includeVerifiedResolver = true) {
   const runManifestRepository = new InMemoryRunManifestRepository();
   return buildApp({
     repository: new InMemoryTaskRepository(),
@@ -49,6 +50,9 @@ async function buildStartupApp(writer: RecoveryWriter) {
       batchWriter: writer,
       runManifestRepository,
     },
+    ...(includeVerifiedResolver
+      ? { authenticatedOperatorResolver: () => 'startup-operator' }
+      : {}),
   });
 }
 
@@ -71,7 +75,16 @@ describe('production-pilot startup recovery gate', () => {
     const writer = new RecoveryWriter([{ previewId: 'preview_failed', status: 'compensation_failed' }]);
 
     await expect(buildStartupApp(writer)).rejects.toThrow(
-      'Production pilot startup blocked: pending compensation recovery failed.',
+      'Production pilot startup blocked: pending recovery failed.',
+    );
+  });
+
+  it('fails closed when production-pilot has no verified operator principal resolver', async () => {
+    stubProductionPilotEnv();
+    const writer = new RecoveryWriter([]);
+
+    await expect(buildStartupApp(writer, false)).rejects.toThrow(
+      'Production pilot startup blocked: verified operator principal resolver is unavailable.',
     );
   });
 });

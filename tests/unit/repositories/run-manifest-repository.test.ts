@@ -34,6 +34,20 @@ describe('RunManifestRepository', () => {
     ).rejects.toMatchObject({ code: 'RUN_MANIFEST_STATE_INVALID' });
   });
 
+  it('treats a consumed manifest with no CREATE_INTENT as unfinished work', async () => {
+    const repository = new InMemoryRunManifestRepository();
+    await repository.createGenerated({
+      ...BASE_INPUT,
+      previewId: 'preview_manifest_consumed_empty',
+      runId: 'pilot-run-manifest-consumed-empty',
+    });
+    await repository.confirm('preview_manifest_consumed_empty', BASE_INPUT.operator, BASE_INPUT.createdAt);
+    await repository.consume('preview_manifest_consumed_empty', '2026-08-01T07:01:00.000Z');
+
+    expect((await repository.findPendingCompensation()).map((manifest) => manifest.previewId))
+      .toEqual(['preview_manifest_consumed_empty']);
+  });
+
   it('rejects expired confirmation and serializes concurrent confirms', async () => {
     const repository = new InMemoryRunManifestRepository();
     await repository.createGenerated({

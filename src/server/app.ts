@@ -4,7 +4,8 @@ import multipart from '@fastify/multipart';
 import { loadConfig } from './config.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestionRoutes } from './routes/ingestions.js';
-import { screenshotRoutes } from './routes/screenshots.js';
+import { screenshotRoutes, type AuthenticatedOperatorResolver } from './routes/screenshots.js';
+import { createHmacJwtOperatorResolver } from './routes/operator-auth.js';
 import { IngestionService } from './services/ingestion-service.js';
 import { ScreenshotService, type ScreenshotServiceOptions } from './services/screenshot-service.js';
 import { createOcrEngineFromEnv } from '../ocr/ocr-engine-factory.js';
@@ -46,7 +47,7 @@ export interface BuildAppOptions {
    */
   customerRecordWriter?: CustomerRecordWriter;
   writeLogRepository?: WriteLogRepository;
-  /** Optional durable production-pilot manifest repository for tests or hosts. */
+  /** Optional process-level production-pilot recovery journal for tests or hosts. */
   runManifestRepository?: RunManifestRepository;
   /**
    * FAMP-CONTRACT-ADOPTION-GATE-01-R1 / AC-R1-02
@@ -70,6 +71,12 @@ export interface BuildAppOptions {
    *   - BatchWriter: 仅在 feishu 模式且有 project/model 表 ID 时装配
    */
   screenshotServiceOptions?: ScreenshotServiceOptions;
+  /**
+   * Verified principal resolver supplied by the host's OAuth/JWT or trusted
+   * reverse-proxy middleware. When omitted, production-pilot uses the
+   * `PRODUCTION_PILOT_JWT_SECRET` HS256 adapter if configured.
+   */
+  authenticatedOperatorResolver?: AuthenticatedOperatorResolver;
 }
 
 export async function buildApp(options?: BuildAppOptions) {
@@ -173,6 +180,16 @@ export async function buildApp(options?: BuildAppOptions) {
   screenshotServiceOptions.runManifestRepository =
     screenshotServiceOptions.runManifestRepository ?? runManifestRepository;
   const feishuWriteConfig = loadFeishuWriteConfig();
+  const authenticatedOperatorResolver: AuthenticatedOperatorResolver | undefined =
+    options?.authenticatedOperatorResolver
+    ?? (process.env.PRODUCTION_PILOT_JWT_SECRET?.trim()
+      ? createHmacJwtOperatorResolver(process.env.PRODUCTION_PILOT_JWT_SECRET.trim())
+      : undefined);
+  if (feishuWriteConfig.writeMode === 'production-pilot' && !authenticatedOperatorResolver) {
+    throw new Error(
+      'Production pilot startup blocked: verified operator principal resolver is unavailable.',
+    );
+  }
   screenshotServiceOptions.productionPilotRunId =
     screenshotServiceOptions.productionPilotRunId ?? feishuWriteConfig.productionPilot?.pilotRunId;
   // 生产模式自动装配 OCR + Governance Client（测试模式由调用方注入）
@@ -226,20 +243,20 @@ export async function buildApp(options?: BuildAppOptions) {
       };
     }
   }
+  const screenshotService = new ScreenshotService(repository, screenshotServiceOptions);
+
   if (feishuWriteConfig.writeMode === 'production-pilot') {
     const manifestRepository = screenshotServiceOptions.runManifestRepository;
-    const batchWriter = screenshotServiceOptions.batchWriter;
-    if (!manifestRepository || !batchWriter?.recoverPendingCompensations) {
-      throw new Error('Production pilot startup blocked: durable manifest recovery is unavailable.');
+    if (!manifestRepository) {
+      throw new Error('Production pilot startup blocked: process-level recovery journal is unavailable.');
     }
     await manifestRepository.validate();
-    const recoveryOutcomes = await batchWriter.recoverPendingCompensations();
-    if (recoveryOutcomes.some((outcome) => outcome.status !== 'compensated')) {
-      throw new Error('Production pilot startup blocked: pending compensation recovery failed.');
+    const recoveryOutcomes = await screenshotService.recoverPendingProductionPilotRuns();
+    if (recoveryOutcomes.some((outcome) => !['compensated', 'committed'].includes(outcome.status))) {
+      throw new Error('Production pilot startup blocked: pending recovery failed.');
     }
     await manifestRepository.validate();
   }
-  const screenshotService = new ScreenshotService(repository, screenshotServiceOptions);
 
   // 主线 A1: 注册 CORS 和 multipart 插件（供截图上传和跨域调用）
   await app.register(cors, { origin: true });
@@ -283,7 +300,10 @@ export async function buildApp(options?: BuildAppOptions) {
     await ingestionRoutes(instance, service);
   });
   await app.register(async (instance) => {
-    await screenshotRoutes(instance, screenshotService);
+    await screenshotRoutes(instance, screenshotService, {
+      authenticatedOperatorResolver,
+      requireVerifiedOperator: feishuWriteConfig.writeMode === 'production-pilot',
+    });
   });
 
   return { app, config, service, repository, reviewRepository, screenshotService };
