@@ -13,6 +13,9 @@ export type IngestionStatus =
   | 'validation_failed'
   | 'review_rejected'
   | 'commit_failed'
+  | 'write_result_unknown'
+  | 'write_needs_reconciliation'
+  | 'write_partial'
   | 'rollback_required'
   | 'rolled_back';
 

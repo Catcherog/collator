@@ -49,13 +49,13 @@ function internalConfig(overrides: Record<string, string> = {}): FeishuWriteConf
   });
 }
 
-function passGovernance(candidateId: string): FullGovernanceResult {
+function passGovernance(candidateId: string, projectType: 'client' | 'creative' = 'client'): FullGovernanceResult {
   const now = new Date().toISOString();
   return {
     schema_version: 'v1',
     candidate_id: candidateId,
     decision: 'PASS',
-    classification: { entity_type: 'project', project_type: 'client', confidence: 0.99 },
+    classification: { entity_type: 'project', project_type: projectType, confidence: 0.99 },
     rule_version: 'internal-test-rules',
     violations: [],
     write: { status: 'NOT_ATTEMPTED', target_table: 'project', target_record_id: null },
@@ -71,8 +71,10 @@ function passGovernance(candidateId: string): FullGovernanceResult {
 }
 
 class PassGovernanceClient implements ScreenshotGovernanceClient {
+  constructor(private readonly projectType: 'client' | 'creative' = 'client') {}
+
   async callPreWriteFull(candidate: Parameters<ScreenshotGovernanceClient['callPreWriteFull']>[0]): Promise<FullGovernanceResult> {
-    return passGovernance(candidate.candidate_id);
+    return passGovernance(candidate.candidate_id, this.projectType);
   }
 }
 
@@ -86,6 +88,11 @@ class FakeInternalBatchWriter {
   readonly inputs: GuardedWriteBatchInput[] = [];
   mode: WriterMode = 'success';
   readonly findByIngestionId = vi.fn(async (_entity: string, _ingestionId: string) => [] as string[]);
+  readonly verifyExistingByIngestion = vi.fn(async (
+    _entity: string,
+    _recordId: string,
+    _input: unknown,
+  ): Promise<void> => undefined);
 
   async preflight(input: GuardedWriteBatchInput): Promise<{ allowed: boolean; reason: string }> {
     this.inputs.push(input);
@@ -150,14 +157,33 @@ async function createInternalContext(
   mode: WriterMode = 'success',
   internalWriteTimeoutMs?: number,
   config: FeishuWriteConfig = internalConfig(),
+  projectType: 'client' | 'creative' = 'client',
 ) {
   const repository = new InMemoryTaskRepository();
   const internalWriteRepository = new InMemoryInternalWriteRepository();
   const writer = new FakeInternalBatchWriter();
   writer.mode = mode;
+  const ocrEngine = projectType === 'creative'
+    ? {
+        async extract() {
+          const text_blocks = [
+            { type: 'text' as const, text: '样片创作项目' },
+            { type: 'date' as const, text: '2026年8月15日' },
+          ];
+          return {
+            engine: 'internal-test',
+            ocr_version: 'internal-test-1',
+            text_blocks,
+            raw_text: text_blocks.map((block) => block.text).join('\n'),
+            confidence: 0.99,
+            processed_at: new Date().toISOString(),
+          };
+        },
+      }
+    : new MockOcrEngine();
   const service = new ScreenshotService(repository, {
-    ocrEngine: new MockOcrEngine(),
-    governanceClient: new PassGovernanceClient(),
+    ocrEngine,
+    governanceClient: new PassGovernanceClient(projectType),
     batchWriter: writer,
     auditLogRepository: new InMemoryAuditLogRepository(),
     internalWriteRepository,
@@ -299,6 +325,37 @@ describe('ScreenshotService internal-controlled write flow', () => {
     expect(context.writer.calls).toBe(0);
   });
 
+  it('requires the complete FeishuWriteConfig and never accepts a partial lane subsection', async () => {
+    const partialConfig = {
+      ...internalConfig().internalControlledWrite,
+    } as unknown as FeishuWriteConfig;
+    const context = await createInternalContext('success', undefined, partialConfig);
+
+    await expect(context.service.createInternalWritePreview(
+      context.ingestionId,
+      { candidate_v1_id: context.candidateId },
+      'operator-internal',
+    )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_DISABLED' });
+    expect(context.writer.calls).toBe(0);
+  });
+
+  it.each([
+    ['TASK_REPOSITORY', 'memory'],
+    ['DRY_RUN', 'true'],
+    ['ENABLE_REAL_FEISHU_WRITE', 'false'],
+    ['FEISHU_WRITE_ENV', 'test'],
+  ])('blocks the internal lane when full Feishu config gate %s=%s is unsafe', async (key, value) => {
+    const context = await createInternalContext('success', undefined, internalConfig({ [key]: value }));
+    const preview = await authorize(context);
+
+    await expect(context.service.executeInternalControlledWrite(
+      preview.preview_id,
+      { nonce: preview.nonce, candidate_v1_id: context.candidateId },
+      'operator-internal',
+    )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_GATE_BLOCKED' });
+    expect(context.writer.calls).toBe(0);
+  });
+
   it('requires authenticated human confirmation and never calls the writer early', async () => {
     const context = await createInternalContext();
     const preview = await context.service.createInternalWritePreview(
@@ -398,6 +455,33 @@ describe('ScreenshotService internal-controlled write flow', () => {
     expect(stored?.result?.status).toBe('result_unknown');
   });
 
+  it('keeps the execution guard until the underlying timeout operation settles', async () => {
+    const context = await createInternalContext('success', 10);
+    context.writer.delayMs = 40;
+    const preview = await authorize(context);
+    const request = { nonce: preview.nonce, candidate_v1_id: context.candidateId };
+    const result = await context.service.executeInternalControlledWrite(
+      preview.preview_id,
+      request,
+      'operator-internal',
+    );
+
+    expect(result.status).toBe('result_unknown');
+    await expect(context.service.executeInternalControlledWrite(
+      preview.preview_id,
+      request,
+      'operator-internal',
+    )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_ALREADY_IN_PROGRESS' });
+    context.writer.findByIngestionId.mockResolvedValue(['rec_reconciled']);
+    await expect(context.service.reconcileInternalControlledWrite(
+      preview.preview_id,
+      'operator-internal',
+    )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_ALREADY_IN_PROGRESS' });
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(context.writer.active).toBe(0);
+  });
+
   it('reconciles a unique marker match without creating or deleting a record', async () => {
     const context = await createInternalContext('unknown');
     const preview = await authorize(context);
@@ -415,6 +499,60 @@ describe('ScreenshotService internal-controlled write flow', () => {
     expect(result.status).toBe('succeeded');
     expect(result.additional_create_calls).toBe(0);
     expect(result.write_results.some((item) => item.business_record_id === 'rec_reconciled_customer')).toBe(true);
+    expect(context.writer.calls).toBe(1);
+    expect(context.writer.verifyExistingByIngestion).toHaveBeenCalled();
+  });
+
+  it('does not mark a unique marker match succeeded when field or relation verification fails', async () => {
+    const context = await createInternalContext('unknown');
+    const preview = await authorize(context);
+    await context.service.executeInternalControlledWrite(
+      preview.preview_id,
+      { nonce: preview.nonce, candidate_v1_id: context.candidateId },
+      'operator-internal',
+    );
+    context.writer.findByIngestionId.mockImplementation(async (entity: string) => (
+      entity === 'customer' ? ['cus_1'] : ['prj_1']
+    ));
+    context.writer.verifyExistingByIngestion.mockImplementation(async (entity: string) => {
+      if (entity === 'project') throw new Error('relation mismatch');
+    });
+
+    const result = await context.service.reconcileInternalControlledWrite(
+      preview.preview_id,
+      'operator-internal',
+    );
+    expect(result.status).toBe('needs_reconciliation');
+    expect(result.error_code).toBe('RELATION_VERIFICATION_FAILED');
+    expect(result.additional_create_calls).toBe(0);
+    expect(context.writer.calls).toBe(1);
+    expect(context.writer.verifyExistingByIngestion).toHaveBeenCalledTimes(2);
+  });
+
+  it('verifies the creative Model and Project relation before reconciliation success', async () => {
+    const context = await createInternalContext('unknown', undefined, internalConfig(), 'creative');
+    const preview = await authorize(context);
+    await context.service.executeInternalControlledWrite(
+      preview.preview_id,
+      { nonce: preview.nonce, candidate_v1_id: context.candidateId },
+      'operator-internal',
+    );
+    context.writer.findByIngestionId.mockImplementation(async (entity: string) => (
+      entity === 'model' ? ['mod_1'] : ['prj_1']
+    ));
+
+    const result = await context.service.reconcileInternalControlledWrite(
+      preview.preview_id,
+      'operator-internal',
+    );
+    expect(result.status).toBe('succeeded');
+    expect(context.writer.verifyExistingByIngestion).toHaveBeenCalledWith(
+      'project',
+      'prj_1',
+      expect.objectContaining({
+        relationContext: { customerRecordId: undefined, modelRecordId: 'mod_1' },
+      }),
+    );
     expect(context.writer.calls).toBe(1);
   });
 
@@ -469,6 +607,58 @@ describe('ScreenshotService internal-controlled write flow', () => {
     expect(result.write_results[0]?.business_record_id).toMatch(/^rec_customer_/);
     expect(context.writer.calls).toBe(1);
   });
+
+  it('preserves ambiguous states in the task and final-result API', async () => {
+    const unknownContext = await createInternalContext('unknown');
+    const unknownPreview = await authorize(unknownContext);
+    await unknownContext.service.executeInternalControlledWrite(
+      unknownPreview.preview_id,
+      { nonce: unknownPreview.nonce, candidate_v1_id: unknownContext.candidateId },
+      'operator-internal',
+    );
+    const unknownStatus = await unknownContext.service.getScreenshotStatus(unknownContext.ingestionId);
+    const unknownFinal = await unknownContext.service.getFinalResult(unknownContext.ingestionId);
+    expect(unknownStatus.status).toBe('write_result_unknown');
+    expect(unknownStatus.write?.status).toBe('unknown');
+    expect(unknownFinal.final_status).toBe('write_result_unknown');
+    expect(unknownFinal.governance_result_v1.write.status).toBe('unknown');
+    expect(unknownFinal.write_logs[0]?.status).toBe('unknown');
+    expect(unknownFinal.write_logs[0]?.error_code).toBe('INTERNAL_WRITE_RESULT_UNKNOWN');
+
+    const partialContext = await createInternalContext('partial');
+    const partialPreview = await authorize(partialContext);
+    await partialContext.service.executeInternalControlledWrite(
+      partialPreview.preview_id,
+      { nonce: partialPreview.nonce, candidate_v1_id: partialContext.candidateId },
+      'operator-internal',
+    );
+    const partialTask = await partialContext.repository.findById(partialContext.ingestionId);
+    const partialFinal = await partialContext.service.getFinalResult(partialContext.ingestionId);
+    expect(partialTask?.status).toBe('write_partial');
+    expect(partialFinal.final_status).toBe('write_partial');
+    expect(partialFinal.governance_result_v1.write.status).toBe('partial');
+    expect(partialFinal.write_logs.some((log) => log.status === 'failed')).toBe(true);
+    expect(partialFinal.write_logs.some((log) => log.business_record_id?.startsWith('rec_customer_'))).toBe(true);
+
+    const needsContext = await createInternalContext('unknown');
+    const needsPreview = await authorize(needsContext);
+    await needsContext.service.executeInternalControlledWrite(
+      needsPreview.preview_id,
+      { nonce: needsPreview.nonce, candidate_v1_id: needsContext.candidateId },
+      'operator-internal',
+    );
+    needsContext.writer.findByIngestionId.mockResolvedValue([]);
+    const needsResult = await needsContext.service.reconcileInternalControlledWrite(
+      needsPreview.preview_id,
+      'operator-internal',
+    );
+    const needsStatus = await needsContext.service.getScreenshotStatus(needsContext.ingestionId);
+    const needsFinal = await needsContext.service.getFinalResult(needsContext.ingestionId);
+    expect(needsResult.status).toBe('needs_reconciliation');
+    expect(needsStatus.status).toBe('write_needs_reconciliation');
+    expect(needsFinal.final_status).toBe('write_needs_reconciliation');
+    expect(needsFinal.governance_result_v1.write.status).toBe('needs_reconciliation');
+  });
 });
 
 describe('internal preview repository', () => {
@@ -503,5 +693,56 @@ describe('internal preview repository', () => {
     });
     const serialized = JSON.stringify(await repository.findWriteLogs(preview.preview_id));
     expect(serialized).not.toContain(TABLES.customer);
+  });
+
+  it('does not regress a succeeded terminal result to unknown, failed, or partial', async () => {
+    const repository = new InMemoryInternalWriteRepository();
+    const now = new Date();
+    const preview = await repository.createPreview({
+      preview_id: 'preview_terminal_001',
+      nonce: 'nonce_terminal_001',
+      ingestion_id: 'ing_terminal_001',
+      candidate_id: 'candidate_terminal_001',
+      candidate_digest: 'a'.repeat(64),
+      governance_digest: 'b'.repeat(64),
+      authoritative_plan_digest: 'c'.repeat(64),
+      operator: 'operator-terminal',
+      target_tables: ['customer'],
+      target_table_digests: { customer: 'd'.repeat(64) },
+      created_at: now.toISOString(),
+      expires_at: new Date(now.getTime() + 60_000).toISOString(),
+    });
+    await repository.confirm(preview.preview_id, 'operator-terminal', preview.nonce, now.toISOString());
+    await repository.markExecuting(preview.preview_id, now.toISOString());
+    const succeeded = {
+      status: 'succeeded' as const,
+      write_results: [{
+        entity_type: 'customer' as const,
+        target_table_id: 'customer',
+        business_record_id: 'cus_terminal',
+        created: false,
+        status: 'succeeded' as const,
+      }],
+      additional_create_calls: 0,
+    };
+    await repository.complete(preview.preview_id, succeeded, 'operator-terminal', now.toISOString());
+
+    for (const status of ['result_unknown', 'failed', 'partial'] as const) {
+      await repository.complete(preview.preview_id, {
+        status,
+        write_results: [{
+          entity_type: 'customer',
+          target_table_id: 'customer',
+          business_record_id: null,
+          created: false,
+          status: status === 'failed' ? 'failed' : 'unknown',
+        }],
+        error_code: `STALE_${status.toUpperCase()}`,
+        additional_create_calls: 0,
+      }, 'operator-terminal', now.toISOString());
+      const stored = await repository.findPreview(preview.preview_id);
+      expect(stored?.status).toBe('succeeded');
+      expect(stored?.result).toEqual(succeeded);
+    }
   });
 });

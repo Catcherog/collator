@@ -39,6 +39,9 @@ export type ScreenshotStatus =
   | 'governance_blocked'     // 治理阻止
   | 'write_succeeded'  // 写入成功
   | 'write_failed'      // 写入失败
+  | 'write_result_unknown' // caller timeout or ambiguous external result
+  | 'write_needs_reconciliation' // manual marker/record reconciliation required
+  | 'write_partial'     // some target writes completed and require manual action
   | 'duplicate_skipped' // 重复跳过
   | 'review_pending'   // 复核待处理
   | 'review_resolved'  // 复核已解决
@@ -54,7 +57,14 @@ export interface ApiErrorResponse {
 }
 
 /** 写入结果状态 */
-export type WriteResultStatus = 'succeeded' | 'failed' | 'rolled_back' | 'not_attempted' | 'unknown';
+export type WriteResultStatus =
+  | 'succeeded'
+  | 'failed'
+  | 'rolled_back'
+  | 'not_attempted'
+  | 'unknown'
+  | 'partial'
+  | 'needs_reconciliation';
 
 /** 单实体写入结果 */
 export interface WriteResult {
@@ -136,6 +146,7 @@ export interface GetScreenshotStatusResponse {
     status?: WriteResultStatus;
     entity_count?: number;
     completed_at?: string;
+    error_code?: string;
   };
   created_at: string;
   updated_at: string;
@@ -352,6 +363,7 @@ export interface GetFinalResultResponse {
   screenshot_id: string;
   ingestion_id: string;
   final_status: ScreenshotStatus;
+  error_code?: string;
   governance_result_v1: {
     schema_version: string;
     candidate_id: string;
@@ -372,6 +384,7 @@ export interface GetFinalResultResponse {
       target_table: string;
       target_record_id: string | null;
       attempted_at?: string;
+      error_code?: string;
     };
     review: {
       status: string;

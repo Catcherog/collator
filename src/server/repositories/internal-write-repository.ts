@@ -98,6 +98,8 @@ export interface InternalWriteRepository {
   markExecuting(previewId: string, now?: string): Promise<InternalWritePreview>;
   markVerifying(previewId: string, now?: string): Promise<InternalWritePreview>;
   complete(previewId: string, result: InternalControlledWriteResult, executedBy?: string, executedAt?: string): Promise<InternalWritePreview>;
+  completeExecution(previewId: string, result: InternalControlledWriteResult, executedBy?: string, executedAt?: string): Promise<InternalWritePreview>;
+  completeReconciliation(previewId: string, result: InternalControlledWriteResult, executedBy?: string, executedAt?: string): Promise<InternalWritePreview>;
   appendWriteLog(input: NewInternalWriteLog): Promise<InternalWriteLog>;
   updateWriteLog(
     previewId: string,
@@ -171,9 +173,59 @@ class InternalWriteStore {
     return clone(preview);
   }
 
-  complete(previewId: string, result: InternalControlledWriteResult, executedBy?: string, executedAt = new Date().toISOString()): InternalWritePreview {
+  complete(
+    previewId: string,
+    result: InternalControlledWriteResult,
+    executedBy?: string,
+    executedAt = new Date().toISOString(),
+  ): InternalWritePreview {
+    return this.completeWithSource(previewId, result, executedBy, executedAt, 'generic');
+  }
+
+  completeExecution(
+    previewId: string,
+    result: InternalControlledWriteResult,
+    executedBy?: string,
+    executedAt = new Date().toISOString(),
+  ): InternalWritePreview {
+    return this.completeWithSource(previewId, result, executedBy, executedAt, 'execution');
+  }
+
+  completeReconciliation(
+    previewId: string,
+    result: InternalControlledWriteResult,
+    executedBy?: string,
+    executedAt = new Date().toISOString(),
+  ): InternalWritePreview {
+    return this.completeWithSource(previewId, result, executedBy, executedAt, 'reconciliation');
+  }
+
+  private completeWithSource(
+    previewId: string,
+    result: InternalControlledWriteResult,
+    executedBy: string | undefined,
+    executedAt: string,
+    source: 'generic' | 'execution' | 'reconciliation',
+  ): InternalWritePreview {
     const preview = this.previews.get(previewId);
     if (!preview) throw new Error('INTERNAL_WRITE_PREVIEW_NOT_FOUND');
+
+    // A successful reconciliation is a terminal commit.  Every stale
+    // execution callback must observe it and become a no-op.
+    if (preview.status === 'succeeded') return clone(preview);
+
+    const allowedStatuses = source === 'execution'
+      ? ['executing', 'verifying', 'result_unknown']
+      : source === 'reconciliation'
+        ? ['result_unknown', 'needs_reconciliation']
+        : result.status === 'succeeded'
+          ? ['executing', 'verifying', 'result_unknown', 'needs_reconciliation']
+          : ['executing', 'verifying', 'result_unknown'];
+    if (!allowedStatuses.includes(preview.status)) return clone(preview);
+    if (source === 'reconciliation' && !['succeeded', 'needs_reconciliation'].includes(result.status)) {
+      return clone(preview);
+    }
+
     const status: InternalWriteStatus = result.status;
     preview.status = status;
     preview.result = clone(result);
@@ -256,6 +308,14 @@ export class InMemoryInternalWriteRepository implements InternalWriteRepository 
     return this.store.complete(previewId, result, executedBy, executedAt);
   }
 
+  async completeExecution(previewId: string, result: InternalControlledWriteResult, executedBy?: string, executedAt?: string): Promise<InternalWritePreview> {
+    return this.store.completeExecution(previewId, result, executedBy, executedAt);
+  }
+
+  async completeReconciliation(previewId: string, result: InternalControlledWriteResult, executedBy?: string, executedAt?: string): Promise<InternalWritePreview> {
+    return this.store.completeReconciliation(previewId, result, executedBy, executedAt);
+  }
+
   async appendWriteLog(input: NewInternalWriteLog): Promise<InternalWriteLog> {
     return this.store.appendWriteLog(input);
   }
@@ -335,6 +395,14 @@ export class FileInternalWriteRepository implements InternalWriteRepository {
 
   async complete(previewId: string, result: InternalControlledWriteResult, executedBy?: string, executedAt?: string): Promise<InternalWritePreview> {
     return this.update((store) => store.complete(previewId, result, executedBy, executedAt));
+  }
+
+  async completeExecution(previewId: string, result: InternalControlledWriteResult, executedBy?: string, executedAt?: string): Promise<InternalWritePreview> {
+    return this.update((store) => store.completeExecution(previewId, result, executedBy, executedAt));
+  }
+
+  async completeReconciliation(previewId: string, result: InternalControlledWriteResult, executedBy?: string, executedAt?: string): Promise<InternalWritePreview> {
+    return this.update((store) => store.completeReconciliation(previewId, result, executedBy, executedAt));
   }
 
   async appendWriteLog(input: NewInternalWriteLog): Promise<InternalWriteLog> {

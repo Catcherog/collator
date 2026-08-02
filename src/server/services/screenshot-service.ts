@@ -53,10 +53,12 @@ import type {
   GetFinalResultResponse,
   ScreenshotStatus,
   WriteResult,
+  WriteResultStatus,
 } from '../../contracts/screenshot-api-v1.js';
 import type { ScreenshotOcrEngine, OcrResult, OcrTextBlock } from './screenshot-ocr-adapter.js';
 import type { ScreenshotGovernanceClient, FullGovernanceResult } from '../governance/screenshot-governance-client.js';
 import type { GuardedWriteBatchInput } from '../business/guarded-batch-writer.js';
+import type { ExistingRecordVerificationInput } from '../business/transactional-batch-writer.js';
 import {
   computeInternalControlledWritePlan,
   computeWritePlan,
@@ -73,7 +75,6 @@ import type {
 import {
   isInternalControlledWriteAllowed,
   type FeishuWriteConfig,
-  type InternalControlledWriteConfig,
 } from '../config/feishu-write-config.js';
 import { createAuditEvent, type AuditLogRepository, type AuditEventType } from '../../audit/audit-log-repository.js';
 import {
@@ -167,12 +168,24 @@ function mapToIngestionStatus(status: ScreenshotStatus): IngestionTask['status']
     governance_blocked: 'review_rejected',
     write_succeeded: 'completed',
     write_failed: 'commit_failed',
+    write_result_unknown: 'write_result_unknown',
+    write_needs_reconciliation: 'write_needs_reconciliation',
+    write_partial: 'write_partial',
     duplicate_skipped: 'completed',
     review_pending: 'pending_review',
     review_resolved: 'approved',
     expired: 'completed',
   };
   return mapping[status];
+}
+
+function mapScreenshotWriteStatus(status: ScreenshotStatus): WriteResultStatus {
+  if (status === 'write_succeeded') return 'succeeded';
+  if (status === 'write_failed') return 'failed';
+  if (status === 'write_result_unknown') return 'unknown';
+  if (status === 'write_needs_reconciliation') return 'needs_reconciliation';
+  if (status === 'write_partial') return 'partial';
+  return 'not_attempted';
 }
 
 /** 从 IngestionTask 提取截图状态 */
@@ -376,6 +389,11 @@ interface ScreenshotBatchWriter {
   writeBatch(input: GuardedWriteBatchInput): Promise<BatchWriterResultView>;
   preflight?(input: GuardedWriteBatchInput): Promise<{ allowed: boolean; reason: string }>;
   findByIngestionId?(entity: WriteTable, ingestionId: string): Promise<string[]>;
+  verifyExistingByIngestion?(
+    entity: WriteTable,
+    recordId: string,
+    input: ExistingRecordVerificationInput,
+  ): Promise<void>;
   recoverPendingCompensations?(hooks?: {
     onCompensationStarted?: (recordCount: number) => Promise<void>;
     onCompensationCompleted?: (status: 'completed' | 'failed', recordCount: number) => Promise<void>;
@@ -423,8 +441,8 @@ export interface ScreenshotServiceOptions {
   internalWriteRepository?: InternalWriteRepository;
   /** Single-process internal write serializer. */
   internalWriteQueue?: InternalWriteQueue;
-  /** Full Feishu config or the already parsed internal lane subsection. */
-  internalWriteConfig?: FeishuWriteConfig | InternalControlledWriteConfig;
+  /** Full Feishu config is required for the internal lane. */
+  internalWriteConfig?: FeishuWriteConfig;
   /** Optional caller-visible timeout; the queue slot remains occupied until settlement. */
   internalWriteTimeoutMs?: number;
 }
@@ -672,9 +690,10 @@ export class ScreenshotService {
     if (state.write_results) {
       const succeeded = state.write_results.filter((r) => r.status === 'succeeded').length;
       response.write = {
-        status: state.screenshot_status === 'write_succeeded' ? 'succeeded' : 'failed',
+        status: mapScreenshotWriteStatus(state.screenshot_status),
         entity_count: succeeded,
         completed_at: task.updated_at,
+        error_code: state.internal_controlled_write?.result?.error_code,
       };
     }
 
@@ -955,7 +974,8 @@ export class ScreenshotService {
     req: InternalWritePreviewRequest,
     authenticatedOperator: string,
   ): Promise<InternalWritePreview> {
-    const internal = this.requireInternalWriteConfig();
+    const config = this.requireInternalWriteConfig();
+    const internal = config.internalControlledWrite!;
     if (!authenticatedOperator?.trim()) throw new BadRequestError('authenticated operator is required');
     const repository = this.options.internalWriteRepository;
     if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
@@ -1072,9 +1092,11 @@ export class ScreenshotService {
     req: InternalWriteConfirmationRequest,
     authenticatedOperator: string,
   ): Promise<InternalControlledWriteResult> {
-    const internal = this.requireInternalWriteConfig();
+    const config = this.requireInternalWriteConfig();
+    const internal = config.internalControlledWrite!;
     if (this.internalInFlight.has(previewId)) throw new InternalWriteAlreadyInProgressError();
     this.internalInFlight.add(previewId);
+    let underlyingExecutionStarted = false;
     try {
       const repository = this.options.internalWriteRepository;
       if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
@@ -1131,7 +1153,7 @@ export class ScreenshotService {
         throw new InternalWritePreviewStaleError();
       }
 
-      const gate = isInternalControlledWriteAllowed(this.asFeishuWriteConfig(internal), {
+      const gate = isInternalControlledWriteAllowed(config, {
         ingestionId: task.ingestion_id,
         governanceDecision: governance,
         targetBaseToken: this.options.feishuWriteContext?.targetBaseToken,
@@ -1159,20 +1181,25 @@ export class ScreenshotService {
       if (!this.options.batchWriter.preflight) throw new ConflictError('Internal controlled preflight is unavailable');
 
       const queue = this.options.internalWriteQueue ?? new InternalWriteQueue({ maxConcurrency: 1 });
+      const execution = queue.runWithSettlement(
+        (executionContext) => this.runInternalControlledWrite(
+          preview,
+          task,
+          state,
+          candidate,
+          targetTables,
+          targetTableIds,
+          authenticatedOperator,
+          executionContext,
+        ),
+        this.options.internalWriteTimeoutMs ?? internal.maxExecutionMs,
+      );
+      underlyingExecutionStarted = true;
+      void execution.settlementPromise.then(() => {
+        this.internalInFlight.delete(previewId);
+      });
       try {
-        return await queue.run(
-          (executionContext) => this.runInternalControlledWrite(
-            preview,
-            task,
-            state,
-            candidate,
-            targetTables,
-            targetTableIds,
-            authenticatedOperator,
-            executionContext,
-          ),
-          this.options.internalWriteTimeoutMs ?? internal.maxExecutionMs,
-        );
+        return await execution.responsePromise;
       } catch (error) {
         if ((error as { message?: unknown }).message === 'INTERNAL_WRITE_TIMEOUT') {
           const settled = await repository.findPreview(previewId);
@@ -1202,7 +1229,7 @@ export class ScreenshotService {
         throw error;
       }
     } finally {
-      this.internalInFlight.delete(previewId);
+      if (!underlyingExecutionStarted) this.internalInFlight.delete(previewId);
     }
   }
 
@@ -1210,16 +1237,21 @@ export class ScreenshotService {
     previewId: string,
     authenticatedOperator: string,
   ): Promise<InternalControlledWriteResult> {
-    const internal = this.requireInternalWriteConfig();
+    const config = this.requireInternalWriteConfig();
+    const internal = config.internalControlledWrite!;
     const repository = this.options.internalWriteRepository;
     if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
     const preview = await repository.findPreview(previewId);
     if (!preview) throw new ConflictError('Internal controlled write preview was not found');
     if (preview.operator !== authenticatedOperator) throw new InternalWriteOperatorMismatchError();
+    if (this.internalInFlight.has(previewId)) throw new InternalWriteAlreadyInProgressError();
     if (preview.result && preview.status === 'succeeded') return preview.result;
     if (!['result_unknown', 'needs_reconciliation'].includes(preview.status)) {
       throw new ConflictError('Internal controlled write is not awaiting reconciliation');
     }
+    const reconciliationTask = await this.getTaskOrThrow(preview.ingestion_id);
+    const reconciliationState = extractScreenshotState(reconciliationTask);
+    const normalizedFields = reconciliationState.candidate_v1?.normalized_fields as Record<string, unknown> ?? {};
     if (!internal.reconciliationEnabled) throw new ConflictError('Internal controlled reconciliation is disabled');
     const writer = this.options.batchWriter;
     if (!writer?.findByIngestionId) {
@@ -1243,6 +1275,7 @@ export class ScreenshotService {
 
     const prior = preview.result?.write_results ?? this.emptyInternalResults(preview.target_tables);
     const results = prior.map((item) => ({ ...item }));
+    const matchedRecordIds = new Map<WriteTable, string>();
     let uniqueCount = 0;
     let noneCount = 0;
     let multipleCount = 0;
@@ -1250,15 +1283,9 @@ export class ScreenshotService {
       const matches = await writer.findByIngestionId(table, preview.ingestion_id);
       const result = results.find((item) => item.entity_type === table)!;
       if (matches.length === 1) {
+        matchedRecordIds.set(table, matches[0]);
         result.business_record_id = matches[0];
         result.created = false;
-        result.status = 'succeeded';
-        result.error_code = undefined;
-        await repository.updateWriteLog(preview.preview_id, table, {
-          business_record_id: matches[0],
-          status: 'reconciled',
-          resolved_at: nowIso(),
-        }).catch(() => undefined);
         uniqueCount += 1;
       } else if (matches.length === 0) {
         result.status = 'unknown';
@@ -1269,27 +1296,84 @@ export class ScreenshotService {
         multipleCount += 1;
       }
     }
-    if (uniqueCount === preview.target_tables.length) {
+    if (uniqueCount !== preview.target_tables.length) {
+      const errorCode = multipleCount > 0
+        ? 'DUPLICATE_CANDIDATES_FOUND'
+        : noneCount > 0
+          ? 'INTERNAL_WRITE_RECONCILIATION_NOT_FOUND'
+          : 'INTERNAL_WRITE_RECONCILIATION_UNAVAILABLE';
       return this.completeInternalReconciliation(preview, {
-        status: 'succeeded',
+        status: 'needs_reconciliation',
         write_results: results,
+        error_code: errorCode,
         additional_create_calls: 0,
-        reconciliation: 'unique',
-        completed_at: nowIso(),
-      }, 'internal_write_reconciled');
+        reconciliation: multipleCount > 0 ? 'multiple' : 'none',
+      }, 'internal_write_failed');
     }
-    const errorCode = multipleCount > 0
-      ? 'DUPLICATE_CANDIDATES_FOUND'
-      : noneCount > 0
-        ? 'INTERNAL_WRITE_RECONCILIATION_NOT_FOUND'
-        : 'INTERNAL_WRITE_RECONCILIATION_UNAVAILABLE';
+
+    if (!writer.verifyExistingByIngestion) {
+      return this.completeInternalReconciliation(preview, {
+        status: 'needs_reconciliation',
+        write_results: results.map((item) => ({
+          ...item,
+          status: 'unknown',
+          error_code: 'RELATION_VERIFICATION_FAILED',
+        })),
+        error_code: 'RELATION_VERIFICATION_FAILED',
+        additional_create_calls: 0,
+        reconciliation: 'unavailable',
+      }, 'internal_write_failed');
+    }
+
+    const relationContext = {
+      customerRecordId: matchedRecordIds.get('customer'),
+      modelRecordId: matchedRecordIds.get('model'),
+    };
+    try {
+      for (const table of preview.target_tables) {
+        const recordId = matchedRecordIds.get(table)!;
+        await writer.verifyExistingByIngestion(table, recordId, {
+          ingestionId: preview.ingestion_id,
+          normalizedFields,
+          targetTables: [...preview.target_tables],
+          enforceProjectRelationContext: true,
+          relationContext,
+        });
+      }
+    } catch {
+      return this.completeInternalReconciliation(preview, {
+        status: 'needs_reconciliation',
+        write_results: results.map((item) => ({
+          ...item,
+          status: 'unknown',
+          error_code: 'RELATION_VERIFICATION_FAILED',
+        })),
+        error_code: 'RELATION_VERIFICATION_FAILED',
+        additional_create_calls: 0,
+        reconciliation: 'unavailable',
+      }, 'internal_write_failed');
+    }
+
+    for (const table of preview.target_tables) {
+      const result = results.find((item) => item.entity_type === table)!;
+      const recordId = matchedRecordIds.get(table)!;
+      result.business_record_id = recordId;
+      result.created = false;
+      result.status = 'succeeded';
+      result.error_code = undefined;
+      await repository.updateWriteLog(preview.preview_id, table, {
+        business_record_id: recordId,
+        status: 'reconciled',
+        resolved_at: nowIso(),
+      }).catch(() => undefined);
+    }
     return this.completeInternalReconciliation(preview, {
-      status: 'needs_reconciliation',
+      status: 'succeeded',
       write_results: results,
-      error_code: errorCode,
       additional_create_calls: 0,
-      reconciliation: multipleCount > 0 ? 'multiple' : 'none',
-    }, 'internal_write_failed');
+      reconciliation: 'unique',
+      completed_at: nowIso(),
+    }, 'internal_write_reconciled');
   }
 
   async confirmWrite(
@@ -1540,16 +1624,18 @@ export class ScreenshotService {
     const state = extractScreenshotState(task);
 
     // 获取写入日志
-    let writeLogs: Array<{
-      write_log_id: string;
-      ingestion_id: string;
-      target_table_id: string;
-      business_record_id: string | null;
-      status: 'succeeded' | 'failed' | 'rolled_back' | 'not_attempted';
-      error_code?: string;
-      created_at: string;
-    }> = [];
-    if (this.options.writeLogRepository) {
+    let writeLogs: GetFinalResultResponse['write_logs'] = [];
+    if (state.internal_controlled_write?.result || state.write_results?.some((result) => result.status === 'unknown')) {
+      writeLogs = (state.write_results ?? []).map((r) => ({
+        write_log_id: r.write_log_id ?? `wl_${task.ingestion_id}_${r.entity_type}`,
+        ingestion_id: task.ingestion_id,
+        target_table_id: r.target_table_id,
+        business_record_id: r.business_record_id,
+        status: r.status,
+        error_code: r.error_code ?? state.internal_controlled_write?.result?.error_code,
+        created_at: task.updated_at,
+      }));
+    } else if (this.options.writeLogRepository) {
       const logs = await this.options.writeLogRepository.findByIngestionId(task.ingestion_id);
       writeLogs = logs.map((l) => ({
         write_log_id: l.write_log_id,
@@ -1573,7 +1659,7 @@ export class ScreenshotService {
             ? 'failed'
             : r.status === 'rolled_back'
               ? 'rolled_back'
-              : 'not_attempted',
+              : r.status,
         error_code: r.error_code,
         created_at: task.updated_at,
       }));
@@ -1585,6 +1671,7 @@ export class ScreenshotService {
       screenshot_id: task.ingestion_id,
       ingestion_id: task.ingestion_id,
       final_status: state.screenshot_status,
+      error_code: state.internal_controlled_write?.result?.error_code,
       governance_result_v1: {
         schema_version: governance.schema_version,
         candidate_id: governance.candidate_id,
@@ -1593,10 +1680,11 @@ export class ScreenshotService {
         rule_version: governance.rule_version,
         violations: governance.violations,
         write: {
-          status: state.screenshot_status === 'write_succeeded' ? 'succeeded' as const : state.screenshot_status === 'write_failed' ? 'failed' as const : 'not_attempted' as const,
+          status: mapScreenshotWriteStatus(state.screenshot_status),
           target_table: governance.write.target_table,
           target_record_id: state.write_results?.find((r) => r.status === 'succeeded')?.business_record_id ?? null,
           attempted_at: governance.write.attempted_at,
+          error_code: state.internal_controlled_write?.result?.error_code,
         },
         review: {
           status: state.review_task?.status ?? governance.review.status,
@@ -1613,7 +1701,13 @@ export class ScreenshotService {
         resolved_at: state.review_task.resolved_at,
       } : null,
       transaction_snapshot: state.transaction_snapshot,
-      completed_at: state.screenshot_status === 'write_succeeded' || state.screenshot_status === 'write_failed' ? task.updated_at : undefined,
+      completed_at: [
+        'write_succeeded',
+        'write_failed',
+        'write_result_unknown',
+        'write_needs_reconciliation',
+        'write_partial',
+      ].includes(state.screenshot_status) ? task.updated_at : undefined,
     };
   }
 
@@ -1979,33 +2073,18 @@ export class ScreenshotService {
     };
   }
 
-  private getInternalWriteConfig(): InternalControlledWriteConfig | undefined {
+  private getInternalWriteConfig(): FeishuWriteConfig | undefined {
     const configured = this.options.internalWriteConfig;
-    if (!configured) return undefined;
-    if ('taskRepository' in configured) return configured.internalControlledWrite;
+    if (!configured || !('taskRepository' in configured)) return undefined;
     return configured;
   }
 
-  private requireInternalWriteConfig(): InternalControlledWriteConfig {
+  private requireInternalWriteConfig(): FeishuWriteConfig {
     const configured = this.getInternalWriteConfig();
-    if (!configured?.enabled) {
+    if (!configured?.internalControlledWrite?.enabled) {
       throw new InternalWriteDisabledError();
     }
     return configured;
-  }
-
-  private asFeishuWriteConfig(internal: InternalControlledWriteConfig): FeishuWriteConfig {
-    const configured = this.options.internalWriteConfig;
-    if (configured && 'internalControlledWrite' in configured) return configured;
-    return {
-      taskRepository: 'feishu',
-      dryRun: false,
-      enableRealFeishuWrite: true,
-      feishuWriteEnv: 'internal-controlled',
-      writeMode: 'internal-controlled',
-      testWhitelist: { tableIds: [] },
-      internalControlledWrite: internal,
-    };
   }
 
   private targetTableIds(targetTables: readonly WriteTable[]): Partial<Record<WriteTable, string>> {
@@ -2205,8 +2284,35 @@ export class ScreenshotService {
     result: InternalControlledWriteResult,
     logs: InternalWriteLog[],
     auditType: AuditEventType,
+    source: 'execution' | 'reconciliation' = 'execution',
   ): Promise<InternalControlledWriteResult> {
     const repository = this.options.internalWriteRepository!;
+    const completed = source === 'reconciliation'
+      ? await repository.completeReconciliation(
+          preview.preview_id,
+          result,
+          preview.operator,
+          result.completed_at ?? nowIso(),
+        )
+      : await repository.completeExecution(
+          preview.preview_id,
+          result,
+          preview.operator,
+          result.completed_at ?? nowIso(),
+        );
+
+    // A late execution callback is allowed to observe a reconciliation
+    // success, but it is not allowed to mutate logs, task state, or audit.
+    if (completed.status === 'succeeded' && JSON.stringify(completed.result) !== JSON.stringify(result)) {
+      return completed.result ?? result;
+    }
+    if (completed.status !== result.status) {
+      // The repository rejected this source/status transition (for example,
+      // a timeout fired while the operation was still queued).  Do not let a
+      // rejected preview transition leak into the task or audit state.
+      return completed.result ?? result;
+    }
+
     for (const item of result.write_results) {
       const log = logs.find((candidate) => candidate.entity_type === item.entity_type);
       if (!log) continue;
@@ -2224,7 +2330,6 @@ export class ScreenshotService {
         request_completed_at: result.completed_at ?? nowIso(),
       }).catch(() => undefined);
     }
-    await repository.complete(preview.preview_id, result, preview.operator, result.completed_at ?? nowIso());
     state.internal_controlled_write = {
       preview_id: preview.preview_id,
       status: result.status,
@@ -2238,12 +2343,19 @@ export class ScreenshotService {
       created: item.created,
       status: item.status === 'succeeded'
         ? 'succeeded'
-        : item.status === 'failed' ? 'failed' : 'not_attempted',
+        : item.status === 'failed' ? 'failed'
+          : item.status === 'unknown' ? 'unknown' : 'not_attempted',
       error_code: item.error_code,
       write_log_id: item.write_log_id,
     }));
     if (result.status === 'succeeded') {
       state.screenshot_status = 'write_succeeded';
+    } else if (result.status === 'result_unknown') {
+      state.screenshot_status = 'write_result_unknown';
+    } else if (result.status === 'needs_reconciliation') {
+      state.screenshot_status = 'write_needs_reconciliation';
+    } else if (result.status === 'partial') {
+      state.screenshot_status = 'write_partial';
     } else {
       state.screenshot_status = 'write_failed';
     }
@@ -2271,7 +2383,15 @@ export class ScreenshotService {
   ): Promise<InternalControlledWriteResult> {
     const task = await this.getTaskOrThrow(preview.ingestion_id);
     const state = extractScreenshotState(task);
-    return this.completeInternalResult(preview, task, state, result, await this.options.internalWriteRepository!.findWriteLogs(preview.preview_id), auditType);
+    return this.completeInternalResult(
+      preview,
+      task,
+      state,
+      result,
+      await this.options.internalWriteRepository!.findWriteLogs(preview.preview_id),
+      auditType,
+      'reconciliation',
+    );
   }
 
   private tableIdFor(table: 'customer' | 'project' | 'model'): string | undefined {

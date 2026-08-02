@@ -74,6 +74,17 @@ export interface TransactionalBatchWriterInput {
   humanConfirmed?: boolean;
 }
 
+/** Server-owned input for verifying an already existing record during
+ * internal-write reconciliation.  It is intentionally separate from the
+ * create input so relation IDs can be bound to records found by the marker. */
+export interface ExistingRecordVerificationInput {
+  ingestionId: string;
+  normalizedFields: Record<string, unknown>;
+  targetTables: Array<'customer' | 'project' | 'model'>;
+  enforceProjectRelationContext?: boolean;
+  relationContext?: WriteContext;
+}
+
 export interface TransactionalBatchWriterResult {
   write_results: WriteResult[];
   transaction_snapshot_id: string;
@@ -94,6 +105,11 @@ export interface TransactionalBatchWriterResult {
 export interface BatchWriterPort {
   writeBatch(input: TransactionalBatchWriterInput): Promise<TransactionalBatchWriterResult>;
   findByIngestionId?(entity: 'customer' | 'project' | 'model', ingestionId: string): Promise<string[]>;
+  verifyExistingByIngestion?(
+    entity: 'customer' | 'project' | 'model',
+    recordId: string,
+    input: ExistingRecordVerificationInput,
+  ): Promise<void>;
   recoverPendingCompensations?(hooks?: {
     onCompensationStarted?: (recordCount: number) => Promise<void>;
     onCompensationCompleted?: (status: 'completed' | 'failed', recordCount: number) => Promise<void>;
@@ -135,6 +151,37 @@ export class TransactionalBatchWriter {
         ? this.projectWriter
         : this.modelWriter;
     return writer?.findByIngestionId ? writer.findByIngestionId(ingestionId) : [];
+  }
+
+  async verifyExistingByIngestion(
+    entity: 'customer' | 'project' | 'model',
+    recordId: string,
+    input: ExistingRecordVerificationInput,
+  ): Promise<void> {
+    const writer = entity === 'customer'
+      ? this.customerWriter
+      : entity === 'project'
+        ? this.projectWriter
+        : this.modelWriter;
+    if (!writer?.verifyRecord) {
+      throw new PostWriteVerificationError(recordId, false);
+    }
+
+    const normalizedFields = entity === 'project' && input.enforceProjectRelationContext
+      ? this.buildProjectRelationFields(
+          input.normalizedFields,
+          input.relationContext ?? {},
+          input.targetTables,
+        )
+      : input.normalizedFields;
+    try {
+      await writer.verifyRecord(recordId, {
+        ingestionId: input.ingestionId,
+        normalizedFields,
+      });
+    } catch {
+      throw new PostWriteVerificationError(recordId, false);
+    }
   }
 
   async writeBatch(input: TransactionalBatchWriterInput): Promise<TransactionalBatchWriterResult> {

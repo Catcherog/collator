@@ -17,6 +17,13 @@ export interface InternalWriteExecutionContext {
   isTimedOut(): boolean;
 }
 
+export interface InternalWriteQueueExecution<T> {
+  /** The promise observed by the caller, including the optional timeout. */
+  responsePromise: Promise<T>;
+  /** Resolves only after the underlying queued operation has settled. */
+  settlementPromise: Promise<void>;
+}
+
 export class InternalWriteQueue {
   private tail: Promise<void> = Promise.resolve();
   private activeCount = 0;
@@ -32,7 +39,10 @@ export class InternalWriteQueue {
     return this.activeCount;
   }
 
-  run<T>(operation: (context: InternalWriteExecutionContext) => Promise<T>, timeoutMs = this.options.timeoutMs): Promise<T> {
+  runWithSettlement<T>(
+    operation: (context: InternalWriteExecutionContext) => Promise<T>,
+    timeoutMs = this.options.timeoutMs,
+  ): InternalWriteQueueExecution<T> {
     let timedOut = false;
     const execute = async (): Promise<T> => {
       this.activeCount += 1;
@@ -52,7 +62,13 @@ export class InternalWriteQueue {
       () => undefined,
       () => undefined,
     );
-    if (!timeoutMs || timeoutMs <= 0) return queuedRun;
+    const settlementPromise = queuedRun.then(
+      () => undefined,
+      () => undefined,
+    );
+    if (!timeoutMs || timeoutMs <= 0) {
+      return { responsePromise: queuedRun, settlementPromise };
+    }
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -61,8 +77,16 @@ export class InternalWriteQueue {
         reject(new Error('INTERNAL_WRITE_TIMEOUT'));
       }, timeoutMs);
     });
-    return Promise.race([queuedRun, timeoutPromise]).finally(() => {
+    const responsePromise = Promise.race([queuedRun, timeoutPromise]).finally(() => {
       if (timer) clearTimeout(timer);
     });
+    return { responsePromise, settlementPromise };
+  }
+
+  run<T>(
+    operation: (context: InternalWriteExecutionContext) => Promise<T>,
+    timeoutMs = this.options.timeoutMs,
+  ): Promise<T> {
+    return this.runWithSettlement(operation, timeoutMs).responsePromise;
   }
 }

@@ -22,7 +22,12 @@ import type {
   ProductionPilotRunManifest,
   RunManifestRepository,
 } from '../repositories/run-manifest-repository.js';
-import type { BatchWriterPort, TransactionalBatchWriterInput, TransactionalBatchWriterResult } from './transactional-batch-writer.js';
+import type {
+  BatchWriterPort,
+  ExistingRecordVerificationInput,
+  TransactionalBatchWriterInput,
+  TransactionalBatchWriterResult,
+} from './transactional-batch-writer.js';
 import type { WriteResult } from '../../contracts/screenshot-api-v1.js';
 
 /**
@@ -209,6 +214,17 @@ export class GuardedBatchWriter {
     ingestionId: string,
   ): Promise<string[]> {
     return this.inner.findByIngestionId?.(entity, ingestionId) ?? [];
+  }
+
+  async verifyExistingByIngestion(
+    entity: 'customer' | 'project' | 'model',
+    recordId: string,
+    input: ExistingRecordVerificationInput,
+  ): Promise<void> {
+    if (!this.inner.verifyExistingByIngestion) {
+      throw new Error('EXISTING_RECORD_VERIFICATION_UNAVAILABLE');
+    }
+    return this.inner.verifyExistingByIngestion(entity, recordId, input);
   }
 
   private blockedResult(
