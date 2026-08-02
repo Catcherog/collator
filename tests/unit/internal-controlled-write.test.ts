@@ -10,7 +10,11 @@ import {
   type FeishuWriteConfig,
 } from '../../src/server/config/feishu-write-config.js';
 import { computeInternalControlledWritePlan } from '../../src/server/business/write-plan.js';
-import { InternalWriteQueue } from '../../src/server/business/internal-write-queue.js';
+import {
+  InternalWriteQueue,
+  type InternalWriteExecutionContext,
+  type InternalWriteQueueExecution,
+} from '../../src/server/business/internal-write-queue.js';
 import { ScreenshotService } from '../../src/server/services/screenshot-service.js';
 import { MockOcrEngine } from '../../src/server/services/screenshot-ocr-adapter.js';
 import type {
@@ -28,6 +32,16 @@ const TABLES = {
   project: 'tbl_internal_project',
   model: 'tbl_internal_model',
 } as const;
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 function internalConfig(overrides: Record<string, string> = {}): FeishuWriteConfig {
   return loadFeishuWriteConfig({
@@ -85,6 +99,9 @@ class FakeInternalBatchWriter {
   active = 0;
   maxActive = 0;
   delayMs = 5;
+  writeGate?: Promise<void>;
+  readonly writeStarted = deferred<void>();
+  readonly writeSettled = deferred<void>();
   readonly inputs: GuardedWriteBatchInput[] = [];
   mode: WriterMode = 'success';
   readonly findByIngestionId = vi.fn(async (_entity: string, _ingestionId: string) => [] as string[]);
@@ -118,11 +135,16 @@ class FakeInternalBatchWriter {
     this.calls += 1;
     this.active += 1;
     this.maxActive = Math.max(this.maxActive, this.active);
+    this.writeStarted.resolve();
     try {
       if (this.mode === 'unknown') {
         throw new InternalWriteResultUnknownError();
       }
-      await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+      if (this.writeGate) {
+        await this.writeGate;
+      } else if (this.delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+      }
       const tables = input.targetTables ?? [];
       const writeResults = tables.map((entity_type, index) => ({
         entity_type,
@@ -149,7 +171,23 @@ class FakeInternalBatchWriter {
       };
     } finally {
       this.active -= 1;
+      this.writeSettled.resolve();
     }
+  }
+}
+
+class ObservableInternalWriteQueue extends InternalWriteQueue {
+  calls = 0;
+  readonly secondEnqueued = deferred<void>();
+
+  override runWithSettlement<T>(
+    operation: (context: InternalWriteExecutionContext) => Promise<T>,
+    timeoutMs?: number,
+  ): InternalWriteQueueExecution<T> {
+    this.calls += 1;
+    const execution = super.runWithSettlement(operation, timeoutMs);
+    if (this.calls === 2) this.secondEnqueued.resolve();
+    return execution;
   }
 }
 
@@ -158,6 +196,7 @@ async function createInternalContext(
   internalWriteTimeoutMs?: number,
   config: FeishuWriteConfig = internalConfig(),
   projectType: 'client' | 'creative' = 'client',
+  internalWriteQueue: InternalWriteQueue = new InternalWriteQueue(),
 ) {
   const repository = new InMemoryTaskRepository();
   const internalWriteRepository = new InMemoryInternalWriteRepository();
@@ -187,7 +226,7 @@ async function createInternalContext(
     batchWriter: writer,
     auditLogRepository: new InMemoryAuditLogRepository(),
     internalWriteRepository,
-    internalWriteQueue: new InternalWriteQueue(),
+    internalWriteQueue,
     internalWriteConfig: config,
     internalWriteTimeoutMs,
     feishuWriteContext: {
@@ -310,6 +349,40 @@ describe('InternalWriteQueue', () => {
       'second:start', 'second:end',
       'third:start', 'third:end',
     ]);
+  });
+
+  it('starts each execution timeout only after the request acquires the queue slot', async () => {
+    vi.useFakeTimers();
+    try {
+      const queue = new InternalWriteQueue();
+      const firstGate = deferred<void>();
+      const firstStarted = deferred<void>();
+      let secondStarted = false;
+      const first = queue.runWithSettlement(async () => {
+        firstStarted.resolve();
+        await firstGate.promise;
+        return 'first';
+      }, 10);
+      void first.responsePromise.catch(() => undefined);
+
+      await firstStarted.promise;
+      const second = queue.runWithSettlement(async () => {
+        secondStarted = true;
+        return 'second';
+      }, 10);
+      void second.responsePromise.catch(() => undefined);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(secondStarted).toBe(false);
+      expect(queue.active).toBe(1);
+
+      firstGate.resolve();
+      await first.settlementPromise;
+      await expect(second.responsePromise).resolves.toBe('second');
+      expect(secondStarted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -435,51 +508,160 @@ describe('ScreenshotService internal-controlled write flow', () => {
   });
 
   it('persists result_unknown at timeout while the single queue slot drains', async () => {
-    const context = await createInternalContext('success', 10);
-    context.writer.delayMs = 40;
+    vi.useFakeTimers();
+    try {
+      const context = await createInternalContext('success', 10);
+      const writeGate = deferred<void>();
+      context.writer.writeGate = writeGate.promise;
+      const preview = await authorize(context);
+      const execution = context.service.executeInternalControlledWrite(
+        preview.preview_id,
+        { nonce: preview.nonce, candidate_v1_id: context.candidateId },
+        'operator-internal',
+      );
+      await context.writer.writeStarted.promise;
+      await vi.advanceTimersByTimeAsync(10);
+      const result = await execution;
+
+      expect(result.status).toBe('result_unknown');
+      expect(result.error_code).toBe('INTERNAL_WRITE_RESULT_UNKNOWN');
+      expect(context.writer.calls).toBe(1);
+      expect(context.writer.active).toBe(1);
+      const stored = await context.internalWriteRepository.findPreview(preview.preview_id);
+      expect(stored?.status).toBe('result_unknown');
+      expect(stored?.result?.status).toBe('result_unknown');
+
+      writeGate.resolve();
+      await context.writer.writeSettled.promise;
+      expect(context.writer.active).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the execution guard until the underlying timeout operation settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const context = await createInternalContext('success', 10);
+      const writeGate = deferred<void>();
+      context.writer.writeGate = writeGate.promise;
+      const preview = await authorize(context);
+      const request = { nonce: preview.nonce, candidate_v1_id: context.candidateId };
+      const execution = context.service.executeInternalControlledWrite(
+        preview.preview_id,
+        request,
+        'operator-internal',
+      );
+      await context.writer.writeStarted.promise;
+      await vi.advanceTimersByTimeAsync(10);
+      const result = await execution;
+
+      expect(result.status).toBe('result_unknown');
+      await expect(context.service.executeInternalControlledWrite(
+        preview.preview_id,
+        request,
+        'operator-internal',
+      )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_ALREADY_IN_PROGRESS' });
+      context.writer.findByIngestionId.mockResolvedValue(['rec_reconciled']);
+      await expect(context.service.reconcileInternalControlledWrite(
+        preview.preview_id,
+        'operator-internal',
+      )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_ALREADY_IN_PROGRESS' });
+
+      writeGate.resolve();
+      await context.writer.writeSettled.promise;
+      expect(context.writer.active).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a queued preview confirmed, then executes it once after the queue wait', async () => {
+    vi.useFakeTimers();
+    try {
+      const queue = new ObservableInternalWriteQueue();
+      const first = await createInternalContext('success', 10, internalConfig(), 'client', queue);
+      const second = await createInternalContext('success', 10, internalConfig(), 'client', queue);
+      const firstGate = deferred<void>();
+      first.writer.writeGate = firstGate.promise;
+      second.writer.delayMs = 0;
+      const firstPreview = await authorize(first);
+      const secondPreview = await authorize(second);
+      const firstExecution = first.service.executeInternalControlledWrite(
+        firstPreview.preview_id,
+        { nonce: firstPreview.nonce, candidate_v1_id: first.candidateId },
+        'operator-internal',
+      );
+      await first.writer.writeStarted.promise;
+
+      const secondExecution = second.service.executeInternalControlledWrite(
+        secondPreview.preview_id,
+        { nonce: secondPreview.nonce, candidate_v1_id: second.candidateId },
+        'operator-internal',
+      );
+      await queue.secondEnqueued.promise;
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(second.writer.calls).toBe(0);
+      expect((await second.internalWriteRepository.findPreview(secondPreview.preview_id))?.status).toBe('confirmed');
+
+      firstGate.resolve();
+      const [firstResult, secondResult] = await Promise.all([firstExecution, secondExecution]);
+      expect(firstResult.status).toBe('result_unknown');
+      expect(secondResult.status).toBe('succeeded');
+      expect(second.writer.calls).toBe(1);
+      const storedSecond = await second.internalWriteRepository.findPreview(secondPreview.preview_id);
+      expect(storedSecond?.status).toBe(secondResult.status);
+      expect(storedSecond?.result).toEqual(secondResult);
+
+      const replay = await second.service.executeInternalControlledWrite(
+        secondPreview.preview_id,
+        { nonce: secondPreview.nonce, candidate_v1_id: second.candidateId },
+        'operator-internal',
+      );
+      expect(replay.status).toBe('succeeded');
+      expect(second.writer.calls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['success', 'succeeded'],
+    ['unknown', 'result_unknown'],
+    ['partial', 'partial'],
+  ] as const)('returns only a result whose terminal status is durable (%s)', async (mode, expectedStatus) => {
+    const context = await createInternalContext(mode);
     const preview = await authorize(context);
     const result = await context.service.executeInternalControlledWrite(
       preview.preview_id,
       { nonce: preview.nonce, candidate_v1_id: context.candidateId },
       'operator-internal',
     );
-
-    expect(result.status).toBe('result_unknown');
-    expect(result.error_code).toBe('INTERNAL_WRITE_RESULT_UNKNOWN');
-    expect(context.writer.calls).toBe(1);
-    expect(context.writer.active).toBe(1);
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(context.writer.active).toBe(0);
     const stored = await context.internalWriteRepository.findPreview(preview.preview_id);
-    expect(stored?.status).toBe('result_unknown');
-    expect(stored?.result?.status).toBe('result_unknown');
+
+    expect(result.status).toBe(expectedStatus);
+    expect(stored?.status).toBe(result.status);
+    expect(stored?.result).toEqual(result);
   });
 
-  it('keeps the execution guard until the underlying timeout operation settles', async () => {
-    const context = await createInternalContext('success', 10);
-    context.writer.delayMs = 40;
+  it('does not return a requested result when durable completion rejects the transition', async () => {
+    const context = await createInternalContext();
     const preview = await authorize(context);
-    const request = { nonce: preview.nonce, candidate_v1_id: context.candidateId };
-    const result = await context.service.executeInternalControlledWrite(
-      preview.preview_id,
-      request,
-      'operator-internal',
-    );
+    vi.spyOn(context.internalWriteRepository, 'completeExecution').mockImplementation(async (previewId) => {
+      const current = await context.internalWriteRepository.findPreview(previewId);
+      if (!current) throw new Error('INTERNAL_WRITE_PREVIEW_NOT_FOUND');
+      return current;
+    });
 
-    expect(result.status).toBe('result_unknown');
     await expect(context.service.executeInternalControlledWrite(
       preview.preview_id,
-      request,
+      { nonce: preview.nonce, candidate_v1_id: context.candidateId },
       'operator-internal',
-    )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_ALREADY_IN_PROGRESS' });
-    context.writer.findByIngestionId.mockResolvedValue(['rec_reconciled']);
-    await expect(context.service.reconcileInternalControlledWrite(
-      preview.preview_id,
-      'operator-internal',
-    )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_ALREADY_IN_PROGRESS' });
-
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(context.writer.active).toBe(0);
+    )).rejects.toMatchObject({ code: 'INTERNAL_WRITE_STATE_TRANSITION_CONFLICT' });
+    const stored = await context.internalWriteRepository.findPreview(preview.preview_id);
+    expect(stored?.status).toBe('executing');
+    expect(stored?.result).toBeUndefined();
   });
 
   it('reconciles a unique marker match without creating or deleting a record', async () => {

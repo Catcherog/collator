@@ -62,6 +62,16 @@ export class InternalWriteResultUnknownError extends CollatorError {
   }
 }
 
+export class InternalWriteStateTransitionConflictError extends CollatorError {
+  constructor() {
+    super(
+      'INTERNAL_WRITE_STATE_TRANSITION_CONFLICT',
+      'Internal controlled write result was not durably applied',
+      409,
+    );
+  }
+}
+
 export class InternalWriteDisabledError extends CollatorError {
   constructor() {
     super('INTERNAL_WRITE_DISABLED', 'Internal controlled write lane is disabled', 409);

@@ -44,12 +44,29 @@ export class InternalWriteQueue {
     timeoutMs = this.options.timeoutMs,
   ): InternalWriteQueueExecution<T> {
     let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let rejectTimeout: ((reason?: unknown) => void) | undefined;
+    const executionTimeoutMs = timeoutMs && timeoutMs > 0 ? timeoutMs : undefined;
+    const timeoutPromise = executionTimeoutMs
+      ? new Promise<never>((_, reject) => {
+          rejectTimeout = reject;
+        })
+      : undefined;
     const execute = async (): Promise<T> => {
       this.activeCount += 1;
+      // Queue wait is intentionally outside the execution timeout budget.
+      // The timer starts only after this request owns the single slot.
+      if (executionTimeoutMs) {
+        timer = setTimeout(() => {
+          timedOut = true;
+          rejectTimeout?.(new Error('INTERNAL_WRITE_TIMEOUT'));
+        }, executionTimeoutMs);
+      }
       try {
-        if (timedOut) throw new Error('INTERNAL_WRITE_TIMEOUT');
         return await operation({ isTimedOut: () => timedOut });
       } finally {
+        if (timer) clearTimeout(timer);
+        timer = undefined;
         this.activeCount -= 1;
       }
     };
@@ -66,17 +83,9 @@ export class InternalWriteQueue {
       () => undefined,
       () => undefined,
     );
-    if (!timeoutMs || timeoutMs <= 0) {
+    if (!timeoutPromise) {
       return { responsePromise: queuedRun, settlementPromise };
     }
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        timedOut = true;
-        reject(new Error('INTERNAL_WRITE_TIMEOUT'));
-      }, timeoutMs);
-    });
     const responsePromise = Promise.race([queuedRun, timeoutPromise]).finally(() => {
       if (timer) clearTimeout(timer);
     });

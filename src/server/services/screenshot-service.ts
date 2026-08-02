@@ -93,6 +93,7 @@ import {
   InternalWritePreviewExpiredError,
   InternalWriteRequiresHumanConfirmationError,
   InternalWriteResultUnknownError,
+  InternalWriteStateTransitionConflictError,
 } from '../domain/errors.js';
 
 // ============================================================================
@@ -2303,14 +2304,17 @@ export class ScreenshotService {
 
     // A late execution callback is allowed to observe a reconciliation
     // success, but it is not allowed to mutate logs, task state, or audit.
-    if (completed.status === 'succeeded' && JSON.stringify(completed.result) !== JSON.stringify(result)) {
-      return completed.result ?? result;
+    if (!completed.result || completed.status !== completed.result.status) {
+      throw new InternalWriteStateTransitionConflictError();
     }
-    if (completed.status !== result.status) {
+    if (
+      completed.status !== result.status
+      || JSON.stringify(completed.result) !== JSON.stringify(result)
+    ) {
       // The repository rejected this source/status transition (for example,
       // a timeout fired while the operation was still queued).  Do not let a
       // rejected preview transition leak into the task or audit state.
-      return completed.result ?? result;
+      return completed.result;
     }
 
     for (const item of result.write_results) {
