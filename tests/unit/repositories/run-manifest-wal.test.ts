@@ -92,6 +92,10 @@ describe('production-pilot CREATE_INTENT write-ahead log', () => {
         records_created: 0,
         records_rolled_back: 0,
       },
+      expected_task_version: 1,
+      expected_candidate_digest: 'candidate'.repeat(16),
+      expected_governance_digest: 'governance'.repeat(8),
+      expected_authoritative_plan_digest: 'plan'.repeat(16),
       auditEvents: [],
     });
     await repository.completeSuccess('preview_wal_succeeded');

@@ -211,8 +211,10 @@ export async function buildApp(options?: BuildAppOptions) {
   const internalWriteActive =
     feishuWriteConfig.writeMode === 'internal-controlled'
     && feishuWriteConfig.internalControlledWrite?.enabled === true;
+  const protectedWriteActive =
+    feishuWriteConfig.writeMode === 'production-pilot' || internalWriteActive;
   if (
-    (feishuWriteConfig.writeMode === 'production-pilot' || internalWriteActive)
+    protectedWriteActive
     && !authenticatedOperatorResolver
   ) {
     throw new Error(
@@ -223,62 +225,73 @@ export async function buildApp(options?: BuildAppOptions) {
   }
   screenshotServiceOptions.productionPilotRunId =
     screenshotServiceOptions.productionPilotRunId ?? feishuWriteConfig.productionPilot?.pilotRunId;
-  // 生产模式自动装配 OCR + Governance Client（测试模式由调用方注入）
-  if (!options?.screenshotServiceOptions) {
+  // 生产模式自动装配缺失的 OCR / Governance / Feishu writer；测试或本地
+  // 受控运行可注入其中任一适配器，但不应因此丢失其余真实边界。
+  if (!screenshotServiceOptions.ocrEngine) {
     // Workstream B/E: 真实 OCR 引擎由工厂装配（amendment 3 fail-closed）。
-    // createOcrEngineFromEnv 缺失/非法 SCREENSHOT_OCR_ENGINE → 抛 OcrConfigError，
+    // createOcrEngineFromEnv 缺失/非法 SCREENSHOT_OCR_ENGINE -> 抛 OcrConfigError，
     // 进程启动失败，不退化为 mock。测试须显式设置 SCREENSHOT_OCR_ENGINE=mock。
-    screenshotServiceOptions.ocrEngine =
-      screenshotServiceOptions.ocrEngine ?? createOcrEngineFromEnv(process.env);
-    screenshotServiceOptions.governanceClient = screenshotServiceOptions.governanceClient ?? new SopScreenshotGovernanceClient();
-    // 仅在 feishu 模式且有 project/model 表 ID 时装配 batch writer
-    if (
-      !screenshotServiceOptions.batchWriter &&
-      config.taskRepository === 'feishu' &&
-      config.feishuAppId && config.feishuAppSecret && config.feishuBaseAppToken &&
-      config.feishuProjectTableId && config.feishuModelTableId
-    ) {
-      const feishuClient = new FeishuClient({
-        appId: config.feishuAppId,
-        appSecret: config.feishuAppSecret,
-        baseToken: config.feishuBaseAppToken,
-      });
-      const projectWriter = new FeishuProjectRecordWriter(feishuClient, {
-        projectTableId: config.feishuProjectTableId,
-        ingestionIdField: feishuWriteConfig.internalControlledWrite?.markerFields.project
-          ?? process.env.FEISHU_PROJECT_WRITE_KEY_FIELD?.trim()
-          ?? undefined,
-      });
-      const modelWriter = new FeishuModelRecordWriter(feishuClient, {
-        modelTableId: config.feishuModelTableId,
-        ingestionIdField: feishuWriteConfig.internalControlledWrite?.markerFields.model
-          ?? process.env.FEISHU_MODEL_WRITE_KEY_FIELD?.trim()
-          ?? undefined,
-      });
-      const innerWriter = new TransactionalBatchWriter(
-        customerRecordWriter,
-        projectWriter,
-        modelWriter,
-        writeLogRepository,
-        runManifestRepository
-      );
-      // Workstream C/E: 用 GuardedBatchWriter 包裹 TransactionalBatchWriter，
-      // 在 Create Record 前执行双层放行门（Amendment 6）。默认配置下门禁全部
-      // fail-closed（6 条件任一不满足即 blocked，绝不调用 Create Record API）。
-      const gateConfig = loadFeishuWriteConfig();
-      screenshotServiceOptions.batchWriter = new GuardedBatchWriter(gateConfig, innerWriter, {
-        auditLogRepository: Boolean(auditLogRepository),
-        writeLogRepository: Boolean(writeLogRepository),
-        runManifestRepository: Boolean(runManifestRepository),
-      }, runManifestRepository);
-      // 透传写入门禁上下文（目标 Base/Table ID）供 GuardedBatchWriter 校验白名单。
-      screenshotServiceOptions.feishuWriteContext = {
-        targetBaseToken: config.feishuBaseAppToken,
-        customerTableId: config.feishuCustomerTableId,
-        projectTableId: config.feishuProjectTableId,
-        modelTableId: config.feishuModelTableId,
-      };
-    }
+    screenshotServiceOptions.ocrEngine = createOcrEngineFromEnv(process.env);
+  }
+  const activeOcrEngine = (
+    screenshotServiceOptions.ocrEngine as { engine?: string } | undefined
+  )?.engine?.trim().toLowerCase();
+  const trustedRealOcrEngine = activeOcrEngine === 'tesseract' || activeOcrEngine === 'feishu';
+  if (process.env.NODE_ENV !== 'test' && protectedWriteActive && !trustedRealOcrEngine) {
+    throw new Error(
+      'Controlled real-write startup blocked: the active OCR engine is not trusted for real writes. ' +
+      `Received ${activeOcrEngine ?? 'missing'}; configure SCREENSHOT_OCR_ENGINE=tesseract|feishu. ` +
+      'Mock, manual-vision, and other injected adapters are not accepted.',
+    );
+  }
+  screenshotServiceOptions.governanceClient = screenshotServiceOptions.governanceClient ?? new SopScreenshotGovernanceClient();
+  // 仅在 feishu 模式且有 project/model 表 ID 时装配 batch writer
+  if (
+    !screenshotServiceOptions.batchWriter &&
+    config.taskRepository === 'feishu' &&
+    config.feishuAppId && config.feishuAppSecret && config.feishuBaseAppToken &&
+    config.feishuProjectTableId && config.feishuModelTableId
+  ) {
+    const feishuClient = new FeishuClient({
+      appId: config.feishuAppId,
+      appSecret: config.feishuAppSecret,
+      baseToken: config.feishuBaseAppToken,
+    });
+    const projectWriter = new FeishuProjectRecordWriter(feishuClient, {
+      projectTableId: config.feishuProjectTableId,
+      ingestionIdField: feishuWriteConfig.internalControlledWrite?.markerFields.project
+        ?? process.env.FEISHU_PROJECT_WRITE_KEY_FIELD?.trim()
+        ?? undefined,
+    });
+    const modelWriter = new FeishuModelRecordWriter(feishuClient, {
+      modelTableId: config.feishuModelTableId,
+      ingestionIdField: feishuWriteConfig.internalControlledWrite?.markerFields.model
+        ?? process.env.FEISHU_MODEL_WRITE_KEY_FIELD?.trim()
+        ?? undefined,
+    });
+    const innerWriter = new TransactionalBatchWriter(
+      customerRecordWriter,
+      projectWriter,
+      modelWriter,
+      writeLogRepository,
+      runManifestRepository
+    );
+    // Workstream C/E: 用 GuardedBatchWriter 包裹 TransactionalBatchWriter，
+    // 在 Create Record 前执行双层放行门（Amendment 6）。默认配置下门禁全部
+    // fail-closed（6 条件任一不满足即 blocked，绝不调用 Create Record API）。
+    const gateConfig = loadFeishuWriteConfig();
+    screenshotServiceOptions.batchWriter = new GuardedBatchWriter(gateConfig, innerWriter, {
+      auditLogRepository: Boolean(auditLogRepository),
+      writeLogRepository: Boolean(writeLogRepository),
+      runManifestRepository: Boolean(runManifestRepository),
+    }, runManifestRepository);
+    // 透传写入门禁上下文（目标 Base/Table ID）供 GuardedBatchWriter 校验白名单。
+    screenshotServiceOptions.feishuWriteContext = {
+      targetBaseToken: config.feishuBaseAppToken,
+      customerTableId: config.feishuCustomerTableId,
+      projectTableId: config.feishuProjectTableId,
+      modelTableId: config.feishuModelTableId,
+    };
   }
   const screenshotService = new ScreenshotService(repository, screenshotServiceOptions);
 

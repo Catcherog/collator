@@ -13,6 +13,8 @@ interface Hs256JwtPayload {
   nbf?: unknown;
 }
 
+const MIN_HS256_SECRET_BYTES = 32;
+
 function decodeJson<T>(value: string): T | undefined {
   try {
     return JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as T;
@@ -37,6 +39,9 @@ function hasValidSignature(unsignedToken: string, signature: string, secret: str
  * consulted by this resolver.
  */
 export function createHmacJwtOperatorResolver(secret: string): AuthenticatedOperatorResolver {
+  if (Buffer.byteLength(secret, 'utf8') < MIN_HS256_SECRET_BYTES) {
+    throw new Error(`Production pilot JWT secret must be at least ${MIN_HS256_SECRET_BYTES} bytes`);
+  }
   return (request: FastifyRequest): string | undefined => {
     const authorization = request.headers.authorization;
     const headerValue = Array.isArray(authorization) ? authorization[0] : authorization;

@@ -16,7 +16,7 @@ import {
   type InternalWriteQueueExecution,
 } from '../../src/server/business/internal-write-queue.js';
 import { ScreenshotService } from '../../src/server/services/screenshot-service.js';
-import { MockOcrEngine } from '../../src/server/services/screenshot-ocr-adapter.js';
+import { MockOcrEngine, type ScreenshotOcrEngine } from '../../src/server/services/screenshot-ocr-adapter.js';
 import type {
   FullGovernanceResult,
   ScreenshotGovernanceClient,
@@ -82,6 +82,33 @@ function passGovernance(candidateId: string, projectType: 'client' | 'creative' 
       rule_version: 'internal-test-rules',
     },
   };
+}
+
+class DeterministicTrustedOcrEngine implements ScreenshotOcrEngine {
+  readonly engine = 'tesseract';
+
+  constructor(private readonly projectType: 'client' | 'creative' = 'client') {}
+
+  async extract() {
+    const text_blocks = this.projectType === 'creative'
+      ? [
+          { type: 'text' as const, text: '样片创作项目' },
+          { type: 'date' as const, text: '2026年8月15日' },
+        ]
+      : [
+          { type: 'name' as const, text: '李女士' },
+          { type: 'text' as const, text: '客片拍摄项目' },
+          { type: 'price' as const, text: '预算5000-8000元' },
+        ];
+    return {
+      engine: this.engine,
+      ocr_version: 'tesseract-test-double-1',
+      text_blocks,
+      raw_text: text_blocks.map((block) => block.text).join('\n'),
+      confidence: 0.99,
+      processed_at: new Date().toISOString(),
+    };
+  }
 }
 
 class PassGovernanceClient implements ScreenshotGovernanceClient {
@@ -202,24 +229,7 @@ async function createInternalContext(
   const internalWriteRepository = new InMemoryInternalWriteRepository();
   const writer = new FakeInternalBatchWriter();
   writer.mode = mode;
-  const ocrEngine = projectType === 'creative'
-    ? {
-        async extract() {
-          const text_blocks = [
-            { type: 'text' as const, text: '样片创作项目' },
-            { type: 'date' as const, text: '2026年8月15日' },
-          ];
-          return {
-            engine: 'internal-test',
-            ocr_version: 'internal-test-1',
-            text_blocks,
-            raw_text: text_blocks.map((block) => block.text).join('\n'),
-            confidence: 0.99,
-            processed_at: new Date().toISOString(),
-          };
-        },
-      }
-    : new MockOcrEngine();
+  const ocrEngine = new DeterministicTrustedOcrEngine(projectType);
   const service = new ScreenshotService(repository, {
     ocrEngine,
     governanceClient: new PassGovernanceClient(projectType),
@@ -387,6 +397,43 @@ describe('InternalWriteQueue', () => {
 });
 
 describe('ScreenshotService internal-controlled write flow', () => {
+  it('blocks Preview when persisted OCR evidence came from mock/manual adapters', async () => {
+    const repository = new InMemoryTaskRepository();
+    const writer = new FakeInternalBatchWriter();
+    const service = new ScreenshotService(repository, {
+      ocrEngine: new MockOcrEngine(),
+      governanceClient: new PassGovernanceClient(),
+      batchWriter: writer,
+      auditLogRepository: new InMemoryAuditLogRepository(),
+      internalWriteRepository: new InMemoryInternalWriteRepository(),
+      internalWriteQueue: new InternalWriteQueue(),
+      internalWriteConfig: internalConfig(),
+      feishuWriteContext: {
+        targetBaseToken: BASE,
+        customerTableId: TABLES.customer,
+        projectTableId: TABLES.project,
+        modelTableId: TABLES.model,
+      },
+    });
+    const created = await service.createScreenshot({
+      source_system: 'internal-test',
+      source_record_id: `source_mock_ocr_${Math.random()}`,
+      submitted_at: new Date().toISOString(),
+      image_base64: Buffer.from('internal-mock-ocr').toString('base64'),
+    });
+    const evidence = await service.getScreenshotEvidence(created.ingestion_id);
+
+    await expect(service.createInternalWritePreview(
+      created.ingestion_id,
+      { candidate_v1_id: evidence.candidate_v1.candidate_id },
+      'operator-internal',
+    )).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: expect.stringContaining('requires persisted OCR evidence from tesseract or feishu'),
+    });
+    expect(writer.calls).toBe(0);
+  });
+
   it('returns INTERNAL_WRITE_DISABLED before any write when the lane is off', async () => {
     const disabledConfig = internalConfig({ ENABLE_INTERNAL_CONTROLLED_WRITE: 'false' });
     const context = await createInternalContext('success', undefined, disabledConfig);

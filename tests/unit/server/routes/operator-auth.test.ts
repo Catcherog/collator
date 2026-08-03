@@ -14,7 +14,7 @@ function createToken(secret: string, payload: Record<string, unknown>): string {
 
 describe('HS256 verified operator resolver', () => {
   it('returns the signed subject and rejects tampered or expired tokens', async () => {
-    const secret = 'unit-test-production-pilot-secret';
+    const secret = 'unit-test-production-pilot-secret-32-bytes';
     const resolver = createHmacJwtOperatorResolver(secret);
     const app = Fastify();
     await app.get('/', async (request) => ({ operator: resolver(request) }));
@@ -57,5 +57,11 @@ describe('HS256 verified operator resolver', () => {
     });
     expect(tampered.json()).toEqual({});
     await app.close();
+  });
+
+  it('rejects weak secrets at resolver construction time', () => {
+    expect(() => createHmacJwtOperatorResolver('too-short')).toThrow(
+      'Production pilot JWT secret must be at least 32 bytes',
+    );
   });
 });

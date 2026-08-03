@@ -3,6 +3,11 @@ import type { Mock } from 'vitest';
 import { FeishuTaskRepository } from '../../../src/server/repositories/feishu-task-repository.js';
 import type { IngestionTask } from '../../../src/server/domain/ingestion.js';
 import type { FeishuRecord } from '../../../src/server/feishu/feishu-client.js';
+import {
+  TaskSaveConflictError,
+  taskCandidateDigest,
+  taskGovernanceDigest,
+} from '../../../src/server/repositories/task-repository.js';
 
 // Construct a representative IngestionTask that exercises all field kinds
 // (optional fields, nested objects, arrays).
@@ -220,6 +225,93 @@ describe('FeishuTaskRepository', () => {
     it('returns null when not found', async () => {
       const fetched = await repo.findByIdempotencyKey('idem_missing');
       expect(fetched).toBeNull();
+    });
+  });
+
+  describe('saveWithFence', () => {
+    it('persists the next task version when the candidate/governance fence matches', async () => {
+      const task = makeTask({
+        task_version: 1,
+        pipeline_evidence: {
+          screenshot_state: {
+            candidate_v1: { candidate_id: 'candidate_1' },
+            governance_result_v1: { decision: 'PASS' },
+          },
+        },
+      });
+      await repo.save(task);
+
+      await repo.saveWithFence(
+        { ...task, status: 'approved' },
+        {
+          expected_task_version: 1,
+          expected_candidate_digest: taskCandidateDigest(task),
+          expected_governance_digest: taskGovernanceDigest(task),
+        },
+      );
+
+      expect((await repo.findById(task.ingestion_id))?.task_version).toBe(2);
+      expect((await repo.findById(task.ingestion_id))?.status).toBe('approved');
+    });
+
+    it('rejects a stale task version without issuing an update', async () => {
+      const task = makeTask({
+        task_version: 1,
+        pipeline_evidence: {
+          screenshot_state: {
+            candidate_v1: { candidate_id: 'candidate_1' },
+            governance_result_v1: { decision: 'PASS' },
+          },
+        },
+      });
+      await repo.save(task);
+      await repo.saveWithFence(
+        { ...task, status: 'approved' },
+        {
+          expected_task_version: 1,
+          expected_candidate_digest: taskCandidateDigest(task),
+          expected_governance_digest: taskGovernanceDigest(task),
+        },
+      );
+      const updateCalls = client.updateRecord.mock.calls.length;
+
+      await expect(repo.saveWithFence(task, {
+        expected_task_version: 1,
+        expected_candidate_digest: taskCandidateDigest(task),
+        expected_governance_digest: taskGovernanceDigest(task),
+      })).rejects.toBeInstanceOf(TaskSaveConflictError);
+      expect(client.updateRecord.mock.calls.length).toBe(updateCalls);
+      expect((await repo.findById(task.ingestion_id))?.status).toBe('approved');
+    });
+
+    it('rejects a changed next Candidate even when the persisted version is current', async () => {
+      const task = makeTask({
+        task_version: 1,
+        pipeline_evidence: {
+          screenshot_state: {
+            candidate_v1: { candidate_id: 'candidate_1' },
+            governance_result_v1: { decision: 'PASS' },
+          },
+        },
+      });
+      await repo.save(task);
+      const changed = {
+        ...task,
+        pipeline_evidence: {
+          screenshot_state: {
+            candidate_v1: { candidate_id: 'candidate_2' },
+            governance_result_v1: { decision: 'PASS' },
+          },
+        },
+      };
+
+      await expect(repo.saveWithFence(changed, {
+        expected_task_version: 1,
+        expected_candidate_digest: taskCandidateDigest(task),
+        expected_governance_digest: taskGovernanceDigest(task),
+      })).rejects.toBeInstanceOf(TaskSaveConflictError);
+      expect(client.updateRecord).not.toHaveBeenCalled();
+      expect((await repo.findById(task.ingestion_id))?.pipeline_evidence).toEqual(task.pipeline_evidence);
     });
   });
 });

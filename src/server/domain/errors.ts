@@ -40,6 +40,12 @@ export class ConflictError extends CollatorError {
   }
 }
 
+export class ProductionPilotMutationLockedError extends CollatorError {
+  constructor(message: string = 'Production pilot execution has locked task mutations') {
+    super('PRODUCTION_PILOT_MUTATION_LOCKED', message, 409);
+  }
+}
+
 /**
  * Raised when a Feishu customer-record commit fails (network error, API
  * rejection, malformed response). The detailed cause is persisted only
