@@ -4,7 +4,15 @@ import { InMemoryAuditLogRepository } from '../../../src/server/repositories/aud
 import { InMemoryRunManifestRepository } from '../../../src/server/repositories/run-manifest-repository.js';
 import { InMemoryWriteLogRepository } from '../../../src/server/repositories/in-memory-write-log-repository.js';
 import { ScreenshotService } from '../../../src/server/services/screenshot-service.js';
-import { MockOcrEngine } from '../../../src/server/services/screenshot-ocr-adapter.js';
+import { MockOcrEngine, type ScreenshotOcrEngine, type OcrOptions, type OcrResult } from '../../../src/server/services/screenshot-ocr-adapter.js';
+
+class TrustedOcrEngine implements ScreenshotOcrEngine {
+  private readonly mock = new MockOcrEngine();
+  async extract(buffer: Buffer, options?: OcrOptions): Promise<OcrResult> {
+    const result = await this.mock.extract(buffer, options);
+    return { ...result, engine: 'tesseract' };
+  }
+}
 import type {
   ScreenshotGovernanceClient,
   FullGovernanceResult,
@@ -71,7 +79,7 @@ async function createService() {
   const runManifestRepository = new InMemoryRunManifestRepository();
   const writer = new CaptureBatchWriter();
   const service = new ScreenshotService(new InMemoryTaskRepository(), {
-    ocrEngine: new MockOcrEngine(),
+    ocrEngine: new TrustedOcrEngine(),
     governanceClient: new PassGovernanceClient(),
     batchWriter: writer,
     auditLogRepository: new InMemoryAuditLogRepository(),

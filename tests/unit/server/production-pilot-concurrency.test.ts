@@ -8,7 +8,15 @@ import { InMemoryTaskRepository } from '../../../src/server/repositories/in-memo
 import { InMemoryRunManifestRepository } from '../../../src/server/repositories/run-manifest-repository.js';
 import { InMemoryWriteLogRepository } from '../../../src/server/repositories/in-memory-write-log-repository.js';
 import { ScreenshotService } from '../../../src/server/services/screenshot-service.js';
-import { MockOcrEngine } from '../../../src/server/services/screenshot-ocr-adapter.js';
+import { MockOcrEngine, type ScreenshotOcrEngine, type OcrOptions, type OcrResult } from '../../../src/server/services/screenshot-ocr-adapter.js';
+
+class TrustedOcrEngine implements ScreenshotOcrEngine {
+  private readonly mock = new MockOcrEngine();
+  async extract(buffer: Buffer, options?: OcrOptions): Promise<OcrResult> {
+    const result = await this.mock.extract(buffer, options);
+    return { ...result, engine: 'tesseract' };
+  }
+}
 import type {
   ScreenshotGovernanceClient,
   FullGovernanceResult,
@@ -103,7 +111,7 @@ async function setup(overrides: {
     projectTableId: 'tbl_project_pilot',
   };
   const service = new ScreenshotService(repository, {
-    ocrEngine: new MockOcrEngine(),
+    ocrEngine: new TrustedOcrEngine(),
     governanceClient: new PassGovernanceClient(),
     batchWriter: writer,
     auditLogRepository,

@@ -194,6 +194,23 @@ function mapScreenshotWriteStatus(status: ScreenshotStatus): WriteResultStatus {
   return 'not_attempted';
 }
 
+const TRUSTED_REAL_OCR_ENGINES = new Set(['tesseract', 'feishu']);
+
+/**
+ * Internal-controlled real writes must be based on persisted OCR evidence from
+ * an approved engine. Checking only the process-level adapter is insufficient:
+ * an ingestion can survive a restart and carry stale mock/manual evidence.
+ */
+function assertTrustedRealOcrEvidence(state: ScreenshotState, context: string): void {
+  const engine = state.ocr_evidence?.engine?.trim().toLowerCase();
+  if (!engine || !TRUSTED_REAL_OCR_ENGINES.has(engine)) {
+    throw new ConflictError(
+      `${context} requires persisted OCR evidence from tesseract or feishu; got ${engine ?? 'missing'}. ` +
+      'Re-upload the screenshot after starting Collator with a trusted OCR engine.',
+    );
+  }
+}
+
 /** 从 IngestionTask 提取截图状态 */
 function extractScreenshotState(task: IngestionTask): ScreenshotState {
   const evidence = task.pipeline_evidence as { screenshot_state?: ScreenshotState } | undefined;
@@ -667,7 +684,10 @@ export class ScreenshotService {
     // Workstream D/E: 审计 — OCR 完成。
     await this.auditRecord(ingestionId, 'ocr_completed', 'ocr_completed', {
       ocr_task_id: state.ocr_task_id,
+      engine: ocrResult.engine,
+      ocr_version: ocrResult.ocr_version,
       confidence: ocrResult.confidence,
+      text_blocks_count: ocrResult.text_blocks.length,
     });
 
     // 构建 Candidate V1
@@ -887,6 +907,7 @@ export class ScreenshotService {
     await this.assertPilotMutationUnlocked(id);
     const task = await this.getTaskOrThrow(id);
     const state = extractScreenshotState(task);
+    assertTrustedRealOcrEvidence(state, 'Production pilot preview');
     const candidate = state.candidate_v1;
     if (!candidate) throw new ConflictError('Candidate V1 not yet available');
     if (!Number.isInteger(task.task_version)) {
@@ -1031,6 +1052,7 @@ export class ScreenshotService {
     if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
     const task = await this.getTaskOrThrow(id);
     const state = extractScreenshotState(task);
+    assertTrustedRealOcrEvidence(state, 'Internal controlled preview');
     const candidate = state.candidate_v1;
     if (!candidate) throw new ConflictError('Candidate V1 not yet available');
     if (candidate.candidate_id !== req.candidate_v1_id) throw new BadRequestError('candidate_v1_id mismatch');
@@ -1172,6 +1194,7 @@ export class ScreenshotService {
 
       const task = await this.getTaskOrThrow(preview.ingestion_id);
       const state = extractScreenshotState(task);
+      assertTrustedRealOcrEvidence(state, 'Internal controlled execute');
       const candidate = state.candidate_v1;
       if (!candidate || candidate.candidate_id !== req.candidate_v1_id) throw new BadRequestError('candidate_v1_id mismatch');
       const governance = state.governance_result_v1;
