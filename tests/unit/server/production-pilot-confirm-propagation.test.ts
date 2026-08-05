@@ -6,7 +6,7 @@ import { InMemoryAuditLogRepository } from '../../../src/server/repositories/aud
 import { InMemoryRunManifestRepository } from '../../../src/server/repositories/run-manifest-repository.js';
 import { InMemoryWriteLogRepository } from '../../../src/server/repositories/in-memory-write-log-repository.js';
 import { ScreenshotService } from '../../../src/server/services/screenshot-service.js';
-import { MockOcrEngine } from '../../../src/server/services/screenshot-ocr-adapter.js';
+import { DeterministicTrustedOcrEngine } from '../../helpers/trusted-ocr-engine.js';
 import type { ScreenshotGovernanceClient, FullGovernanceResult } from '../../../src/server/governance/screenshot-governance-client.js';
 import type { GuardedWriteBatchInput } from '../../../src/server/business/guarded-batch-writer.js';
 import type { TransactionalBatchWriterResult } from '../../../src/server/business/transactional-batch-writer.js';
@@ -118,7 +118,7 @@ async function setup(
   const runManifestRepository = overrides.runManifestRepository ?? new InMemoryRunManifestRepository();
   const writer = overrides.writer ?? new CaptureBatchWriter();
   const service = new ScreenshotService(repository, {
-    ocrEngine: new MockOcrEngine(),
+    ocrEngine: new DeterministicTrustedOcrEngine(),
     governanceClient: new PassGovernanceClient(),
     batchWriter: writer,
     feishuWriteContext: {

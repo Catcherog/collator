@@ -212,8 +212,9 @@ export class GuardedBatchWriter {
   async findByIngestionId(
     entity: 'customer' | 'project' | 'model',
     ingestionId: string,
+    normalizedFields?: Record<string, unknown>,
   ): Promise<string[]> {
-    return this.inner.findByIngestionId?.(entity, ingestionId) ?? [];
+    return this.inner.findByIngestionId?.(entity, ingestionId, normalizedFields) ?? [];
   }
 
   async verifyExistingByIngestion(

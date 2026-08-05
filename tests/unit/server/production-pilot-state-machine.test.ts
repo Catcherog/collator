@@ -4,7 +4,7 @@ import { InMemoryAuditLogRepository } from '../../../src/server/repositories/aud
 import { InMemoryRunManifestRepository } from '../../../src/server/repositories/run-manifest-repository.js';
 import { InMemoryWriteLogRepository } from '../../../src/server/repositories/in-memory-write-log-repository.js';
 import { ScreenshotService } from '../../../src/server/services/screenshot-service.js';
-import { MockOcrEngine } from '../../../src/server/services/screenshot-ocr-adapter.js';
+import { DeterministicTrustedOcrEngine } from '../../helpers/trusted-ocr-engine.js';
 import type {
   ScreenshotGovernanceClient,
   FullGovernanceResult,
@@ -71,7 +71,7 @@ async function createService() {
   const runManifestRepository = new InMemoryRunManifestRepository();
   const writer = new CaptureBatchWriter();
   const service = new ScreenshotService(new InMemoryTaskRepository(), {
-    ocrEngine: new MockOcrEngine(),
+    ocrEngine: new DeterministicTrustedOcrEngine(),
     governanceClient: new PassGovernanceClient(),
     batchWriter: writer,
     auditLogRepository: new InMemoryAuditLogRepository(),

@@ -53,6 +53,25 @@ const DATETIME_FIELDS = new Set<string>(['咨询时间']);
  */
 const MULTISELECT_FIELDS = new Set<string>(['意向风格']);
 
+const LIVE_CUSTOMER_BUDGET_OPTIONS = new Set([
+  '1000元以下',
+  '1000-2000元',
+  '2000-3000元',
+  '3000-5000元',
+  '5000元以上',
+]);
+
+function normalizeCustomerBudget(value: unknown): unknown {
+  if (typeof value !== 'string' || LIVE_CUSTOMER_BUDGET_OPTIONS.has(value)) return value;
+  const amounts = value.match(/\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+  if (amounts.length === 0) return value;
+  if (amounts[0] < 1000) return '1000元以下';
+  if (amounts[0] >= 5000) return '5000元以上';
+  if (amounts[0] >= 3000) return '3000-5000元';
+  if (amounts[0] >= 2000) return '2000-3000元';
+  return '1000-2000元';
+}
+
 export interface CustomerRecordWriterResult {
   /**
    * The real Feishu record_id of the customer record. On `created=false`
@@ -93,7 +112,7 @@ export interface CustomerRecordWriterInput {
 export interface CustomerRecordWriter {
   write(input: CustomerRecordWriterInput): Promise<CustomerRecordWriterResult>;
   verifyRecord?(recordId: string, input: CustomerRecordWriterInput): Promise<void>;
-  findByIngestionId?(ingestionId: string): Promise<string[]>;
+  findByIngestionId?(ingestionId: string, normalizedFields?: Record<string, unknown>): Promise<string[]>;
   /**
    * Delete a customer record by its exact Feishu record_id. Used for
    * transactional rollback / cleanup compensation (AC-C10). Implementations
@@ -221,7 +240,10 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
     }
   }
 
-  async findByIngestionId(ingestionId: string): Promise<string[]> {
+  async findByIngestionId(
+    ingestionId: string,
+    _normalizedFields?: Record<string, unknown>,
+  ): Promise<string[]> {
     const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
     const records = await this.client.searchRecords(this.options.customerTableId, {
       filter: {
@@ -271,6 +293,8 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
         // as FEISHU_COMMIT_FAILED). This avoids silently dropping a
         // malformed date.
         fields[key] = Number.isNaN(ms) ? value : ms;
+      } else if (key === '预算区间') {
+        fields[key] = normalizeCustomerBudget(value);
       } else if (MULTISELECT_FIELDS.has(key)) {
         // Feishu MultiSelect (type=4) requires an array of option
         // strings. A bare string is rejected with code=1254063

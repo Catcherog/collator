@@ -51,8 +51,87 @@ export class ConflictError extends CollatorError {
  * 详细信息只进入脱敏审计。
  */
 export class FeishuCommitFailedError extends CollatorError {
-  constructor(message: string = 'Feishu commit failed', readonly resultUnknown = false) {
+  /**
+   * Structured, already-redacted diagnostic detail (feishu code / message /
+   * request_id / target table / attempted field names).
+   *
+   * The HTTP response still exposes only `FEISHU_COMMIT_FAILED`; this detail
+   * travels through the write-result pipeline into the sanitised audit log and
+   * the operator-facing diagnostics panel, so a commit failure is never
+   * reduced to an opaque code.
+   */
+  readonly detail?: WriteFailureDetail;
+
+  constructor(
+    message: string = 'Feishu commit failed',
+    readonly resultUnknown = false,
+    detail?: WriteFailureDetail,
+  ) {
     super('FEISHU_COMMIT_FAILED', message, 502);
+    this.detail = detail;
+  }
+}
+
+/**
+ * Redacted diagnostic attached to a failed business write.
+ *
+ * MUST NOT contain raw field values, tokens or secrets — only field *names*,
+ * value *types*, and the error identifiers returned by Feishu.
+ */
+export interface WriteFailureDetail {
+  internal_error_code: string;
+  target_table: 'customer' | 'project' | 'model';
+  /** Field names present in the attempted payload (names only, no values). */
+  field_names: string[];
+  ingestion_id?: string;
+  feishu_code?: number;
+  feishu_message?: string;
+  request_id?: string | null;
+  http_status?: number | null;
+  field_violations?: unknown;
+  /** Set when the writer rejected the payload before calling Feishu. */
+  offending_field?: string;
+  expected_value_shape?: string;
+  received_value_type?: string;
+}
+
+/**
+ * Raised at the writer boundary when a value cannot be safely serialised into
+ * the shape the target Feishu field type requires.
+ *
+ * This exists so a type mismatch fails *before* the API call with a precise,
+ * actionable diagnostic, instead of leaking a raw string into a DateTime /
+ * Link / Select column and surfacing as an opaque FEISHU_COMMIT_FAILED — or,
+ * worse, being silently dropped by Feishu (which is what happens today for
+ * Link fields that receive a display name instead of a record_id).
+ *
+ * Fail-closed by design: the writer never strips the offending field and
+ * retries.
+ */
+export class FieldTypeMismatchError extends CollatorError {
+  constructor(
+    readonly fieldName: string,
+    readonly expectedShape: string,
+    readonly receivedType: string,
+    readonly targetTable: 'customer' | 'project' | 'model' = 'project',
+  ) {
+    super(
+      'FIELD_TYPE_MISMATCH',
+      `Field "${fieldName}" expects ${expectedShape} but received ${receivedType}`,
+      422,
+    );
+  }
+
+  toDetail(ingestionId: string | undefined, fieldNames: string[]): WriteFailureDetail {
+    return {
+      internal_error_code: 'FIELD_TYPE_MISMATCH',
+      target_table: this.targetTable,
+      field_names: fieldNames,
+      ingestion_id: ingestionId,
+      offending_field: this.fieldName,
+      expected_value_shape: this.expectedShape,
+      received_value_type: this.receivedType,
+    };
   }
 }
 
