@@ -66,6 +66,33 @@ export type WriteResultStatus =
   | 'partial'
   | 'needs_reconciliation';
 
+/**
+ * 写入失败的脱敏诊断详情。
+ *
+ * 只包含错误标识与字段「名称/类型」，绝不包含字段原始值、token 或 secret。
+ * 存在的意义：`error_code` 只能表达「失败」，无法回答「为什么失败」；
+ * 没有 feishu_code / request_id，运维无法向飞书追溯。
+ */
+export interface WriteErrorDetail {
+  internal_error_code: string;
+  target_table: 'customer' | 'project' | 'model';
+  /** 本次尝试写入的字段名列表（仅名称）。 */
+  field_names: string[];
+  ingestion_id?: string;
+  /** 飞书原始错误码，例如 1254064（DatetimeFieldConvFail）。 */
+  feishu_code?: number;
+  /** 飞书原始错误消息（已脱敏）。 */
+  feishu_message?: string;
+  /** 飞书 log_id —— 唯一可向飞书追溯的句柄。 */
+  request_id?: string | null;
+  http_status?: number | null;
+  field_violations?: unknown;
+  /** 写入器在调用飞书之前拒绝时，指出具体字段。 */
+  offending_field?: string;
+  expected_value_shape?: string;
+  received_value_type?: string;
+}
+
 /** 单实体写入结果 */
 export interface WriteResult {
   entity_type: 'customer' | 'project' | 'model';
@@ -75,6 +102,8 @@ export interface WriteResult {
   status: WriteResultStatus;
   error_code?: string;
   write_log_id?: string;
+  /** 失败时的脱敏诊断详情（AC-05 / AC-06）。 */
+  error_detail?: WriteErrorDetail;
 }
 
 // ============================================================================

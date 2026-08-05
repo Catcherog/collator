@@ -37,7 +37,7 @@ export interface ModelRecordWriterInput {
 export interface ModelRecordWriter {
   write(input: ModelRecordWriterInput): Promise<ModelRecordWriterResult>;
   verifyRecord?(recordId: string, input: ModelRecordWriterInput): Promise<void>;
-  findByIngestionId?(ingestionId: string): Promise<string[]>;
+  findByIngestionId?(ingestionId: string, normalizedFields?: Record<string, unknown>): Promise<string[]>;
   deleteRecord(recordId: string): Promise<void>;
 }
 
@@ -125,7 +125,10 @@ export class FeishuModelRecordWriter implements ModelRecordWriter {
     }
   }
 
-  async findByIngestionId(ingestionId: string): Promise<string[]> {
+  async findByIngestionId(
+    ingestionId: string,
+    _normalizedFields?: Record<string, unknown>,
+  ): Promise<string[]> {
     const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
     const records = await this.client.searchRecords(this.options.modelTableId, {
       filter: {

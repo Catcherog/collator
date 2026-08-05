@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { WriteTable } from '../business/write-plan.js';
+import type { WriteErrorDetail } from '../../contracts/screenshot-api-v1.js';
 
 export type InternalWriteStatus =
   | 'not_started'
@@ -32,6 +33,12 @@ export interface InternalWriteResultItem {
   status: 'succeeded' | 'failed' | 'unknown' | 'not_attempted';
   error_code?: string;
   write_log_id?: string;
+  /**
+   * Redacted failure diagnostic: feishu_code / feishu_message / request_id /
+   * offending field. Persisted so a partial write can be triaged after the
+   * fact without re-running it (AC-05 / AC-06).
+   */
+  error_detail?: WriteErrorDetail;
 }
 
 export interface InternalControlledWriteResult {

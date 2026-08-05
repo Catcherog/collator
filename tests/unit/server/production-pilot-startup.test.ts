@@ -4,7 +4,7 @@ import { InMemoryTaskRepository } from '../../../src/server/repositories/in-memo
 import { InMemoryReviewRepository } from '../../../src/server/repositories/in-memory-review-repository.js';
 import { InMemoryRunManifestRepository } from '../../../src/server/repositories/run-manifest-repository.js';
 import { NoOpPreWriteClient } from '../../fixtures/noop-pre-write-client.js';
-import { MockOcrEngine } from '../../../src/server/services/screenshot-ocr-adapter.js';
+import { MockOcrEngine, type ScreenshotOcrEngine } from '../../../src/server/services/screenshot-ocr-adapter.js';
 import type {
   BatchWriterPort,
   TransactionalBatchWriterInput,
@@ -38,7 +38,11 @@ function stubProductionPilotEnv(): void {
   vi.stubEnv('PRODUCTION_PILOT_JWT_SECRET', '');
 }
 
-async function buildStartupApp(writer: RecoveryWriter, includeVerifiedResolver = true) {
+async function buildStartupApp(
+  writer: RecoveryWriter,
+  includeVerifiedResolver = true,
+  ocrEngine: ScreenshotOcrEngine = new MockOcrEngine(),
+) {
   const runManifestRepository = new InMemoryRunManifestRepository();
   return buildApp({
     repository: new InMemoryTaskRepository(),
@@ -46,7 +50,7 @@ async function buildStartupApp(writer: RecoveryWriter, includeVerifiedResolver =
     preWriteClient: new NoOpPreWriteClient(),
     runManifestRepository,
     screenshotServiceOptions: {
-      ocrEngine: new MockOcrEngine(),
+      ocrEngine,
       batchWriter: writer,
       runManifestRepository,
     },
@@ -76,6 +80,39 @@ describe('production-pilot startup recovery gate', () => {
 
     await expect(buildStartupApp(writer)).rejects.toThrow(
       'Production pilot startup blocked: pending recovery failed.',
+    );
+  });
+
+  it('fails closed when a protected write lane is wired to the mock OCR engine', async () => {
+    stubProductionPilotEnv();
+    vi.stubEnv('NODE_ENV', 'production');
+    const writer = new RecoveryWriter([]);
+
+    await expect(buildStartupApp(writer)).rejects.toThrow(
+      'Controlled real-write startup blocked: the active OCR engine is not trusted for real writes.',
+    );
+  });
+
+  it('fails closed when a protected write lane is wired to a manual-vision adapter', async () => {
+    stubProductionPilotEnv();
+    vi.stubEnv('NODE_ENV', 'production');
+    const writer = new RecoveryWriter([]);
+    const manualVisionEngine: ScreenshotOcrEngine & { engine: string } = {
+      engine: 'manual-vision',
+      async extract() {
+        return {
+          engine: 'manual-vision',
+          ocr_version: 'manual-vision-1',
+          text_blocks: [{ type: 'text', text: '人工转录' }],
+          raw_text: '人工转录',
+          confidence: 1,
+          processed_at: new Date().toISOString(),
+        };
+      },
+    };
+
+    await expect(buildStartupApp(writer, true, manualVisionEngine)).rejects.toThrow(
+      'Received manual-vision; configure SCREENSHOT_OCR_ENGINE=tesseract|feishu.',
     );
   });
 

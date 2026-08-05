@@ -241,8 +241,12 @@ export class FeishuClient {
     try {
       resp = await this.doRequest(method, path, token, body);
     } catch (e) {
-      // Network-level error: redact message and wrap.
-      throw new FeishuApiError(-2, (e as Error).message ?? 'network error');
+      // Network-level error: redact message and wrap. There is no log_id for
+      // a request that never reached Feishu.
+      throw new FeishuApiError(-2, (e as Error).message ?? 'network error', {
+        requestId: null,
+        httpStatus: null,
+      });
     }
     if (resp.status === 401) {
       // HTTP-level 401: refresh token once and retry exactly once.
@@ -287,20 +291,35 @@ export class FeishuClient {
   }
 
   private async parseResponse<T>(resp: Response): Promise<T> {
+    // The log id is the only handle Feishu support can act on, and it is
+    // present on the header even when the body is unparsable. Capture it
+    // before touching the body.
+    const headerLogId = resp.headers?.get?.('x-tt-logid') ?? null;
     let json: unknown;
     try {
       json = await resp.json();
     } catch (e) {
       throw new FeishuApiError(
         -3,
-        `Non-JSON response (status=${resp.status}): ${(e as Error).message}`
+        `Non-JSON response (status=${resp.status}): ${(e as Error).message}`,
+        { requestId: headerLogId, httpStatus: resp.status },
       );
     }
-    const envelope = json as { code?: number; msg?: string; data?: T };
+    const envelope = json as {
+      code?: number;
+      msg?: string;
+      data?: T;
+      log_id?: string;
+      error?: { field_violations?: unknown };
+    };
     if (typeof envelope.code !== 'number' || envelope.code !== 0) {
       const code = typeof envelope.code === 'number' ? envelope.code : -4;
       const msg = envelope.msg ?? `HTTP ${resp.status}`;
-      throw new FeishuApiError(code, msg);
+      throw new FeishuApiError(code, msg, {
+        requestId: envelope.log_id ?? headerLogId,
+        httpStatus: resp.status,
+        fieldViolations: envelope.error?.field_violations,
+      });
     }
     return envelope.data as T;
   }

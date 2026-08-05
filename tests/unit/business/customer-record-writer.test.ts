@@ -303,6 +303,19 @@ describe('FeishuCustomerRecordWriter', () => {
       expect(fields['跟进记录']).toBe('COLLATOR_GATE_D_TEST:abc-123');
     });
 
+    it('normalizes an OCR budget range to the live Customer select option', async () => {
+      await writer.write({
+        ingestionId: 'ing_actual_001',
+        normalizedFields: {
+          客户姓名: '受控验证客户',
+          预算区间: '5000-8000元',
+        },
+      });
+
+      const [_t, fields] = client.createRecord.mock.calls[0];
+      expect(fields['预算区间']).toBe('5000元以上');
+    });
+
     it('wraps bare string 意向风格 into a single-element array (MultiSelect field)', async () => {
       await writer.write({
         ingestionId: 'ing_test_001',

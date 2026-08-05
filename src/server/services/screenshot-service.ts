@@ -189,6 +189,23 @@ function mapScreenshotWriteStatus(status: ScreenshotStatus): WriteResultStatus {
   return 'not_attempted';
 }
 
+const TRUSTED_REAL_OCR_ENGINES = new Set(['tesseract', 'feishu']);
+
+/**
+ * Internal-controlled real writes must be based on persisted OCR evidence from
+ * an approved engine. Checking only the process-level adapter is insufficient:
+ * an ingestion can survive a restart and carry stale mock/manual evidence.
+ */
+function assertTrustedRealOcrEvidence(state: ScreenshotState, context: string): void {
+  const engine = state.ocr_evidence?.engine?.trim().toLowerCase();
+  if (!engine || !TRUSTED_REAL_OCR_ENGINES.has(engine)) {
+    throw new ConflictError(
+      `${context} requires persisted OCR evidence from tesseract or feishu; got ${engine ?? 'missing'}. ` +
+      'Re-upload the screenshot after starting Collator with a trusted OCR engine.',
+    );
+  }
+}
+
 /** 从 IngestionTask 提取截图状态 */
 function extractScreenshotState(task: IngestionTask): ScreenshotState {
   const evidence = task.pipeline_evidence as { screenshot_state?: ScreenshotState } | undefined;
@@ -234,17 +251,51 @@ function extractCustomerName(textBlocks: OcrTextBlock[]): string | null {
 }
 
 /** 从 OCR 文本块提取日期并标准化为 ISO 格式 */
-function extractShootDate(textBlocks: OcrTextBlock[]): string | null {
+function extractShootDate(textBlocks: OcrTextBlock[], referenceDate: Date = new Date()): string | null {
   const dateBlock = textBlocks.find((b) => b.type === 'date');
   if (!dateBlock) return null;
-  // 尝试解析中文日期格式 "2026年8月15日"
-  const cnMatch = dateBlock.text.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
-  if (cnMatch) {
-    const [, y, m, d] = cnMatch;
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  return normalizeShootDate(dateBlock.text, referenceDate);
+}
+
+/**
+ * 把 OCR 日期文本规范化为 `YYYY-MM-DD`，无法可靠解析时返回 null。
+ *
+ * 为什么不能「解析失败就原样返回」：
+ * 拍摄档期在飞书是 DateTime 列，只接受 epoch 毫秒。原实现把无法识别的文本
+ * （真实聊天截图里最常见的 "8月15日"、"下周六"）原样透传，一路漏到
+ * createRecord，被飞书以 `1254064 DatetimeFieldConvFail` 拒绝，最终表现为
+ * 不可诊断的 FEISHU_COMMIT_FAILED —— 这正是 Project 表写入失败的根因。
+ *
+ * 返回 null 时字段被省略，原始文本仍保留在 OCR evidence 中，操作员可通过
+ * Corrections 补齐。这是「显式缺失」而不是「静默错值」。
+ */
+export function normalizeShootDate(raw: string, referenceDate: Date = new Date()): string | null {
+  const text = (raw ?? '').trim();
+  if (text.length === 0) return null;
+
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const build = (y: number, m: number, d: number): string | null => {
+    if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+    const probe = new Date(Date.UTC(y, m - 1, d));
+    // 拦截 2月30日 之类溢出到下个月的输入。
+    if (probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) return null;
+    return `${y}-${pad(m)}-${pad(d)}`;
+  };
+
+  // 带年份：2026年8月15日 / 2026-8-15 / 2026/08/15 / 2026.8.15
+  const withYear = text.match(/(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?/);
+  if (withYear) {
+    return build(Number(withYear[1]), Number(withYear[2]), Number(withYear[3]));
   }
-  // 已经是 ISO 格式
-  return dateBlock.text;
+
+  // 缺年份的中文写法：8月15日。聊天截图里极常见，按参考年份补全。
+  const monthDay = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日?/);
+  if (monthDay) {
+    return build(referenceDate.getUTCFullYear(), Number(monthDay[1]), Number(monthDay[2]));
+  }
+
+  // 其余（"下周六"、"月底"、残缺日期）不猜测，交给人工 Corrections。
+  return null;
 }
 
 /** 从 OCR 文本块提取预算区间 */
@@ -389,7 +440,11 @@ interface BatchWriterResultView {
 interface ScreenshotBatchWriter {
   writeBatch(input: GuardedWriteBatchInput): Promise<BatchWriterResultView>;
   preflight?(input: GuardedWriteBatchInput): Promise<{ allowed: boolean; reason: string }>;
-  findByIngestionId?(entity: WriteTable, ingestionId: string): Promise<string[]>;
+  findByIngestionId?(
+    entity: WriteTable,
+    ingestionId: string,
+    normalizedFields?: Record<string, unknown>,
+  ): Promise<string[]>;
   verifyExistingByIngestion?(
     entity: WriteTable,
     recordId: string,
@@ -623,7 +678,10 @@ export class ScreenshotService {
     // Workstream D/E: 审计 — OCR 完成。
     await this.auditRecord(ingestionId, 'ocr_completed', 'ocr_completed', {
       ocr_task_id: state.ocr_task_id,
+      engine: ocrResult.engine,
+      ocr_version: ocrResult.ocr_version,
       confidence: ocrResult.confidence,
+      text_blocks_count: ocrResult.text_blocks.length,
     });
 
     // 构建 Candidate V1
@@ -841,6 +899,7 @@ export class ScreenshotService {
     }
     const task = await this.getTaskOrThrow(id);
     const state = extractScreenshotState(task);
+    assertTrustedRealOcrEvidence(state, 'Production pilot preview');
     const candidate = state.candidate_v1;
     if (!candidate) throw new ConflictError('Candidate V1 not yet available');
     if (candidate.candidate_id !== req.candidate_v1_id) {
@@ -853,9 +912,9 @@ export class ScreenshotService {
       throw new ConflictError('Production pilot run id is not server-bound');
     }
 
-    const governance = this.options.governanceClient
-      ? await this.options.governanceClient.callPreWriteFull(candidate)
-      : state.governance_result_v1 ?? this.buildLocalGovernanceResult(task, state, 'PASS');
+    const governance = await this.requireGovernanceClient(
+      'Production pilot preview',
+    ).callPreWriteFull(candidate);
     state.governance_result_v1 = governance;
     if (governance.decision !== 'PASS') {
       state.screenshot_status = governance.decision === 'BLOCKED'
@@ -982,13 +1041,14 @@ export class ScreenshotService {
     if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
     const task = await this.getTaskOrThrow(id);
     const state = extractScreenshotState(task);
+    assertTrustedRealOcrEvidence(state, 'Internal controlled preview');
     const candidate = state.candidate_v1;
     if (!candidate) throw new ConflictError('Candidate V1 not yet available');
     if (candidate.candidate_id !== req.candidate_v1_id) throw new BadRequestError('candidate_v1_id mismatch');
 
-    const governance = this.options.governanceClient
-      ? await this.options.governanceClient.callPreWriteFull(candidate)
-      : state.governance_result_v1 ?? this.buildLocalGovernanceResult(task, state, 'PASS');
+    const governance = await this.requireGovernanceClient(
+      'Internal controlled preview',
+    ).callPreWriteFull(candidate);
     state.governance_result_v1 = governance;
     if (governance.decision !== 'PASS') {
       state.screenshot_status = governance.decision === 'BLOCKED'
@@ -1123,6 +1183,7 @@ export class ScreenshotService {
 
       const task = await this.getTaskOrThrow(preview.ingestion_id);
       const state = extractScreenshotState(task);
+      assertTrustedRealOcrEvidence(state, 'Internal controlled execute');
       const candidate = state.candidate_v1;
       if (!candidate || candidate.candidate_id !== req.candidate_v1_id) throw new BadRequestError('candidate_v1_id mismatch');
       const governance = state.governance_result_v1;
@@ -1281,7 +1342,7 @@ export class ScreenshotService {
     let noneCount = 0;
     let multipleCount = 0;
     for (const table of preview.target_tables) {
-      const matches = await writer.findByIngestionId(table, preview.ingestion_id);
+      const matches = await writer.findByIngestionId(table, preview.ingestion_id, normalizedFields);
       const result = results.find((item) => item.entity_type === table)!;
       if (matches.length === 1) {
         matchedRecordIds.set(table, matches[0]);
@@ -1409,9 +1470,11 @@ export class ScreenshotService {
       };
     }
 
-    // 调用 SOP PRE_WRITE 治理
-    if (this.options.governanceClient) {
-      const governance = await this.options.governanceClient.callPreWriteFull(state.candidate_v1);
+    // 调用 SOP PRE_WRITE 治理。写入路径不得在治理客户端缺失时本地伪造 PASS。
+    {
+      const governance = await this.requireGovernanceClient(
+        'Screenshot write confirmation',
+      ).callPreWriteFull(state.candidate_v1);
       state.governance_result_v1 = governance;
 
       if (governance.decision === 'BLOCKED') {
@@ -1453,9 +1516,6 @@ export class ScreenshotService {
       await this.auditRecord(task.ingestion_id, 'governance_passed', 'PASS', {
         rule_version: governance.rule_version,
       });
-    } else {
-      // 无治理客户端（测试模式）→ 直接通过
-      state.screenshot_status = 'governance_passed';
     }
 
     // RF-01: computeWritePlan 是业务实体范围的唯一权威来源。生产 Pilot
@@ -1666,7 +1726,13 @@ export class ScreenshotService {
       }));
     }
 
-    const governance = state.governance_result_v1 ?? this.buildLocalGovernanceResult(task, state, 'PASS');
+    const governance = state.governance_result_v1 ?? this.buildLocalGovernanceResult(
+      task,
+      state,
+      'NEEDS_REVIEW',
+      'GOVERNANCE_RESULT_UNAVAILABLE',
+      'SOP 写前治理尚未执行或结果不可用，不能标记为 PASS。',
+    );
 
     return {
       screenshot_id: task.ingestion_id,
@@ -2088,6 +2154,16 @@ export class ScreenshotService {
     return configured;
   }
 
+  private requireGovernanceClient(context: string): ScreenshotGovernanceClient {
+    const client = this.options.governanceClient;
+    if (!client) {
+      throw new ConflictError(
+        `${context} requires a configured SOP governance client; local PASS fallback is disabled.`,
+      );
+    }
+    return client;
+  }
+
   private targetTableIds(targetTables: readonly WriteTable[]): Partial<Record<WriteTable, string>> {
     const targetTableIds: Partial<Record<WriteTable, string>> = {};
     for (const table of targetTables) {
@@ -2251,6 +2327,9 @@ export class ScreenshotService {
       status: item.status === 'succeeded' ? 'succeeded' : item.status === 'failed' ? 'failed' : 'not_attempted',
       error_code: item.error_code,
       write_log_id: item.write_log_id,
+      // Redacted Feishu diagnostic (code / message / request_id) so a partial
+      // write is triageable after the fact, without a re-run (AC-05 / AC-06).
+      error_detail: item.error_detail,
     }));
     const hasFailure = writeResults.some((item) => item.status === 'failed');
     const isPartial = batchResult.status === 'partial' || hasFailure;

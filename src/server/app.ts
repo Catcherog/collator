@@ -1,7 +1,8 @@
 import Fastify from 'fastify';
-import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
+import { registerCors } from './cors.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestionRoutes } from './routes/ingestions.js';
 import { screenshotRoutes, type AuthenticatedOperatorResolver } from './routes/screenshots.js';
@@ -81,6 +82,9 @@ export interface BuildAppOptions {
   authenticatedOperatorResolver?: AuthenticatedOperatorResolver;
 }
 
+// Phase 6 / R3 AC-02·AC-03: CORS 精确 Origin 允许列表 + Private Network Access。
+// 实现与 hook 顺序约束见 ./cors.ts（PNA hook 必须先于 @fastify/cors 注册）。
+
 export async function buildApp(options?: BuildAppOptions) {
   const config = loadConfig();
 
@@ -90,6 +94,7 @@ export async function buildApp(options?: BuildAppOptions) {
     logger: {
       level: config.logLevel,
     },
+    bodyLimit: config.screenshotMaxFileSizeBytes + 2 * 1024 * 1024,
   });
 
   // Workstream D/E: 审计日志仓库（文件后端，无外部凭据依赖，AC-D01）。
@@ -211,8 +216,10 @@ export async function buildApp(options?: BuildAppOptions) {
   const internalWriteActive =
     feishuWriteConfig.writeMode === 'internal-controlled'
     && feishuWriteConfig.internalControlledWrite?.enabled === true;
+  const protectedWriteActive =
+    feishuWriteConfig.writeMode === 'production-pilot' || internalWriteActive;
   if (
-    (feishuWriteConfig.writeMode === 'production-pilot' || internalWriteActive)
+    protectedWriteActive
     && !authenticatedOperatorResolver
   ) {
     throw new Error(
@@ -223,21 +230,33 @@ export async function buildApp(options?: BuildAppOptions) {
   }
   screenshotServiceOptions.productionPilotRunId =
     screenshotServiceOptions.productionPilotRunId ?? feishuWriteConfig.productionPilot?.pilotRunId;
-  // 生产模式自动装配 OCR + Governance Client（测试模式由调用方注入）
-  if (!options?.screenshotServiceOptions) {
+  // 生产模式自动装配缺失的 OCR / Governance / Feishu writer；测试或本地
+  // 受控运行可注入其中任一适配器，但不应因此丢失其余真实边界。
+  if (!screenshotServiceOptions.ocrEngine) {
     // Workstream B/E: 真实 OCR 引擎由工厂装配（amendment 3 fail-closed）。
     // createOcrEngineFromEnv 缺失/非法 SCREENSHOT_OCR_ENGINE → 抛 OcrConfigError，
     // 进程启动失败，不退化为 mock。测试须显式设置 SCREENSHOT_OCR_ENGINE=mock。
-    screenshotServiceOptions.ocrEngine =
-      screenshotServiceOptions.ocrEngine ?? createOcrEngineFromEnv(process.env);
-    screenshotServiceOptions.governanceClient = screenshotServiceOptions.governanceClient ?? new SopScreenshotGovernanceClient();
-    // 仅在 feishu 模式且有 project/model 表 ID 时装配 batch writer
-    if (
-      !screenshotServiceOptions.batchWriter &&
-      config.taskRepository === 'feishu' &&
-      config.feishuAppId && config.feishuAppSecret && config.feishuBaseAppToken &&
-      config.feishuProjectTableId && config.feishuModelTableId
-    ) {
+    screenshotServiceOptions.ocrEngine = createOcrEngineFromEnv(process.env);
+  }
+  const activeOcrEngine = (
+    screenshotServiceOptions.ocrEngine as { engine?: string } | undefined
+  )?.engine?.trim().toLowerCase();
+  const trustedRealOcrEngine = activeOcrEngine === 'tesseract' || activeOcrEngine === 'feishu';
+  if (process.env.NODE_ENV !== 'test' && protectedWriteActive && !trustedRealOcrEngine) {
+    throw new Error(
+      'Controlled real-write startup blocked: the active OCR engine is not trusted for real writes. ' +
+      `Received ${activeOcrEngine ?? 'missing'}; configure SCREENSHOT_OCR_ENGINE=tesseract|feishu. ` +
+      'Mock, manual-vision, and other injected adapters are not accepted.',
+    );
+  }
+  screenshotServiceOptions.governanceClient = screenshotServiceOptions.governanceClient ?? new SopScreenshotGovernanceClient();
+  // 仅在 feishu 模式且有 project/model 表 ID 时装配 batch writer
+  if (
+    !screenshotServiceOptions.batchWriter &&
+    config.taskRepository === 'feishu' &&
+    config.feishuAppId && config.feishuAppSecret && config.feishuBaseAppToken &&
+    config.feishuProjectTableId && config.feishuModelTableId
+  ) {
       const feishuClient = new FeishuClient({
         appId: config.feishuAppId,
         appSecret: config.feishuAppSecret,
@@ -278,7 +297,6 @@ export async function buildApp(options?: BuildAppOptions) {
         projectTableId: config.feishuProjectTableId,
         modelTableId: config.feishuModelTableId,
       };
-    }
   }
   const screenshotService = new ScreenshotService(repository, screenshotServiceOptions);
 
@@ -296,7 +314,10 @@ export async function buildApp(options?: BuildAppOptions) {
   }
 
   // 主线 A1: 注册 CORS 和 multipart 插件（供截图上传和跨域调用）
-  await app.register(cors, { origin: true });
+  // Phase 6: 精确允许 Origin，禁止 * 或反射任意 Origin。
+  // R3 AC-03: registerCors 同时注册 Private Network Access hook，并保证其
+  // 先于 @fastify/cors —— 否则 preflight 会被 cors 提前终止，PNA 头永不下发。
+  await registerCors(app);
   await app.register(multipart, {
     limits: {
       fileSize: config.screenshotMaxFileSizeBytes,
@@ -332,7 +353,10 @@ export async function buildApp(options?: BuildAppOptions) {
     });
   });
 
-  await app.register(healthRoutes);
+  await app.register(healthRoutes, {
+    requireSop: protectedWriteActive,
+    sopHttpUrl: process.env.SOP_HTTP_URL,
+  });
   await app.register(async (instance) => {
     await ingestionRoutes(instance, service);
   });
@@ -350,11 +374,12 @@ export async function buildApp(options?: BuildAppOptions) {
 
 async function main() {
   const { app, config } = await buildApp();
-  await app.listen({ port: config.port, host: '0.0.0.0' });
-  app.log.info(`Collator server listening on port ${config.port}`);
+  // Phase 2: 仅绑定 127.0.0.1，不暴露到外网
+  await app.listen({ port: config.port, host: '127.0.0.1' });
+  app.log.info(`Collator server listening on 127.0.0.1:${config.port}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((err) => {
     console.error(err);
     process.exit(1);

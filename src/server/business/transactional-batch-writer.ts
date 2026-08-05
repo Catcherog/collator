@@ -17,7 +17,11 @@ import type {
   ProductionPilotRunManifest,
 } from '../repositories/run-manifest-repository.js';
 import { RunManifestStateError } from '../repositories/run-manifest-repository.js';
-import { FeishuCommitFailedError, InternalWriteResultUnknownError } from '../domain/errors.js';
+import {
+  FeishuCommitFailedError,
+  FieldTypeMismatchError,
+  InternalWriteResultUnknownError,
+} from '../domain/errors.js';
 import type { WriteResult } from '../../contracts/screenshot-api-v1.js';
 import { PostWriteVerificationError } from './post-write-verification.js';
 import {
@@ -104,7 +108,11 @@ export interface TransactionalBatchWriterResult {
  */
 export interface BatchWriterPort {
   writeBatch(input: TransactionalBatchWriterInput): Promise<TransactionalBatchWriterResult>;
-  findByIngestionId?(entity: 'customer' | 'project' | 'model', ingestionId: string): Promise<string[]>;
+  findByIngestionId?(
+    entity: 'customer' | 'project' | 'model',
+    ingestionId: string,
+    normalizedFields?: Record<string, unknown>,
+  ): Promise<string[]>;
   verifyExistingByIngestion?(
     entity: 'customer' | 'project' | 'model',
     recordId: string,
@@ -144,13 +152,16 @@ export class TransactionalBatchWriter {
   async findByIngestionId(
     entity: 'customer' | 'project' | 'model',
     ingestionId: string,
+    normalizedFields?: Record<string, unknown>,
   ): Promise<string[]> {
     const writer = entity === 'customer'
       ? this.customerWriter
       : entity === 'project'
         ? this.projectWriter
         : this.modelWriter;
-    return writer?.findByIngestionId ? writer.findByIngestionId(ingestionId) : [];
+    return writer?.findByIngestionId
+      ? writer.findByIngestionId(ingestionId, normalizedFields)
+      : [];
   }
 
   async verifyExistingByIngestion(
@@ -179,7 +190,17 @@ export class TransactionalBatchWriter {
         ingestionId: input.ingestionId,
         normalizedFields,
       });
-    } catch {
+    } catch (e) {
+      // Preserve field-level diagnostic info from assertExpectedFields while
+      // binding the correct recordId / created flag. Never copy field values.
+      if (e instanceof PostWriteVerificationError) {
+        throw new PostWriteVerificationError(recordId, false, {
+          verificationStage: e.verificationStage ?? 'existing_record_verification',
+          table: e.table ?? entity,
+          fieldName: e.fieldName,
+          reason: e.reason,
+        });
+      }
       throw new PostWriteVerificationError(recordId, false);
     }
   }
@@ -476,11 +497,26 @@ export class TransactionalBatchWriter {
           error_code: e.code,
         };
       }
+      // A type mismatch caught at the writer boundary is a *precise*,
+      // actionable defect — surface it as such instead of collapsing it into
+      // the generic commit-failure bucket.
+      if (e instanceof FieldTypeMismatchError) {
+        return {
+          ...baseResult,
+          status: 'failed',
+          error_code: 'FIELD_TYPE_MISMATCH',
+          error_detail: { ...e.toDetail(input.ingestionId, []), target_table: table },
+        };
+      }
       const errorCode = e instanceof FeishuCommitFailedError ? 'FEISHU_COMMIT_FAILED' : 'COMMIT_FAILED';
+      const detail = e instanceof FeishuCommitFailedError ? e.detail : undefined;
       return {
         ...baseResult,
         status: 'failed',
         error_code: errorCode,
+        // Carry the redacted Feishu code / message / request_id forward so a
+        // failed write is never reduced to an opaque token (AC-05 / AC-06).
+        ...(detail ? { error_detail: { ...detail, target_table: table } } : {}),
       };
     }
   }
@@ -532,9 +568,17 @@ export class TransactionalBatchWriter {
         ingestionId: input.ingestionId,
         normalizedFields: input.normalizedFields,
       });
-    } catch {
+    } catch (e) {
       // Do not propagate field values or Feishu error details into the API or
-      // audit path. The caller receives only the stable error code above.
+      // audit path. Preserve field-level diagnostic info from assertExpectedFields.
+      if (e instanceof PostWriteVerificationError) {
+        throw new PostWriteVerificationError(recordId, created, {
+          verificationStage: e.verificationStage ?? 'post_write_readback',
+          table: e.table ?? table,
+          fieldName: e.fieldName,
+          reason: e.reason,
+        });
+      }
       throw new PostWriteVerificationError(recordId, created);
     }
   }
