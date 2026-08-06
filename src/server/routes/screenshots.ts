@@ -18,9 +18,10 @@
 // AC-A09: 重复确认/复核幂等 — 由 service.confirmWrite/escalateReview 保证。
 // AC-A03: 人工修正标记为 CONFIRMED — 由 service.submitCorrections 保证。
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { ScreenshotService } from '../services/screenshot-service.js';
+import { UnauthorizedError } from '../domain/errors.js';
 
 // ============================================================================
 // 请求体 Schema（zod 校验）
@@ -51,7 +52,30 @@ const confirmWriteSchema = z.object({
   candidate_v1_id: z.string().min(1),
   dry_run: z.boolean().optional(),
   target_tables: z.array(z.enum(['customer', 'project', 'model'])).optional(),
-});
+  production_pilot_preview_id: z.string().uuid().optional(),
+  production_pilot_nonce: z.string().uuid().optional(),
+}).strict();
+
+const createProductionPilotPreviewSchema = z.object({
+  screenshot_id: z.string().min(1),
+  candidate_v1_id: z.string().min(1),
+}).strict();
+
+const confirmProductionPilotPreviewSchema = z.object({
+  nonce: z.string().uuid(),
+}).strict();
+
+const internalPreviewSchema = z.object({
+  screenshot_id: z.string().min(1),
+  candidate_v1_id: z.string().min(1),
+}).strict();
+
+const internalConfirmationSchema = z.object({
+  nonce: z.string().min(1),
+  candidate_v1_id: z.string().min(1),
+}).strict();
+
+const internalReconciliationSchema = z.object({}).strict();
 
 const escalateReviewSchema = z.object({
   reviewer_id: z.string().min(1),
@@ -60,14 +84,119 @@ const escalateReviewSchema = z.object({
   suggested_fields: z.record(z.unknown()).optional(),
 });
 
+export type AuthenticatedOperatorResolver = (
+  request: FastifyRequest,
+) => string | undefined | Promise<string | undefined>;
+
+export interface ScreenshotRouteOptions {
+  /** Principal supplied by a verified OAuth/JWT/reverse-proxy middleware. */
+  authenticatedOperatorResolver?: AuthenticatedOperatorResolver;
+  /** Production-pilot must never fall back to a client-controlled header. */
+  requireVerifiedOperator?: boolean;
+}
+
+async function getAuthenticatedOperator(
+  request: FastifyRequest,
+  options: ScreenshotRouteOptions,
+): Promise<string> {
+  if (options.authenticatedOperatorResolver) {
+    const principal = await options.authenticatedOperatorResolver(request);
+    if (principal?.trim()) return principal;
+  }
+  if (options.requireVerifiedOperator) {
+    throw new UnauthorizedError('Verified operator principal is required');
+  }
+  const value = request.headers['x-operator-id'] ?? request.headers['x-authenticated-operator'];
+  const operator = Array.isArray(value) ? value[0] : value;
+  if (!operator?.trim()) throw new UnauthorizedError('Authenticated operator header is required');
+  return operator;
+}
+
 // ============================================================================
 // 路由注册
 // ============================================================================
 
 export async function screenshotRoutes(
   app: FastifyInstance,
-  service: ScreenshotService
+  service: ScreenshotService,
+  options: ScreenshotRouteOptions = {},
 ): Promise<void> {
+  const createPilotPreview = async (request: { body?: unknown; headers: Record<string, string | string[] | undefined> }, reply: { send: (body: unknown) => unknown }) => {
+    const body = createProductionPilotPreviewSchema.parse(request.body);
+    const operator = await getAuthenticatedOperator(request as FastifyRequest, options);
+    const result = await service.createProductionPilotPreview(
+      body.screenshot_id,
+      { candidate_v1_id: body.candidate_v1_id },
+      operator,
+    );
+    return reply.send(result);
+  };
+  const confirmPilotPreview = async (
+    request: { body?: unknown; params?: unknown; headers: Record<string, string | string[] | undefined> },
+  ) => {
+    const body = confirmProductionPilotPreviewSchema.parse(request.body);
+    const { id } = request.params as { id: string };
+    return service.confirmProductionPilotPreview(id, await getAuthenticatedOperator(request as FastifyRequest, options), body.nonce);
+  };
+
+  app.post('/v1/production-pilot/previews', createPilotPreview);
+  app.post('/production-pilot/previews', createPilotPreview);
+  app.post('/v1/production-pilot/previews/:id/confirm', confirmPilotPreview);
+  app.post('/production-pilot/previews/:id/confirm', confirmPilotPreview);
+
+  const createInternalPreview = async (
+    request: { body?: unknown; headers: Record<string, string | string[] | undefined> },
+    reply: { send: (body: unknown) => unknown },
+  ) => {
+    const body = internalPreviewSchema.parse(request.body);
+    const operator = await getAuthenticatedOperator(request as FastifyRequest, options);
+    const result = await service.createInternalWritePreview(
+      body.screenshot_id,
+      { candidate_v1_id: body.candidate_v1_id },
+      operator,
+    );
+    return reply.send(result);
+  };
+  const confirmInternalPreview = async (
+    request: { body?: unknown; params?: unknown; headers: Record<string, string | string[] | undefined> },
+  ) => {
+    const body = internalConfirmationSchema.parse(request.body);
+    const { id } = request.params as { id: string };
+    return service.confirmInternalWritePreview(
+      id,
+      { nonce: body.nonce, candidate_v1_id: body.candidate_v1_id },
+      await getAuthenticatedOperator(request as FastifyRequest, options),
+    );
+  };
+  const executeInternalWrite = async (
+    request: { body?: unknown; params?: unknown; headers: Record<string, string | string[] | undefined> },
+  ) => {
+    const body = internalConfirmationSchema.parse(request.body);
+    const { id } = request.params as { id: string };
+    return service.executeInternalControlledWrite(
+      id,
+      { nonce: body.nonce, candidate_v1_id: body.candidate_v1_id },
+      await getAuthenticatedOperator(request as FastifyRequest, options),
+    );
+  };
+  const reconcileInternalWrite = async (
+    request: { body?: unknown; params?: unknown; headers: Record<string, string | string[] | undefined> },
+  ) => {
+    internalReconciliationSchema.parse(request.body ?? {});
+    const { id } = request.params as { id: string };
+    return service.reconcileInternalControlledWrite(
+      id,
+      await getAuthenticatedOperator(request as FastifyRequest, options),
+    );
+  };
+
+  for (const prefix of ['/v1/internal-controlled-writes', '/internal-controlled-writes', '/v1/internal-writes', '/internal-writes']) {
+    app.post(`${prefix}/previews`, createInternalPreview);
+    app.post(`${prefix}/previews/:id/confirm`, confirmInternalPreview);
+    app.post(`${prefix}/previews/:id/execute`, executeInternalWrite);
+    app.post(`${prefix}/previews/:id/reconcile`, reconcileInternalWrite);
+  }
+
   // 1. POST /v1/screenshots — 创建截图提交
   app.post('/v1/screenshots', async (request, reply) => {
     const body = createScreenshotSchema.parse(request.body);
@@ -99,8 +228,20 @@ export async function screenshotRoutes(
   app.post('/v1/screenshots/:id/confirm', async (request) => {
     const { id } = request.params as { id: string };
     const body = confirmWriteSchema.parse(request.body);
-    return await service.confirmWrite(id, body);
+    const operator = body.production_pilot_preview_id || body.production_pilot_nonce
+      ? await getAuthenticatedOperator(request, options)
+      : undefined;
+    return await service.confirmWrite(id, body, operator);
   });
+
+  const executeProductionPilotWrite = async (request: { body?: unknown; params?: unknown; headers: Record<string, string | string[] | undefined> }) => {
+    const { id } = request.params as { id: string };
+    const body = confirmWriteSchema.parse(request.body);
+    const operator = await getAuthenticatedOperator(request as FastifyRequest, options);
+    return service.confirmWrite(id, body, operator);
+  };
+  app.post('/v1/screenshots/:id/confirm-write', executeProductionPilotWrite);
+  app.post('/screenshots/:id/confirm-write', executeProductionPilotWrite);
 
   // 6. POST /v1/screenshots/:id/escalate-review — 转人工复核
   app.post('/v1/screenshots/:id/escalate-review', async (request) => {

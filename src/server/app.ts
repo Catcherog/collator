@@ -1,10 +1,12 @@
 import Fastify from 'fastify';
-import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
+import { registerCors } from './cors.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestionRoutes } from './routes/ingestions.js';
-import { screenshotRoutes } from './routes/screenshots.js';
+import { screenshotRoutes, type AuthenticatedOperatorResolver } from './routes/screenshots.js';
+import { createHmacJwtOperatorResolver } from './routes/operator-auth.js';
 import { IngestionService } from './services/ingestion-service.js';
 import { ScreenshotService, type ScreenshotServiceOptions } from './services/screenshot-service.js';
 import { createOcrEngineFromEnv } from '../ocr/ocr-engine-factory.js';
@@ -23,7 +25,13 @@ import {
 import type { TaskRepository } from './repositories/task-repository.js';
 import type { ReviewRepository } from './repositories/review-repository.js';
 import type { WriteLogRepository } from './repositories/write-log-repository.js';
+import {
+  FileRunManifestRepository,
+  type RunManifestRepository,
+} from './repositories/run-manifest-repository.js';
 import type { CustomerRecordWriter } from './business/customer-record-writer.js';
+import { InternalWriteQueue } from './business/internal-write-queue.js';
+import { FileInternalWriteRepository } from './repositories/internal-write-repository.js';
 import type { PreWriteClient } from './governance/pre-write-client.js';
 import {
   SopPreWriteClient,
@@ -42,6 +50,8 @@ export interface BuildAppOptions {
    */
   customerRecordWriter?: CustomerRecordWriter;
   writeLogRepository?: WriteLogRepository;
+  /** Optional process-level production-pilot recovery journal for tests or hosts. */
+  runManifestRepository?: RunManifestRepository;
   /**
    * FAMP-CONTRACT-ADOPTION-GATE-01-R1 / AC-R1-02
    * FAMP-CONTRACT-ADOPTION-GATE-01-R1-FIX / RF-02 / RF-FIX-02
@@ -64,7 +74,16 @@ export interface BuildAppOptions {
    *   - BatchWriter: 仅在 feishu 模式且有 project/model 表 ID 时装配
    */
   screenshotServiceOptions?: ScreenshotServiceOptions;
+  /**
+   * Verified principal resolver supplied by the host's OAuth/JWT or trusted
+   * reverse-proxy middleware. When omitted, production-pilot uses the
+   * `PRODUCTION_PILOT_JWT_SECRET` HS256 adapter if configured.
+   */
+  authenticatedOperatorResolver?: AuthenticatedOperatorResolver;
 }
+
+// Phase 6 / R3 AC-02·AC-03: CORS 精确 Origin 允许列表 + Private Network Access。
+// 实现与 hook 顺序约束见 ./cors.ts（PNA hook 必须先于 @fastify/cors 注册）。
 
 export async function buildApp(options?: BuildAppOptions) {
   const config = loadConfig();
@@ -75,6 +94,7 @@ export async function buildApp(options?: BuildAppOptions) {
     logger: {
       level: config.logLevel,
     },
+    bodyLimit: config.screenshotMaxFileSizeBytes + 2 * 1024 * 1024,
   });
 
   // Workstream D/E: 审计日志仓库（文件后端，无外部凭据依赖，AC-D01）。
@@ -96,6 +116,7 @@ export async function buildApp(options?: BuildAppOptions) {
   let reviewRepository: ReviewRepository;
   let customerRecordWriter: CustomerRecordWriter | undefined;
   let writeLogRepository: WriteLogRepository | undefined;
+  let runManifestRepository: RunManifestRepository | undefined = options?.runManifestRepository;
   // R1: PRE_WRITE 治理客户端。RF-02: 测试模式必须显式注入，生产模式默认 SopPreWriteClient。
   let preWriteClient: PreWriteClient;
   if (options?.repository && options?.reviewRepository) {
@@ -151,24 +172,91 @@ export async function buildApp(options?: BuildAppOptions) {
 
   // 主线 A1: 截图纵向闭环 — 装配 ScreenshotService
   const screenshotServiceOptions: ScreenshotServiceOptions = options?.screenshotServiceOptions ?? {};
-  // 生产模式自动装配 OCR + Governance Client（测试模式由调用方注入）
-  if (!options?.screenshotServiceOptions) {
+  const feishuWriteConfig = loadFeishuWriteConfig();
+  if (!runManifestRepository && screenshotServiceOptions.runManifestRepository) {
+    runManifestRepository = screenshotServiceOptions.runManifestRepository;
+  }
+  if (!runManifestRepository && !options?.repository) {
+    runManifestRepository = new FileRunManifestRepository(
+      process.env.PRODUCTION_PILOT_MANIFEST_FILE ?? 'data/production-pilot-manifests.json'
+    );
+  }
+  if (
+    feishuWriteConfig.writeMode === 'internal-controlled'
+    && !screenshotServiceOptions.internalWriteRepository
+  ) {
+    screenshotServiceOptions.internalWriteRepository = new FileInternalWriteRepository(
+      process.env.INTERNAL_WRITE_REPOSITORY_FILE ?? 'data/internal-controlled-writes.json',
+    );
+  }
+  if (
+    feishuWriteConfig.writeMode === 'internal-controlled'
+    && !screenshotServiceOptions.internalWriteQueue
+  ) {
+    screenshotServiceOptions.internalWriteQueue = new InternalWriteQueue({
+      maxConcurrency: feishuWriteConfig.internalControlledWrite?.maxConcurrency ?? 1,
+      timeoutMs: feishuWriteConfig.internalControlledWrite?.maxExecutionMs,
+    });
+  }
+  screenshotServiceOptions.writeLogRepository =
+    screenshotServiceOptions.writeLogRepository ?? writeLogRepository;
+  screenshotServiceOptions.auditLogRepository =
+    screenshotServiceOptions.auditLogRepository ?? auditLogRepository;
+  screenshotServiceOptions.runManifestRepository =
+    screenshotServiceOptions.runManifestRepository ?? runManifestRepository;
+  if (feishuWriteConfig.writeMode === 'internal-controlled') {
+    screenshotServiceOptions.internalWriteConfig =
+      screenshotServiceOptions.internalWriteConfig ?? feishuWriteConfig;
+  }
+  const authenticatedOperatorResolver: AuthenticatedOperatorResolver | undefined =
+    options?.authenticatedOperatorResolver
+    ?? (process.env.PRODUCTION_PILOT_JWT_SECRET?.trim()
+      ? createHmacJwtOperatorResolver(process.env.PRODUCTION_PILOT_JWT_SECRET.trim())
+      : undefined);
+  const internalWriteActive =
+    feishuWriteConfig.writeMode === 'internal-controlled'
+    && feishuWriteConfig.internalControlledWrite?.enabled === true;
+  const protectedWriteActive =
+    feishuWriteConfig.writeMode === 'production-pilot' || internalWriteActive;
+  if (
+    protectedWriteActive
+    && !authenticatedOperatorResolver
+  ) {
+    throw new Error(
+      feishuWriteConfig.writeMode === 'production-pilot'
+        ? 'Production pilot startup blocked: verified operator principal resolver is unavailable.'
+        : 'Internal controlled write startup blocked: verified operator principal resolver is unavailable.',
+    );
+  }
+  screenshotServiceOptions.productionPilotRunId =
+    screenshotServiceOptions.productionPilotRunId ?? feishuWriteConfig.productionPilot?.pilotRunId;
+  // 生产模式自动装配缺失的 OCR / Governance / Feishu writer；测试或本地
+  // 受控运行可注入其中任一适配器，但不应因此丢失其余真实边界。
+  if (!screenshotServiceOptions.ocrEngine) {
     // Workstream B/E: 真实 OCR 引擎由工厂装配（amendment 3 fail-closed）。
     // createOcrEngineFromEnv 缺失/非法 SCREENSHOT_OCR_ENGINE → 抛 OcrConfigError，
     // 进程启动失败，不退化为 mock。测试须显式设置 SCREENSHOT_OCR_ENGINE=mock。
-    screenshotServiceOptions.ocrEngine =
-      screenshotServiceOptions.ocrEngine ?? createOcrEngineFromEnv(process.env);
-    screenshotServiceOptions.governanceClient = screenshotServiceOptions.governanceClient ?? new SopScreenshotGovernanceClient();
-    screenshotServiceOptions.writeLogRepository = screenshotServiceOptions.writeLogRepository ?? writeLogRepository;
-    // Workstream D/E: 审计仓库透传到截图服务。
-    screenshotServiceOptions.auditLogRepository = screenshotServiceOptions.auditLogRepository ?? auditLogRepository;
-    // 仅在 feishu 模式且有 project/model 表 ID 时装配 batch writer
-    if (
-      !screenshotServiceOptions.batchWriter &&
-      config.taskRepository === 'feishu' &&
-      config.feishuAppId && config.feishuAppSecret && config.feishuBaseAppToken &&
-      config.feishuProjectTableId && config.feishuModelTableId
-    ) {
+    screenshotServiceOptions.ocrEngine = createOcrEngineFromEnv(process.env);
+  }
+  const activeOcrEngine = (
+    screenshotServiceOptions.ocrEngine as { engine?: string } | undefined
+  )?.engine?.trim().toLowerCase();
+  const trustedRealOcrEngine = activeOcrEngine === 'tesseract' || activeOcrEngine === 'feishu';
+  if (process.env.NODE_ENV !== 'test' && protectedWriteActive && !trustedRealOcrEngine) {
+    throw new Error(
+      'Controlled real-write startup blocked: the active OCR engine is not trusted for real writes. ' +
+      `Received ${activeOcrEngine ?? 'missing'}; configure SCREENSHOT_OCR_ENGINE=tesseract|feishu. ` +
+      'Mock, manual-vision, and other injected adapters are not accepted.',
+    );
+  }
+  screenshotServiceOptions.governanceClient = screenshotServiceOptions.governanceClient ?? new SopScreenshotGovernanceClient();
+  // 仅在 feishu 模式且有 project/model 表 ID 时装配 batch writer
+  if (
+    !screenshotServiceOptions.batchWriter &&
+    config.taskRepository === 'feishu' &&
+    config.feishuAppId && config.feishuAppSecret && config.feishuBaseAppToken &&
+    config.feishuProjectTableId && config.feishuModelTableId
+  ) {
       const feishuClient = new FeishuClient({
         appId: config.feishuAppId,
         appSecret: config.feishuAppSecret,
@@ -176,21 +264,32 @@ export async function buildApp(options?: BuildAppOptions) {
       });
       const projectWriter = new FeishuProjectRecordWriter(feishuClient, {
         projectTableId: config.feishuProjectTableId,
+        ingestionIdField: feishuWriteConfig.internalControlledWrite?.markerFields.project
+          ?? process.env.FEISHU_PROJECT_WRITE_KEY_FIELD?.trim()
+          ?? undefined,
       });
       const modelWriter = new FeishuModelRecordWriter(feishuClient, {
         modelTableId: config.feishuModelTableId,
+        ingestionIdField: feishuWriteConfig.internalControlledWrite?.markerFields.model
+          ?? process.env.FEISHU_MODEL_WRITE_KEY_FIELD?.trim()
+          ?? undefined,
       });
       const innerWriter = new TransactionalBatchWriter(
         customerRecordWriter,
         projectWriter,
         modelWriter,
-        writeLogRepository
+        writeLogRepository,
+        runManifestRepository
       );
       // Workstream C/E: 用 GuardedBatchWriter 包裹 TransactionalBatchWriter，
       // 在 Create Record 前执行双层放行门（Amendment 6）。默认配置下门禁全部
       // fail-closed（6 条件任一不满足即 blocked，绝不调用 Create Record API）。
       const gateConfig = loadFeishuWriteConfig();
-      screenshotServiceOptions.batchWriter = new GuardedBatchWriter(gateConfig, innerWriter);
+      screenshotServiceOptions.batchWriter = new GuardedBatchWriter(gateConfig, innerWriter, {
+        auditLogRepository: Boolean(auditLogRepository),
+        writeLogRepository: Boolean(writeLogRepository),
+        runManifestRepository: Boolean(runManifestRepository),
+      }, runManifestRepository);
       // 透传写入门禁上下文（目标 Base/Table ID）供 GuardedBatchWriter 校验白名单。
       screenshotServiceOptions.feishuWriteContext = {
         targetBaseToken: config.feishuBaseAppToken,
@@ -198,12 +297,27 @@ export async function buildApp(options?: BuildAppOptions) {
         projectTableId: config.feishuProjectTableId,
         modelTableId: config.feishuModelTableId,
       };
-    }
   }
   const screenshotService = new ScreenshotService(repository, screenshotServiceOptions);
 
+  if (feishuWriteConfig.writeMode === 'production-pilot') {
+    const manifestRepository = screenshotServiceOptions.runManifestRepository;
+    if (!manifestRepository) {
+      throw new Error('Production pilot startup blocked: process-level recovery journal is unavailable.');
+    }
+    await manifestRepository.validate();
+    const recoveryOutcomes = await screenshotService.recoverPendingProductionPilotRuns();
+    if (recoveryOutcomes.some((outcome) => !['compensated', 'committed'].includes(outcome.status))) {
+      throw new Error('Production pilot startup blocked: pending recovery failed.');
+    }
+    await manifestRepository.validate();
+  }
+
   // 主线 A1: 注册 CORS 和 multipart 插件（供截图上传和跨域调用）
-  await app.register(cors, { origin: true });
+  // Phase 6: 精确允许 Origin，禁止 * 或反射任意 Origin。
+  // R3 AC-03: registerCors 同时注册 Private Network Access hook，并保证其
+  // 先于 @fastify/cors —— 否则 preflight 会被 cors 提前终止，PNA 头永不下发。
+  await registerCors(app);
   await app.register(multipart, {
     limits: {
       fileSize: config.screenshotMaxFileSizeBytes,
@@ -239,12 +353,20 @@ export async function buildApp(options?: BuildAppOptions) {
     });
   });
 
-  await app.register(healthRoutes);
+  await app.register(healthRoutes, {
+    requireSop: protectedWriteActive,
+    sopHttpUrl: process.env.SOP_HTTP_URL,
+  });
   await app.register(async (instance) => {
     await ingestionRoutes(instance, service);
   });
   await app.register(async (instance) => {
-    await screenshotRoutes(instance, screenshotService);
+    await screenshotRoutes(instance, screenshotService, {
+      authenticatedOperatorResolver,
+      requireVerifiedOperator:
+        feishuWriteConfig.writeMode === 'production-pilot'
+        || internalWriteActive,
+    });
   });
 
   return { app, config, service, repository, reviewRepository, screenshotService };
@@ -252,11 +374,12 @@ export async function buildApp(options?: BuildAppOptions) {
 
 async function main() {
   const { app, config } = await buildApp();
-  await app.listen({ port: config.port, host: '0.0.0.0' });
-  app.log.info(`Collator server listening on port ${config.port}`);
+  // Phase 2: 仅绑定 127.0.0.1，不暴露到外网
+  await app.listen({ port: config.port, host: '127.0.0.1' });
+  app.log.info(`Collator server listening on 127.0.0.1:${config.port}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((err) => {
     console.error(err);
     process.exit(1);

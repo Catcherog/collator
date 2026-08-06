@@ -17,6 +17,7 @@ import type { ProjectRecordWriter } from '../../../src/server/business/project-r
 import type { ModelRecordWriter } from '../../../src/server/business/model-record-writer.js';
 import type { CustomerRecordWriter } from '../../../src/server/business/customer-record-writer.js';
 import type { WriteLogRepository } from '../../../src/server/repositories/write-log-repository.js';
+import { InMemoryRunManifestRepository } from '../../../src/server/repositories/run-manifest-repository.js';
 
 // ============================================================================
 // Mock Writers
@@ -209,6 +210,174 @@ describe('TransactionalBatchWriter', () => {
       expect(projectWriter.write).toHaveBeenCalledTimes(1);
       expect(customerWriter.write).not.toHaveBeenCalled();
       expect(modelWriter.write).not.toHaveBeenCalled();
+    });
+
+    it('injects created customer and model record ids into project relation fields', async () => {
+      const batchWriter = new TransactionalBatchWriter(
+        customerWriter as unknown as CustomerRecordWriter,
+        projectWriter as unknown as ProjectRecordWriter,
+        modelWriter as unknown as ModelRecordWriter,
+        writeLogRepository
+      );
+
+      const result = await batchWriter.writeBatch({
+        ingestionId: 'ing_relation_context_001',
+        normalizedFields: { 项目名称: '关系测试项目' },
+        targetTables: ['customer', 'model', 'project'],
+        enforceProjectRelationContext: true,
+      });
+
+      expect(result.status).toBe('committed');
+      const projectInput = projectWriter.write.mock.calls[0]?.[0];
+      expect(projectInput?.normalizedFields['客户关联']).toEqual([
+        result.write_results.find((item) => item.entity_type === 'customer')?.business_record_id,
+      ]);
+      expect(projectInput?.normalizedFields['模特关联']).toEqual([
+        result.write_results.find((item) => item.entity_type === 'model')?.business_record_id,
+      ]);
+    });
+
+    it('injects the model id for creative projects without inventing a customer relation', async () => {
+      const batchWriter = new TransactionalBatchWriter(
+        customerWriter as unknown as CustomerRecordWriter,
+        projectWriter as unknown as ProjectRecordWriter,
+        modelWriter as unknown as ModelRecordWriter,
+        writeLogRepository
+      );
+
+      const result = await batchWriter.writeBatch({
+        ingestionId: 'ing_creative_relation_001',
+        normalizedFields: { 项目名称: '创作关系测试' },
+        targetTables: ['model', 'project'],
+        enforceProjectRelationContext: true,
+      });
+
+      expect(result.status).toBe('committed');
+      const projectInput = projectWriter.write.mock.calls[0]?.[0];
+      expect(projectInput?.normalizedFields['客户关联']).toBeUndefined();
+      expect(projectInput?.normalizedFields['模特关联']).toEqual([
+        result.write_results.find((item) => item.entity_type === 'model')?.business_record_id,
+      ]);
+    });
+  });
+
+  describe('production-pilot durable compensation', () => {
+    it('deletes project before model before customer when timestamps tie', async () => {
+      const manifestRepository = new InMemoryRunManifestRepository();
+      const previewId = 'preview_compensation_dependency_order';
+      await manifestRepository.createGenerated({
+        previewId,
+        ingestionId: 'ing_compensation_dependency_order',
+        runId: 'pilot-compensation-dependency-order',
+        previewDigest: 'c'.repeat(64),
+        operator: 'reviewer_compensation_order',
+        createdAt: '2026-08-01T07:00:00.000Z',
+        expiresAt: '2026-08-01T07:15:00.000Z',
+      });
+      await manifestRepository.confirm(previewId, 'reviewer_compensation_order', '2026-08-01T07:00:01.000Z');
+      await manifestRepository.consume(previewId, '2026-08-01T07:00:02.000Z');
+      const tiedTimestamp = '2026-08-01T07:00:03.000Z';
+      await manifestRepository.recordCreated(previewId, {
+        entity: 'customer', recordId: 'rec_order_customer', createdAt: tiedTimestamp,
+      });
+      await manifestRepository.recordCreated(previewId, {
+        entity: 'model', recordId: 'rec_order_model', createdAt: tiedTimestamp,
+      });
+      await manifestRepository.recordCreated(previewId, {
+        entity: 'project', recordId: 'rec_order_project', createdAt: tiedTimestamp,
+      });
+      await manifestRepository.markCompensationRequired(previewId);
+
+      const deleteOrder: string[] = [];
+      customerWriter.deleteRecord = vi.fn(async (recordId) => { deleteOrder.push(recordId); });
+      modelWriter.deleteRecord = vi.fn(async (recordId) => { deleteOrder.push(recordId); });
+      projectWriter.deleteRecord = vi.fn(async (recordId) => { deleteOrder.push(recordId); });
+      const restartedWriter = new TransactionalBatchWriter(
+        customerWriter as unknown as CustomerRecordWriter,
+        projectWriter as unknown as ProjectRecordWriter,
+        modelWriter as unknown as ModelRecordWriter,
+        writeLogRepository,
+        manifestRepository,
+      );
+
+      await restartedWriter.recoverPendingCompensations();
+
+      expect(deleteOrder).toEqual([
+        'rec_order_project',
+        'rec_order_model',
+        'rec_order_customer',
+      ]);
+    });
+
+    it('emits compensation started before delete and completed after delete', async () => {
+      const events: string[] = [];
+      customerWriter.deleteRecord = vi.fn(async () => {
+        events.push('delete');
+      });
+      projectWriter = createMockWriter('project', 'fail');
+      const batchWriter = new TransactionalBatchWriter(
+        customerWriter as unknown as CustomerRecordWriter,
+        projectWriter as unknown as ProjectRecordWriter,
+        modelWriter as unknown as ModelRecordWriter,
+        writeLogRepository
+      );
+
+      const result = await batchWriter.writeBatch({
+        ingestionId: 'ing_compensation_order_001',
+        normalizedFields: {},
+        targetTables: ['customer', 'project'],
+        onCompensationStarted: async () => {
+          events.push('started');
+        },
+        onCompensationCompleted: async () => {
+          events.push('completed');
+        },
+      });
+
+      expect(result.status).toBe('rolled_back');
+      expect(events).toEqual(['started', 'delete', 'completed']);
+    });
+
+    it('recovers exact created record ids from a manifest after writer restart', async () => {
+      const manifestRepository = new InMemoryRunManifestRepository();
+      const previewId = 'preview_restart_recovery_001';
+      await manifestRepository.createGenerated({
+        previewId,
+        ingestionId: 'ing_restart_recovery_001',
+        runId: 'pilot-restart-recovery-001',
+        previewDigest: 'b'.repeat(64),
+        operator: 'reviewer_restart',
+        createdAt: '2026-08-01T07:00:00.000Z',
+        expiresAt: '2026-08-01T07:15:00.000Z',
+      });
+      await manifestRepository.confirm(previewId, 'reviewer_restart', '2026-08-01T07:00:01.000Z');
+      await manifestRepository.consume(previewId, '2026-08-01T07:00:02.000Z');
+      await manifestRepository.recordCreated(previewId, {
+        entity: 'customer',
+        recordId: 'rec_restart_customer',
+        createdAt: '2026-08-01T07:00:03.000Z',
+      });
+      await manifestRepository.recordCreated(previewId, {
+        entity: 'project',
+        recordId: 'rec_restart_project',
+        createdAt: '2026-08-01T07:00:04.000Z',
+      });
+      await manifestRepository.markCompensationRequired(previewId);
+
+      const restartedWriter = new TransactionalBatchWriter(
+        customerWriter as unknown as CustomerRecordWriter,
+        projectWriter as unknown as ProjectRecordWriter,
+        modelWriter as unknown as ModelRecordWriter,
+        writeLogRepository,
+        manifestRepository
+      );
+
+      const outcomes = await restartedWriter.recoverPendingCompensations();
+
+      expect(outcomes).toEqual([{ previewId, status: 'compensated' }]);
+      expect(customerWriter.deleteRecord).toHaveBeenCalledWith('rec_restart_customer');
+      expect(projectWriter.deleteRecord).toHaveBeenCalledWith('rec_restart_project');
+      expect((await manifestRepository.findByPreviewId(previewId))?.status).toBe('compensated');
     });
   });
 

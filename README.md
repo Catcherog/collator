@@ -58,3 +58,4 @@ curl http://localhost:8787/readyz
 - `docs/API_CONTRACT.md` — 接口合同（待 Phase 1 完善）
 - `docs/FEISHU_SETUP.md` — 飞书配置（待 Phase 3）
 - `docs/OPERATIONS.md` — 运维说明（待 Phase 5）
+- `docs/ai/internal-controlled-write.md` — 内部受控飞书写入边界、回查和单实例约束

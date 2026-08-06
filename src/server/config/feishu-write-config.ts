@@ -3,17 +3,23 @@
 // Create Record API calls.
 //
 // Layer 1 (existing `config.ts`): TASK_REPOSITORY + DRY_RUN.
-// Layer 2 (THIS file): ENABLE_REAL_FEISHU_WRITE + FEISHU_WRITE_ENV + test
-// whitelist.
+// Layer 2 (THIS file): ENABLE_REAL_FEISHU_WRITE + FEISHU_WRITE_ENV + the
+// environment-specific whitelist. Production uses a separate
+// `production-pilot` mode and never the generic `production` value.
 //
 // The gate function `isRealWriteAllowed` is the SINGLE fail-closed decision
 // point. It checks ALL 6 conditions from Amendment 6. If ANY condition is
 // missing it returns `{ allowed: false, reason }` and the caller MUST NOT
 // call the Feishu Create Record API.
 //
-// This batch does NOT enable FEISHU_WRITE_ENV=production. The gate only
-// allows `feishuWriteEnv === 'test'` and only against the test whitelist.
+// The legacy test gate remains unchanged. The production-pilot gate is a
+// separate, stricter path with its own whitelist, one-shot run id, record
+// limit, server-owned preview confirmation and an authenticated operator.
 //
+import type { WriteTable } from '../business/write-plan.js';
+import type { ProductionPilotRunManifest } from '../repositories/run-manifest-repository.js';
+import { sha256Hex } from './production-pilot.js';
+
 // Security (AC-C12): reasons are static diagnostic strings. They never echo
 // env values, secrets, tokens, or PII — so logging a blocked reason cannot
 // leak FEISHU_APP_SECRET or any other credential.
@@ -23,9 +29,51 @@
  *
  * `production` is defined for type completeness but is NOT enabled by this
  * batch — `isRealWriteAllowed` only returns `allowed: true` when
- * `feishuWriteEnv === 'test'`.
+ * `feishuWriteEnv === 'test'`; the internal-controlled lane has its own
+ * independent gate below.
  */
-export type FeishuWriteEnv = 'test' | 'production';
+export type FeishuWriteEnv = 'test' | 'internal-controlled' | 'production-pilot' | 'production';
+
+export type FeishuWriteMode = 'test' | 'internal-controlled' | 'production-pilot' | 'blocked';
+
+export interface FeishuTargetWhitelist {
+  baseAppToken?: string;
+  tableIds: string[];
+}
+
+export interface ProductionPilotConfig {
+  enabled: boolean;
+  maxRecords: number;
+  /** One run id bound when the process starts; empty means blocked. */
+  pilotRunId?: string;
+  /** Notifications stay off for the first controlled pilot. */
+  notificationsEnabled: boolean;
+}
+
+/**
+ * The deliberately narrow internal write lane.  This is not a production
+ * pilot flag: it is a separately named, operator-confirmed, best-effort
+ * single-instance mode whose default is disabled.
+ */
+export interface InternalControlledWriteConfig {
+  enabled: boolean;
+  maxConcurrency: 1;
+  requireHumanConfirmation: boolean;
+  autoRetryCreate: false;
+  reconciliationEnabled: boolean;
+  notificationsEnabled: boolean;
+  maxExecutionMs: number;
+  previewTtlMs: number;
+  whitelist: FeishuTargetWhitelist;
+  markerFields: Partial<Record<WriteTable, string>>;
+}
+
+/** Runtime readiness of the three durable production-pilot boundaries. */
+export interface ProductionPilotRepositoryReadiness {
+  auditLogRepository: boolean;
+  writeLogRepository: boolean;
+  runManifestRepository: boolean;
+}
 
 /**
  * Aggregate of every input the gate needs to evaluate. This is the
@@ -55,6 +103,14 @@ export interface FeishuWriteConfig {
     baseAppToken?: string;
     tableIds: string[];
   };
+  /** Explicit mode. Generic `production` resolves to `blocked`. */
+  writeMode?: FeishuWriteMode;
+  /** Separate exact whitelist for the controlled production pilot. */
+  productionPilotWhitelist?: FeishuTargetWhitelist;
+  /** Fail-closed pilot controls. */
+  productionPilot?: ProductionPilotConfig;
+  /** Separate internal-controlled lane; omitted only for legacy hand-built fixtures. */
+  internalControlledWrite?: InternalControlledWriteConfig;
 }
 
 /**
@@ -90,6 +146,24 @@ function parseBooleanEnv(value: string | undefined, defaultValue: boolean): bool
   return value.trim().toLowerCase() === 'true';
 }
 
+function parseNonNegativeInteger(value: string | undefined, defaultValue: number): number {
+  if (value === undefined || value.trim() === '') return defaultValue;
+  const parsed = Number(value.trim());
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : defaultValue;
+}
+
+function parsePositiveInteger(value: string | undefined, defaultValue: number): number {
+  const parsed = parseNonNegativeInteger(value, defaultValue);
+  return parsed > 0 ? parsed : defaultValue;
+}
+
+function parseCsv(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
 /**
  * Load the double-layer gate config from an environment map (defaults to
  * `process.env`).
@@ -98,9 +172,12 @@ function parseBooleanEnv(value: string | undefined, defaultValue: boolean): bool
  * - `TASK_REPOSITORY`             → `taskRepository` (`'feishu'` only; else `'memory'`)
  * - `DRY_RUN`                     → `dryRun` (parsed via `parseBooleanEnv`)
  * - `ENABLE_REAL_FEISHU_WRITE`    → `enableRealFeishuWrite` (default `false`)
- * - `FEISHU_WRITE_ENV`            → `feishuWriteEnv` (`'test'` | `'production'`; else `undefined`)
+ * - `FEISHU_WRITE_ENV`            → `feishuWriteEnv` (`'test'` | `'internal-controlled'` | `'production-pilot'` | `'production'`; else `undefined`)
  * - `FEISHU_TEST_BASE_APP_TOKEN`  → `testWhitelist.baseAppToken`
  * - `FEISHU_TEST_TABLE_IDS`       → `testWhitelist.tableIds` (comma-separated)
+ * - `FEISHU_PRODUCTION_PILOT_BASE_APP_TOKEN` / `_TABLE_IDS` → separate pilot whitelist
+ * - `ENABLE_PRODUCTION_PILOT`, `PRODUCTION_PILOT_MAX_RECORDS`,
+ *   `PRODUCTION_PILOT_RUN_ID`, `ENABLE_PRODUCTION_PILOT_NOTIFICATIONS`
  *
  * This function NEVER throws on a missing layer-2 value: a missing value is
  * a legitimate "blocked" state that the gate reports via its `reason`. The
@@ -118,7 +195,24 @@ export function loadFeishuWriteConfig(
 
   const rawEnv = env.FEISHU_WRITE_ENV?.trim().toLowerCase();
   const feishuWriteEnv: FeishuWriteEnv | undefined =
-    rawEnv === 'test' ? 'test' : rawEnv === 'production' ? 'production' : undefined;
+    rawEnv === 'test'
+      ? 'test'
+      : rawEnv === 'internal-controlled'
+        ? 'internal-controlled'
+        : rawEnv === 'production-pilot'
+          ? 'production-pilot'
+          : rawEnv === 'production'
+            ? 'production'
+            : undefined;
+
+  const writeMode: FeishuWriteMode =
+    rawEnv === 'test'
+      ? 'test'
+      : rawEnv === 'internal-controlled'
+        ? 'internal-controlled'
+        : rawEnv === 'production-pilot'
+          ? 'production-pilot'
+          : 'blocked';
 
   const baseAppTokenRaw = env.FEISHU_TEST_BASE_APP_TOKEN?.trim();
   const baseAppToken = baseAppTokenRaw && baseAppTokenRaw.length > 0 ? baseAppTokenRaw : undefined;
@@ -129,6 +223,51 @@ export function loadFeishuWriteConfig(
     .map((id) => id.trim())
     .filter((id) => id.length > 0);
 
+  const pilotBaseAppTokenRaw = env.FEISHU_PRODUCTION_PILOT_BASE_APP_TOKEN?.trim();
+  const pilotBaseAppToken =
+    pilotBaseAppTokenRaw && pilotBaseAppTokenRaw.length > 0 ? pilotBaseAppTokenRaw : undefined;
+  const pilotTableIds = (env.FEISHU_PRODUCTION_PILOT_TABLE_IDS ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+  const pilotRunIdRaw = env.PRODUCTION_PILOT_RUN_ID?.trim();
+  const pilotRunId = pilotRunIdRaw && pilotRunIdRaw.length > 0 ? pilotRunIdRaw : undefined;
+
+  const rawInternalMaxConcurrency = env.INTERNAL_WRITE_MAX_CONCURRENCY?.trim();
+  const internalMaxConcurrency = rawInternalMaxConcurrency === undefined || rawInternalMaxConcurrency === ''
+    ? 1
+    : Number(rawInternalMaxConcurrency);
+  if (!Number.isInteger(internalMaxConcurrency) || internalMaxConcurrency !== 1) {
+    throw new Error('INTERNAL_WRITE_MAX_CONCURRENCY must be 1');
+  }
+  const internalAutoRetryCreate = parseBooleanEnv(env.INTERNAL_WRITE_AUTO_RETRY_CREATE, false);
+  if (internalAutoRetryCreate) {
+    throw new Error('INTERNAL_WRITE_AUTO_RETRY_CREATE must be false');
+  }
+  const internalEnabled = parseBooleanEnv(env.ENABLE_INTERNAL_CONTROLLED_WRITE, false);
+  const internalRequiresConfirmation = parseBooleanEnv(
+    env.INTERNAL_WRITE_REQUIRE_HUMAN_CONFIRMATION,
+    true,
+  );
+  if (internalEnabled && !internalRequiresConfirmation) {
+    throw new Error('INTERNAL_WRITE_REQUIRE_HUMAN_CONFIRMATION must be true');
+  }
+  const internalBaseAppTokenRaw = env.FEISHU_INTERNAL_CONTROLLED_BASE_APP_TOKEN?.trim();
+  const internalBaseAppToken = internalBaseAppTokenRaw && internalBaseAppTokenRaw.length > 0
+    ? internalBaseAppTokenRaw
+    : undefined;
+  const internalTableIds = parseCsv(env.FEISHU_INTERNAL_CONTROLLED_TABLE_IDS);
+  const markerFields: Partial<Record<WriteTable, string>> = {};
+  const markerFieldEnv: Array<[WriteTable, string | undefined]> = [
+    ['customer', env.FEISHU_CUSTOMER_WRITE_KEY_FIELD],
+    ['project', env.FEISHU_PROJECT_WRITE_KEY_FIELD],
+    ['model', env.FEISHU_MODEL_WRITE_KEY_FIELD],
+  ];
+  for (const [table, value] of markerFieldEnv) {
+    const marker = value?.trim();
+    if (marker) markerFields[table] = marker;
+  }
+
   return {
     taskRepository,
     dryRun,
@@ -137,6 +276,41 @@ export function loadFeishuWriteConfig(
     testWhitelist: {
       baseAppToken,
       tableIds,
+    },
+    writeMode,
+    productionPilotWhitelist: {
+      baseAppToken: pilotBaseAppToken,
+      tableIds: pilotTableIds,
+    },
+    productionPilot: {
+      enabled: parseBooleanEnv(env.ENABLE_PRODUCTION_PILOT, false),
+      maxRecords: parseNonNegativeInteger(env.PRODUCTION_PILOT_MAX_RECORDS, 0),
+      pilotRunId,
+      notificationsEnabled: parseBooleanEnv(
+        env.ENABLE_PRODUCTION_PILOT_NOTIFICATIONS,
+        false
+      ),
+    },
+    internalControlledWrite: {
+      enabled: internalEnabled,
+      maxConcurrency: 1,
+      requireHumanConfirmation: internalRequiresConfirmation,
+      autoRetryCreate: false,
+      reconciliationEnabled: parseBooleanEnv(
+        env.INTERNAL_WRITE_RECONCILIATION_ENABLED,
+        true,
+      ),
+      notificationsEnabled: parseBooleanEnv(
+        env.INTERNAL_WRITE_NOTIFICATIONS_ENABLED,
+        false,
+      ),
+      maxExecutionMs: parsePositiveInteger(env.INTERNAL_WRITE_TIMEOUT_MS, 120_000),
+      previewTtlMs: parsePositiveInteger(env.INTERNAL_WRITE_PREVIEW_TTL_MS, 15 * 60 * 1000),
+      whitelist: {
+        baseAppToken: internalBaseAppToken,
+        tableIds: internalTableIds,
+      },
+      markerFields,
     },
   };
 }
@@ -265,4 +439,243 @@ export function isRealWriteAllowed(
     allowed: true,
     reason: 'All 6 gate conditions met: real Feishu write allowed (test env, whitelisted target).',
   };
+}
+
+export interface ProductionPilotWriteGateInput {
+  ingestionId: string;
+  governanceDecision: GovernanceDecisionInput;
+  targetBaseToken?: string;
+  targetTableId?: string;
+  targetTables: readonly WriteTable[];
+  targetTableIds: Partial<Record<WriteTable, string | undefined>>;
+  repositoryReadiness?: ProductionPilotRepositoryReadiness;
+  pilotRunId?: string;
+  operator?: string;
+  candidateDigest?: string;
+  governanceDigest?: string;
+  authoritativePlanDigest?: string;
+  manifest?: ProductionPilotRunManifest;
+}
+
+/**
+ * Independent production-pilot gate. It deliberately does not reuse the
+ * test whitelist or accept the generic `production` environment.
+ */
+export function isProductionPilotWriteAllowed(
+  config: FeishuWriteConfig,
+  input: ProductionPilotWriteGateInput
+): RealWriteGateResult {
+  if (config.taskRepository !== 'feishu') {
+    return { allowed: false, reason: 'Production pilot blocked: TASK_REPOSITORY is not feishu.' };
+  }
+  if (config.dryRun) {
+    return { allowed: false, reason: 'Production pilot blocked: DRY_RUN is enabled.' };
+  }
+  if (!config.enableRealFeishuWrite) {
+    return {
+      allowed: false,
+      reason: 'Production pilot blocked: real Feishu writes are disabled.',
+    };
+  }
+  if (config.writeMode !== 'production-pilot' || config.feishuWriteEnv !== 'production-pilot') {
+    return {
+      allowed: false,
+      reason: 'Production pilot blocked: write mode is not production-pilot.',
+    };
+  }
+
+  const pilot = config.productionPilot;
+  if (!pilot?.enabled) {
+    return { allowed: false, reason: 'Production pilot blocked: pilot enablement is false.' };
+  }
+  if (pilot.notificationsEnabled) {
+    return { allowed: false, reason: 'Production pilot blocked: notifications are enabled.' };
+  }
+
+  const readiness = input.repositoryReadiness;
+  if (
+    !readiness?.auditLogRepository
+    || !readiness.writeLogRepository
+    || !readiness.runManifestRepository
+  ) {
+    return {
+      allowed: false,
+      reason: 'Production pilot blocked: durable repositories (audit, write log, run manifest) are not all assembled.',
+    };
+  }
+
+  const whitelist = config.productionPilotWhitelist;
+  if (!whitelist?.baseAppToken || whitelist.tableIds.length === 0) {
+    return { allowed: false, reason: 'Production pilot blocked: production whitelist is empty.' };
+  }
+  if (!input.targetBaseToken || input.targetBaseToken !== whitelist.baseAppToken) {
+    return { allowed: false, reason: 'Production pilot blocked: target Base is not allow-listed.' };
+  }
+  if (!input.targetTableId || !whitelist.tableIds.includes(input.targetTableId)) {
+    return { allowed: false, reason: 'Production pilot blocked: target table is not allow-listed.' };
+  }
+
+  if (normalizeDecision(input.governanceDecision) !== 'PASS') {
+    return { allowed: false, reason: 'Production pilot blocked: SOP decision is not PASS.' };
+  }
+
+  if (!pilot.pilotRunId || !input.pilotRunId || pilot.pilotRunId !== input.pilotRunId) {
+    return { allowed: false, reason: 'Production pilot blocked: the server-bound pilot run is missing or mismatched.' };
+  }
+  if (
+    input.targetTables.length === 0 ||
+    new Set(input.targetTables).size !== input.targetTables.length ||
+    pilot.maxRecords <= 0 ||
+    input.targetTables.length > pilot.maxRecords
+  ) {
+    return { allowed: false, reason: 'Production pilot blocked: target plan is empty, duplicated, or exceeds the record limit.' };
+  }
+  if (!input.operator) {
+    return { allowed: false, reason: 'Production pilot blocked: authenticated operator is missing.' };
+  }
+  const manifest = input.manifest;
+  if (!manifest || manifest.status !== 'consumed') {
+    return { allowed: false, reason: 'Production pilot blocked: server manifest is not consumed.' };
+  }
+  if (
+    manifest.ingestionId !== input.ingestionId
+    || manifest.operator !== input.operator
+    || manifest.runId !== input.pilotRunId
+  ) {
+    return { allowed: false, reason: 'Production pilot blocked: server manifest binding does not match execution context.' };
+  }
+  if (
+    !manifest.targetTables
+    || manifest.targetTables.length !== input.targetTables.length
+    || manifest.targetTables.some((table, index) => table !== input.targetTables[index])
+  ) {
+    return { allowed: false, reason: 'Production pilot blocked: authoritative target plan does not match the manifest.' };
+  }
+  if (input.candidateDigest && manifest.candidateDigest !== input.candidateDigest) {
+    return { allowed: false, reason: 'Production pilot blocked: candidate binding does not match the manifest.' };
+  }
+  if (input.governanceDigest && manifest.governanceDigest !== input.governanceDigest) {
+    return { allowed: false, reason: 'Production pilot blocked: governance binding does not match the manifest.' };
+  }
+  if (input.authoritativePlanDigest && manifest.authoritativePlanDigest !== input.authoritativePlanDigest) {
+    return { allowed: false, reason: 'Production pilot blocked: write-plan binding does not match the manifest.' };
+  }
+  for (const table of input.targetTables) {
+    const tableId = input.targetTableIds[table];
+    if (!tableId || manifest.targetTableDigests?.[table] !== sha256Hex(tableId)) {
+      return { allowed: false, reason: 'Production pilot blocked: target table binding does not match the manifest.' };
+    }
+  }
+  if (manifest.baseTokenDigest !== sha256Hex(input.targetBaseToken ?? '')) {
+    return { allowed: false, reason: 'Production pilot blocked: target Base binding does not match the manifest.' };
+  }
+
+  return {
+    allowed: true,
+    reason: 'Production pilot conditions satisfied; controlled write may proceed.',
+  };
+}
+
+export interface InternalControlledWritePreviewBinding {
+  status: 'confirmed' | 'executing' | 'verifying';
+  candidateDigest: string;
+  governanceDigest: string;
+  authoritativePlanDigest: string;
+  operator: string;
+}
+
+export interface InternalControlledWriteGateInput {
+  ingestionId?: string;
+  governanceDecision: GovernanceDecisionInput;
+  targetBaseToken?: string;
+  targetTableId?: string;
+  targetTables: readonly WriteTable[];
+  targetTableIds: Partial<Record<WriteTable, string | undefined>>;
+  candidateId?: string;
+  requestedCandidateId?: string;
+  candidateDigest?: string;
+  governanceDigest?: string;
+  authoritativePlanDigest?: string;
+  operator?: string;
+  humanConfirmed?: boolean;
+  dryRun?: boolean;
+  preview?: InternalControlledWritePreviewBinding;
+}
+
+/**
+ * Fail-closed gate for the internal-controlled lane.  Every value returned
+ * in `reason` is static so blocked diagnostics cannot disclose table tokens,
+ * record IDs, candidate content, or operator input.
+ */
+export function isInternalControlledWriteAllowed(
+  config: FeishuWriteConfig,
+  input: InternalControlledWriteGateInput,
+): RealWriteGateResult {
+  const internal = config.internalControlledWrite;
+  if (!internal?.enabled || config.writeMode !== 'internal-controlled' || config.feishuWriteEnv !== 'internal-controlled') {
+    return { allowed: false, reason: 'Internal controlled write blocked: lane is disabled or mode is not internal-controlled.' };
+  }
+  if (config.taskRepository !== 'feishu') {
+    return { allowed: false, reason: 'Internal controlled write blocked: TASK_REPOSITORY is not feishu.' };
+  }
+  if (config.dryRun || input.dryRun) {
+    return { allowed: false, reason: 'Internal controlled write blocked: DRY_RUN is enabled.' };
+  }
+  if (!config.enableRealFeishuWrite) {
+    return { allowed: false, reason: 'Internal controlled write blocked: real Feishu writes are disabled.' };
+  }
+  if (internal.maxConcurrency !== 1 || internal.autoRetryCreate) {
+    return { allowed: false, reason: 'Internal controlled write blocked: unsafe concurrency or retry policy is configured.' };
+  }
+  if (internal.notificationsEnabled) {
+    return { allowed: false, reason: 'Internal controlled write blocked: notifications must remain disabled.' };
+  }
+  if (!internal.requireHumanConfirmation || !input.humanConfirmed) {
+    return { allowed: false, reason: 'Internal controlled write blocked: authenticated human confirmation is required.' };
+  }
+  if (!input.operator?.trim()) {
+    return { allowed: false, reason: 'Internal controlled write blocked: authenticated operator is missing.' };
+  }
+  if (input.preview?.operator !== input.operator) {
+    return { allowed: false, reason: 'Internal controlled write blocked: operator binding does not match the server preview.' };
+  }
+  if (input.candidateId !== input.requestedCandidateId) {
+    return { allowed: false, reason: 'Internal controlled write blocked: candidate binding does not match.' };
+  }
+  if (!input.preview || input.preview.status !== 'confirmed' && input.preview.status !== 'executing' && input.preview.status !== 'verifying') {
+    return { allowed: false, reason: 'Internal controlled write blocked: server preview is not confirmed.' };
+  }
+  if (
+    !input.candidateDigest
+    || !input.governanceDigest
+    || !input.authoritativePlanDigest
+    || input.preview.candidateDigest !== input.candidateDigest
+    || input.preview.governanceDigest !== input.governanceDigest
+    || input.preview.authoritativePlanDigest !== input.authoritativePlanDigest
+  ) {
+    return { allowed: false, reason: 'Internal controlled write blocked: authoritative preview bindings are stale.' };
+  }
+  if (normalizeDecision(input.governanceDecision) !== 'PASS') {
+    return { allowed: false, reason: 'Internal controlled write blocked: SOP decision is not PASS.' };
+  }
+  if (input.targetTables.length === 0 || new Set(input.targetTables).size !== input.targetTables.length) {
+    return { allowed: false, reason: 'Internal controlled write blocked: authoritative plan is empty or duplicated.' };
+  }
+  const whitelist = internal.whitelist;
+  if (!whitelist.baseAppToken || whitelist.tableIds.length === 0) {
+    return { allowed: false, reason: 'Internal controlled write blocked: internal Base/table allowlist is incomplete.' };
+  }
+  if (input.targetBaseToken !== whitelist.baseAppToken) {
+    return { allowed: false, reason: 'Internal controlled write blocked: target Base is not allow-listed.' };
+  }
+  for (const table of input.targetTables) {
+    const tableId = input.targetTableIds[table];
+    if (!tableId || !whitelist.tableIds.includes(tableId)) {
+      return { allowed: false, reason: 'Internal controlled write blocked: target table is not allow-listed.' };
+    }
+  }
+  if (!input.targetTableId || !whitelist.tableIds.includes(input.targetTableId)) {
+    return { allowed: false, reason: 'Internal controlled write blocked: target table is not allow-listed.' };
+  }
+  return { allowed: true, reason: 'Internal controlled write conditions satisfied.' };
 }

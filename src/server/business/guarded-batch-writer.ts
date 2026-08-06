@@ -10,11 +10,24 @@
 // writeBatch 输入中带上 governanceDecision 与 targetBaseToken。
 
 import {
+  isInternalControlledWriteAllowed,
+  isProductionPilotWriteAllowed,
   isRealWriteAllowed,
   type FeishuWriteConfig,
   type GovernanceDecisionInput,
+  type ProductionPilotRepositoryReadiness,
 } from '../config/feishu-write-config.js';
-import type { BatchWriterPort, TransactionalBatchWriterInput, TransactionalBatchWriterResult } from './transactional-batch-writer.js';
+import type { InternalWritePreview } from '../repositories/internal-write-repository.js';
+import type {
+  ProductionPilotRunManifest,
+  RunManifestRepository,
+} from '../repositories/run-manifest-repository.js';
+import type {
+  BatchWriterPort,
+  ExistingRecordVerificationInput,
+  TransactionalBatchWriterInput,
+  TransactionalBatchWriterResult,
+} from './transactional-batch-writer.js';
 import type { WriteResult } from '../../contracts/screenshot-api-v1.js';
 
 /**
@@ -26,6 +39,21 @@ import type { WriteResult } from '../../contracts/screenshot-api-v1.js';
 export interface GuardedWriteBatchInput extends TransactionalBatchWriterInput {
   governanceDecision: GovernanceDecisionInput;
   targetBaseToken?: string;
+  /** Single run id bound by the production-pilot process configuration. */
+  pilotRunId?: string;
+  /** Authenticated operator identity bound to the server manifest. */
+  operator?: string;
+  /** Candidate/governance/plan digests are server-computed execution bindings. */
+  candidateDigest?: string;
+  governanceDigest?: string;
+  authoritativePlanDigest?: string;
+  /** Internal server-owned manifest; never accepted from the HTTP body. */
+  pilotManifest?: ProductionPilotRunManifest;
+  /** Server-only binding for the internal-controlled lane. */
+  internalControlledWrite?: boolean;
+  requestedCandidateId?: string;
+  humanConfirmed?: boolean;
+  internalPreview?: InternalWritePreview;
 }
 
 /**
@@ -39,6 +67,7 @@ export interface GuardedBatchWriterResult {
   records_created: number;
   records_rolled_back: number;
   error_code?: string;
+  post_write_verified?: boolean;
   /** The gate evaluation that decided this write. */
   gate: { allowed: boolean; reason: string };
 }
@@ -55,34 +84,112 @@ export interface GuardedBatchWriterResult {
  *   `status: 'blocked'` with `error_code: 'GATE_BLOCKED'`.
  *
  * When the gate allows all targets, the call delegates to the inner
- * `BatchWriterPort` (typically `TransactionalBatchWriter`) unchanged.
+ * `BatchWriterPort` (typically `TransactionalBatchWriter`). Production-pilot
+ * mode adds the mandatory read-back verification flag before delegation.
  */
 export class GuardedBatchWriter {
   constructor(
     private readonly gateConfig: FeishuWriteConfig,
-    private readonly inner: BatchWriterPort
+    private readonly inner: BatchWriterPort,
+    private readonly pilotRepositoryReadiness: ProductionPilotRepositoryReadiness = {
+      auditLogRepository: false,
+      writeLogRepository: false,
+      runManifestRepository: false,
+    },
+    private readonly runManifestRepository?: RunManifestRepository
   ) {}
 
-  async writeBatch(input: GuardedWriteBatchInput): Promise<GuardedBatchWriterResult> {
+  async preflight(input: GuardedWriteBatchInput): Promise<{ allowed: boolean; reason: string }> {
     const targetTables = input.targetTables ?? ['customer', 'project', 'model'];
+
+    if (targetTables.length === 0) {
+      return { allowed: false, reason: 'Write gate blocked: no target tables were planned.' };
+    }
+    if (this.gateConfig.writeMode === 'internal-controlled' && !input.internalControlledWrite) {
+      return { allowed: false, reason: 'Internal controlled write blocked: dedicated server execution context is required.' };
+    }
 
     // Evaluate the gate for each target table. Fail closed on the first
     // disallowed target so NO Create Record call is ever issued.
     for (const table of targetTables) {
       const tableId = this.getTableId(table, input);
-      const gate = isRealWriteAllowed(
-        this.gateConfig,
-        input.governanceDecision,
-        input.targetBaseToken,
-        tableId
-      );
+      const gate = this.gateConfig.writeMode === 'internal-controlled'
+        ? isInternalControlledWriteAllowed(this.gateConfig, {
+            ingestionId: input.ingestionId,
+            governanceDecision: input.governanceDecision,
+            targetBaseToken: input.targetBaseToken,
+            targetTableId: tableId,
+            targetTables,
+            targetTableIds: this.getTargetTableIds(targetTables, input),
+            candidateId: input.candidateId,
+            requestedCandidateId: input.requestedCandidateId,
+            candidateDigest: input.candidateDigest,
+            governanceDigest: input.governanceDigest,
+            authoritativePlanDigest: input.authoritativePlanDigest,
+            operator: input.operator,
+            humanConfirmed: input.humanConfirmed,
+            dryRun: input.dryRun,
+            preview: input.internalPreview
+              && ['confirmed', 'executing', 'verifying'].includes(input.internalPreview.status)
+              ? {
+                  status: input.internalPreview.status as 'confirmed' | 'executing' | 'verifying',
+                  candidateDigest: input.internalPreview.candidate_digest,
+                  governanceDigest: input.internalPreview.governance_digest,
+                  authoritativePlanDigest: input.internalPreview.authoritative_plan_digest,
+                  operator: input.internalPreview.operator,
+                }
+              : undefined,
+          })
+        : this.gateConfig.writeMode === 'production-pilot'
+        ? isProductionPilotWriteAllowed(this.gateConfig, {
+            ingestionId: input.ingestionId,
+            governanceDecision: input.governanceDecision,
+            targetBaseToken: input.targetBaseToken,
+            targetTableId: tableId,
+            targetTables,
+            targetTableIds: this.getTargetTableIds(targetTables, input),
+            repositoryReadiness: this.pilotRepositoryReadiness,
+            pilotRunId: input.pilotRunId,
+            operator: input.operator,
+            candidateDigest: input.candidateDigest,
+            governanceDigest: input.governanceDigest,
+            authoritativePlanDigest: input.authoritativePlanDigest,
+            manifest: input.pilotManifest,
+          })
+        : isRealWriteAllowed(
+            this.gateConfig,
+            input.governanceDecision,
+            input.targetBaseToken,
+            tableId
+          );
       if (!gate.allowed) {
-        return this.blockedResult(input.ingestionId, targetTables, input, gate.reason);
+        return gate;
       }
     }
 
-    // All targets allowed — delegate to the inner writer.
-    const innerResult = await this.inner.writeBatch(input);
+    return { allowed: true, reason: 'All gate conditions met; inner writer may be invoked.' };
+  }
+
+  async writeBatch(input: GuardedWriteBatchInput): Promise<GuardedBatchWriterResult> {
+    const targetTables = input.targetTables ?? ['customer', 'project', 'model'];
+    const gate = await this.preflight(input);
+    if (!gate.allowed) {
+      return this.blockedResult(input.ingestionId, targetTables, input, gate.reason);
+    }
+
+    // All targets allowed — delegate to the inner writer. Production-pilot
+    // writes must read records back before they can be reported committed.
+    const innerInput = this.gateConfig.writeMode === 'production-pilot' || this.gateConfig.writeMode === 'internal-controlled'
+      ? {
+          ...input,
+          verifyAfterWrite: true,
+          enforceProjectRelationContext: true,
+          requireDurableWriteLogs: true,
+          compensationPolicy: this.gateConfig.writeMode === 'internal-controlled' ? 'manual' as const : input.compensationPolicy,
+          runManifestRepository: input.runManifestRepository ?? this.runManifestRepository,
+        }
+      : input;
+    const innerResult = await this.inner.writeBatch(innerInput);
     return {
       write_results: innerResult.write_results,
       transaction_snapshot_id: innerResult.transaction_snapshot_id,
@@ -90,8 +197,35 @@ export class GuardedBatchWriter {
       records_created: innerResult.records_created,
       records_rolled_back: innerResult.records_rolled_back,
       error_code: innerResult.error_code,
-      gate: { allowed: true, reason: 'All gate conditions met; inner writer invoked.' },
+      post_write_verified: innerResult.post_write_verified,
+      gate,
     };
+  }
+
+  async recoverPendingCompensations(hooks?: {
+    onCompensationStarted?: (recordCount: number) => Promise<void>;
+    onCompensationCompleted?: (status: 'completed' | 'failed', recordCount: number) => Promise<void>;
+  }): Promise<Array<{ previewId: string; status: 'compensated' | 'compensation_failed' }>> {
+    return this.inner.recoverPendingCompensations?.(hooks) ?? [];
+  }
+
+  async findByIngestionId(
+    entity: 'customer' | 'project' | 'model',
+    ingestionId: string,
+    normalizedFields?: Record<string, unknown>,
+  ): Promise<string[]> {
+    return this.inner.findByIngestionId?.(entity, ingestionId, normalizedFields) ?? [];
+  }
+
+  async verifyExistingByIngestion(
+    entity: 'customer' | 'project' | 'model',
+    recordId: string,
+    input: ExistingRecordVerificationInput,
+  ): Promise<void> {
+    if (!this.inner.verifyExistingByIngestion) {
+      throw new Error('EXISTING_RECORD_VERIFICATION_UNAVAILABLE');
+    }
+    return this.inner.verifyExistingByIngestion(entity, recordId, input);
   }
 
   private blockedResult(
@@ -125,5 +259,16 @@ export class GuardedBatchWriter {
     if (table === 'customer') return input.customerTableId ?? 'customer';
     if (table === 'project') return input.projectTableId ?? 'project';
     return input.modelTableId ?? 'model';
+  }
+
+  private getTargetTableIds(
+    targetTables: Array<'customer' | 'project' | 'model'>,
+    input: GuardedWriteBatchInput
+  ): Partial<Record<'customer' | 'project' | 'model', string>> {
+    const targetTableIds: Partial<Record<'customer' | 'project' | 'model', string>> = {};
+    for (const table of targetTables) {
+      targetTableIds[table] = this.getTableId(table, input);
+    }
+    return targetTableIds;
   }
 }

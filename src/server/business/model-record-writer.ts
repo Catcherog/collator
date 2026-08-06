@@ -8,6 +8,8 @@ import {
 } from '../feishu/feishu-client.js';
 import { FeishuApiError } from '../feishu/feishu-errors.js';
 import { FeishuCommitFailedError } from '../domain/errors.js';
+import { assertExpectedFields } from './post-write-verification.js';
+import { CreateLifecyclePersistenceError, type CreateRecordLifecycle } from './create-lifecycle.js';
 
 const MODEL_FIELD_WHITELIST = [
   '模特姓名',
@@ -27,15 +29,22 @@ export interface ModelRecordWriterResult {
 export interface ModelRecordWriterInput {
   ingestionId: string;
   normalizedFields: Record<string, unknown>;
+  createLifecycle?: CreateRecordLifecycle;
+  /** Server-owned deterministic logical key for internal-controlled writes. */
+  internalWriteKey?: string;
 }
 
 export interface ModelRecordWriter {
   write(input: ModelRecordWriterInput): Promise<ModelRecordWriterResult>;
+  verifyRecord?(recordId: string, input: ModelRecordWriterInput): Promise<void>;
+  findByIngestionId?(ingestionId: string, normalizedFields?: Record<string, unknown>): Promise<string[]>;
   deleteRecord(recordId: string): Promise<void>;
 }
 
 export interface FeishuModelRecordWriterOptions {
   modelTableId: string;
+  /** Schema-authoritative marker field; defaults to the existing field. */
+  ingestionIdField?: string;
 }
 
 export class FeishuModelRecordWriter implements ModelRecordWriter {
@@ -45,6 +54,7 @@ export class FeishuModelRecordWriter implements ModelRecordWriter {
   ) {}
 
   async write(input: ModelRecordWriterInput): Promise<ModelRecordWriterResult> {
+    const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
     let existing;
     try {
       existing = await this.client.searchRecords(this.options.modelTableId, {
@@ -52,7 +62,7 @@ export class FeishuModelRecordWriter implements ModelRecordWriter {
           conjunction: 'and',
           conditions: [
             {
-              field_name: COLLATOR_INGESTION_ID_FIELD,
+              field_name: ingestionIdField,
               operator: 'is',
               value: [input.ingestionId],
             },
@@ -72,16 +82,33 @@ export class FeishuModelRecordWriter implements ModelRecordWriter {
     }
 
     const fields = this.buildFields(input.normalizedFields, input.ingestionId);
+    const operationKey = input.internalWriteKey
+      ?? `model-record:${this.options.modelTableId}:${input.ingestionId}`;
+    const clientToken = createStableClientToken(operationKey);
+    await input.createLifecycle?.beforeCreate?.({
+      entity: 'model',
+      tableId: this.options.modelTableId,
+      ingestionId: input.ingestionId,
+      operationKey,
+      clientToken,
+      createdAt: new Date().toISOString(),
+    });
     let recordId: string;
     try {
       recordId = await this.client.createRecord(
         this.options.modelTableId,
         fields,
-        createStableClientToken(
-          `model-record:${this.options.modelTableId}:${input.ingestionId}`
-        )
+        clientToken
       );
+      try {
+        await input.createLifecycle?.afterCreate?.(recordId);
+      } catch (error) {
+        throw new CreateLifecyclePersistenceError(recordId, error);
+      }
     } catch (e) {
+      if (e instanceof CreateLifecyclePersistenceError) {
+        throw e;
+      }
       throw this.toCommitFailed(e);
     }
     return {
@@ -98,12 +125,37 @@ export class FeishuModelRecordWriter implements ModelRecordWriter {
     }
   }
 
+  async findByIngestionId(
+    ingestionId: string,
+    _normalizedFields?: Record<string, unknown>,
+  ): Promise<string[]> {
+    const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
+    const records = await this.client.searchRecords(this.options.modelTableId, {
+      filter: {
+        conjunction: 'and',
+        conditions: [{
+          field_name: ingestionIdField,
+          operator: 'is',
+          value: [ingestionId],
+        }],
+      },
+      page_size: 10,
+    });
+    return records.map((record) => record.record_id);
+  }
+
+  async verifyRecord(recordId: string, input: ModelRecordWriterInput): Promise<void> {
+    const record = await this.client.getRecord(this.options.modelTableId, recordId);
+    assertExpectedFields(record.fields, this.buildFields(input.normalizedFields, input.ingestionId));
+  }
+
   private buildFields(
     normalizedFields: Record<string, unknown>,
     ingestionId: string
   ): Record<string, unknown> {
+    const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
     const fields: Record<string, unknown> = {
-      [COLLATOR_INGESTION_ID_FIELD]: ingestionId,
+      [ingestionIdField]: ingestionId,
     };
     for (const key of MODEL_FIELD_WHITELIST) {
       const value = normalizedFields[key];
@@ -120,7 +172,8 @@ export class FeishuModelRecordWriter implements ModelRecordWriter {
   private toCommitFailed(e: unknown): FeishuCommitFailedError {
     if (e instanceof FeishuApiError) {
       return new FeishuCommitFailedError(
-        `Feishu API error (code=${e.code}): ${e.message}`
+        `Feishu API error (code=${e.code}): ${e.message}`,
+        e.code < 0,
       );
     }
     return new FeishuCommitFailedError(

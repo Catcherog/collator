@@ -37,6 +37,7 @@ interface MockClient {
     ) => Promise<FeishuRecord[]>
   >;
   deleteRecord: Mock<(tableId: string, recordId: string) => Promise<void>>;
+  getRecord: Mock<(tableId: string, recordId: string) => Promise<FeishuRecord>>;
 }
 
 function createMockClient(): MockClient {
@@ -46,6 +47,7 @@ function createMockClient(): MockClient {
     }),
     searchRecords: vi.fn(async () => []),
     deleteRecord: vi.fn(async () => {}),
+    getRecord: vi.fn(async () => ({ record_id: 'rec_project_new_001', fields: {} })),
   };
 }
 
@@ -215,6 +217,52 @@ describe('FeishuProjectRecordWriter', () => {
     });
   });
 
+  describe('verifyRecord', () => {
+    it('reads back the exact record and verifies the intended fields', async () => {
+      client.getRecord = vi.fn(async () => ({
+        record_id: 'rec_project_new_001',
+        fields: {
+          'Collator 摄入 ID': 'ing_verify_001',
+          项目名称: '核验项目',
+          客户关联: [{ record_id: 'rec_customer_001', text: '核验客户' }],
+        },
+      }));
+
+      await writer.verifyRecord('rec_project_new_001', {
+        ingestionId: 'ing_verify_001',
+        normalizedFields: {
+          项目名称: '核验项目',
+          客户关联: 'rec_customer_001',
+        },
+      });
+
+      expect(client.getRecord).toHaveBeenCalledWith(PROJECT_TABLE_ID, 'rec_project_new_001');
+    });
+
+    it('rejects a read-back field mismatch without including the field value', async () => {
+      client.getRecord = vi.fn(async () => ({
+        record_id: 'rec_project_new_001',
+        fields: {
+          'Collator 摄入 ID': 'ing_verify_002',
+          项目名称: '不应出现在错误中的值',
+        },
+      }));
+
+      await expect(
+        writer.verifyRecord('rec_project_new_001', {
+          ingestionId: 'ing_verify_002',
+          normalizedFields: { 项目名称: '期望项目' },
+        }),
+      ).rejects.toThrow('Post-write verification failed');
+      await expect(
+        writer.verifyRecord('rec_project_new_001', {
+          ingestionId: 'ing_verify_002',
+          normalizedFields: { 项目名称: '期望项目' },
+        }),
+      ).rejects.not.toThrow('期望项目');
+    });
+  });
+
   describe('stable client_token', () => {
     it('uses the same client_token for the same ingestion across writer instances', async () => {
       const secondWriter = new FeishuProjectRecordWriter(
@@ -236,6 +284,86 @@ describe('FeishuProjectRecordWriter', () => {
       expect(firstToken).toBe(secondToken);
       // UUIDv4 format
       expect(firstToken).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    });
+  });
+
+  describe('formal Base schema mapping', () => {
+    it('maps internal candidate fields to the live Project table schema', async () => {
+      const actualWriter = new FeishuProjectRecordWriter(
+        client as unknown as import('../../../src/server/feishu/feishu-client.js').FeishuClient,
+        {
+          projectTableId: PROJECT_TABLE_ID,
+          // The live Project table has no technical marker column. Its
+          // business name is the bounded natural key for this controlled flow.
+          ingestionIdField: '项目名称',
+        },
+      );
+
+      await actualWriter.write({
+        ingestionId: 'ing_actual_001',
+        normalizedFields: {
+          项目名称: '正式业务启用验证-20260802',
+          project_type: 'client',
+          shoot_date: '2026-08-02',
+          风格要求: '复古胶片',
+          客户关联: 'rec_customer_001',
+          预算区间: '5000-8000元',
+        },
+      });
+
+      const [, searchOptions] = client.searchRecords.mock.calls[0];
+      expect(searchOptions?.filter?.conditions[0].field_name).toBe('项目名称');
+      expect(searchOptions?.filter?.conditions[0].value).toEqual(['正式业务启用验证-20260802']);
+      expect(searchOptions?.filter?.conditions[1]).toMatchObject({
+        field_name: '关联客户 ID',
+        value: ['rec_customer_001'],
+      });
+
+      const [, fields] = client.createRecord.mock.calls[0];
+      expect(fields).toMatchObject({
+        项目名称: '正式业务启用验证-20260802',
+        项目类型: '客片',
+        拍摄档期: Date.parse('2026-08-02'),
+        风格定位: ['复古胶片'],
+        '关联客户 ID': ['rec_customer_001'],
+      });
+      expect(fields['Collator 摄入 ID']).toBeUndefined();
+      expect(fields['客户关联']).toBeUndefined();
+      expect(fields['拍摄日期']).toBeUndefined();
+      expect(fields['风格要求']).toBeUndefined();
+      expect(fields['预算区间']).toBeUndefined();
+    });
+
+    it('uses the same natural key during reconciliation lookup', async () => {
+      const actualWriter = new FeishuProjectRecordWriter(
+        client as unknown as import('../../../src/server/feishu/feishu-client.js').FeishuClient,
+        { projectTableId: PROJECT_TABLE_ID, ingestionIdField: '项目名称' },
+      );
+
+      await actualWriter.findByIngestionId('ing_actual_002', {
+        项目名称: '正式业务启用验证-20260802',
+      });
+
+      const [, searchOptions] = client.searchRecords.mock.calls[0];
+      expect(searchOptions?.filter?.conditions[0].field_name).toBe('项目名称');
+      expect(searchOptions?.filter?.conditions[0].value).toEqual(['正式业务启用验证-20260802']);
+    });
+
+    it('fails closed when a natural key matches multiple Project records', async () => {
+      const actualWriter = new FeishuProjectRecordWriter(
+        client as unknown as import('../../../src/server/feishu/feishu-client.js').FeishuClient,
+        { projectTableId: PROJECT_TABLE_ID, ingestionIdField: '项目名称' },
+      );
+      client.searchRecords.mockResolvedValueOnce([
+        { record_id: 'rec_project_a', fields: {} },
+        { record_id: 'rec_project_b', fields: {} },
+      ]);
+
+      await expect(actualWriter.write({
+        ingestionId: 'ing_actual_003',
+        normalizedFields: { 项目名称: '重复项目名' },
+      })).rejects.toMatchObject({ code: 'FEISHU_COMMIT_FAILED' });
+      expect(client.createRecord).not.toHaveBeenCalled();
     });
   });
 });

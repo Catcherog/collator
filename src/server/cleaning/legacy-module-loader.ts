@@ -140,8 +140,21 @@ function evaluateLegacyModule(absolutePath: string): Record<string, unknown> {
   return moduleObj.exports;
 }
 
+/**
+ * Hash the *content* of a legacy module, not its checkout representation.
+ *
+ * The audited hashes in reports/phase2/legacy-module-profiles.json were
+ * generated from an LF checkout. Hashing raw bytes makes the integrity gate
+ * fail for every profiled module on a CRLF checkout (i.e. every Windows
+ * working tree) even though no source byte of meaning has changed, which
+ * turns a tamper-detection control into a platform-dependent false positive.
+ *
+ * Line endings are therefore normalised to LF before hashing. Any real change
+ * to the module body still changes the digest, so the tamper-detection
+ * property is preserved; only the CR/LF representation is ignored.
+ */
 function computeSourceHash(filePath: string): string {
-  const content = fs.readFileSync(filePath, 'utf-8');
+  const content = fs.readFileSync(filePath, 'utf-8').replace(/\r\n/g, '\n');
   return crypto.createHash('sha256').update(content).digest('hex');
 }
 

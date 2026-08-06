@@ -9,6 +9,8 @@ import {
 } from '../feishu/feishu-client.js';
 import { FeishuApiError } from '../feishu/feishu-errors.js';
 import { FeishuCommitFailedError } from '../domain/errors.js';
+import { assertExpectedFields } from './post-write-verification.js';
+import { CreateLifecyclePersistenceError, type CreateRecordLifecycle } from './create-lifecycle.js';
 
 /**
  * Whitelist of customer-table business fields the writer is allowed to
@@ -51,6 +53,25 @@ const DATETIME_FIELDS = new Set<string>(['咨询时间']);
  */
 const MULTISELECT_FIELDS = new Set<string>(['意向风格']);
 
+const LIVE_CUSTOMER_BUDGET_OPTIONS = new Set([
+  '1000元以下',
+  '1000-2000元',
+  '2000-3000元',
+  '3000-5000元',
+  '5000元以上',
+]);
+
+function normalizeCustomerBudget(value: unknown): unknown {
+  if (typeof value !== 'string' || LIVE_CUSTOMER_BUDGET_OPTIONS.has(value)) return value;
+  const amounts = value.match(/\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+  if (amounts.length === 0) return value;
+  if (amounts[0] < 1000) return '1000元以下';
+  if (amounts[0] >= 5000) return '5000元以上';
+  if (amounts[0] >= 3000) return '3000-5000元';
+  if (amounts[0] >= 2000) return '2000-3000元';
+  return '1000-2000元';
+}
+
 export interface CustomerRecordWriterResult {
   /**
    * The real Feishu record_id of the customer record. On `created=false`
@@ -68,6 +89,9 @@ export interface CustomerRecordWriterResult {
 export interface CustomerRecordWriterInput {
   ingestionId: string;
   normalizedFields: Record<string, unknown>;
+  createLifecycle?: CreateRecordLifecycle;
+  /** Server-owned deterministic logical key for internal-controlled writes. */
+  internalWriteKey?: string;
 }
 
 /**
@@ -87,6 +111,8 @@ export interface CustomerRecordWriterInput {
  */
 export interface CustomerRecordWriter {
   write(input: CustomerRecordWriterInput): Promise<CustomerRecordWriterResult>;
+  verifyRecord?(recordId: string, input: CustomerRecordWriterInput): Promise<void>;
+  findByIngestionId?(ingestionId: string, normalizedFields?: Record<string, unknown>): Promise<string[]>;
   /**
    * Delete a customer record by its exact Feishu record_id. Used for
    * transactional rollback / cleanup compensation (AC-C10). Implementations
@@ -102,6 +128,8 @@ export interface CustomerRecordWriter {
 
 export interface FeishuCustomerRecordWriterOptions {
   customerTableId: string;
+  /** Schema-authoritative marker field; defaults to the existing field. */
+  ingestionIdField?: string;
 }
 
 /**
@@ -132,6 +160,7 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
   ) {}
 
   async write(input: CustomerRecordWriterInput): Promise<CustomerRecordWriterResult> {
+    const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
     // Step 1: idempotent search by Collator 摄入 ID.
     let existing;
     try {
@@ -140,7 +169,7 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
           conjunction: 'and',
           conditions: [
             {
-              field_name: COLLATOR_INGESTION_ID_FIELD,
+              field_name: ingestionIdField,
               operator: 'is',
               value: [input.ingestionId],
             },
@@ -161,16 +190,33 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
 
     // Step 2: build whitelisted field payload + create.
     const fields = this.buildFields(input.normalizedFields, input.ingestionId);
+    const operationKey = input.internalWriteKey
+      ?? `customer-record:${this.options.customerTableId}:${input.ingestionId}`;
+    const clientToken = createStableClientToken(operationKey);
+    await input.createLifecycle?.beforeCreate?.({
+      entity: 'customer',
+      tableId: this.options.customerTableId,
+      ingestionId: input.ingestionId,
+      operationKey,
+      clientToken,
+      createdAt: new Date().toISOString(),
+    });
     let recordId: string;
     try {
       recordId = await this.client.createRecord(
         this.options.customerTableId,
         fields,
-        createStableClientToken(
-          `customer-record:${this.options.customerTableId}:${input.ingestionId}`
-        )
+        clientToken
       );
+      try {
+        await input.createLifecycle?.afterCreate?.(recordId);
+      } catch (error) {
+        throw new CreateLifecyclePersistenceError(recordId, error);
+      }
     } catch (e) {
+      if (e instanceof CreateLifecyclePersistenceError) {
+        throw e;
+      }
       throw this.toCommitFailed(e);
     }
     return {
@@ -194,6 +240,30 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
     }
   }
 
+  async findByIngestionId(
+    ingestionId: string,
+    _normalizedFields?: Record<string, unknown>,
+  ): Promise<string[]> {
+    const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
+    const records = await this.client.searchRecords(this.options.customerTableId, {
+      filter: {
+        conjunction: 'and',
+        conditions: [{
+          field_name: ingestionIdField,
+          operator: 'is',
+          value: [ingestionId],
+        }],
+      },
+      page_size: 10,
+    });
+    return records.map((record) => record.record_id);
+  }
+
+  async verifyRecord(recordId: string, input: CustomerRecordWriterInput): Promise<void> {
+    const record = await this.client.getRecord(this.options.customerTableId, recordId);
+    assertExpectedFields(record.fields, this.buildFields(input.normalizedFields, input.ingestionId));
+  }
+
   /**
    * Build the Feishu field payload from the normalised fields.
    * - Only whitelisted Chinese business fields are copied through.
@@ -209,8 +279,9 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
     normalizedFields: Record<string, unknown>,
     ingestionId: string
   ): Record<string, unknown> {
+    const ingestionIdField = this.options.ingestionIdField ?? COLLATOR_INGESTION_ID_FIELD;
     const fields: Record<string, unknown> = {
-      [COLLATOR_INGESTION_ID_FIELD]: ingestionId,
+      [ingestionIdField]: ingestionId,
     };
     for (const key of CUSTOMER_FIELD_WHITELIST) {
       const value = normalizedFields[key];
@@ -222,6 +293,8 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
         // as FEISHU_COMMIT_FAILED). This avoids silently dropping a
         // malformed date.
         fields[key] = Number.isNaN(ms) ? value : ms;
+      } else if (key === '预算区间') {
+        fields[key] = normalizeCustomerBudget(value);
       } else if (MULTISELECT_FIELDS.has(key)) {
         // Feishu MultiSelect (type=4) requires an array of option
         // strings. A bare string is rejected with code=1254063
@@ -247,7 +320,8 @@ export class FeishuCustomerRecordWriter implements CustomerRecordWriter {
   private toCommitFailed(e: unknown): FeishuCommitFailedError {
     if (e instanceof FeishuApiError) {
       return new FeishuCommitFailedError(
-        `Feishu API error (code=${e.code}): ${e.message}`
+        `Feishu API error (code=${e.code}): ${e.message}`,
+        e.code < 0,
       );
     }
     // Unknown error: do not propagate message verbatim (may contain

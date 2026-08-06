@@ -41,7 +41,26 @@ export type AuditEventType =
   | 'write_started'
   | 'write_succeeded'
   | 'write_failed'
-  | 'idempotency_replay';
+  | 'idempotency_replay'
+  | 'pilot_preview_generated'
+  | 'pilot_confirmed'
+  | 'pilot_write_started'
+  | 'pilot_record_created'
+  | 'pilot_relation_verified'
+  | 'pilot_write_completed'
+  | 'pilot_write_failed'
+  | 'pilot_write_blocked'
+  | 'pilot_compensation_started'
+  | 'pilot_compensation_completed'
+  | 'pilot_compensation_failed'
+  | 'internal_preview_generated'
+  | 'internal_confirmed'
+  | 'internal_write_started'
+  | 'internal_write_succeeded'
+  | 'internal_write_failed'
+  | 'internal_write_unknown'
+  | 'internal_write_partial'
+  | 'internal_write_reconciled';
 
 /**
  * 一条已持久化的审计日志记录。

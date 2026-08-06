@@ -24,8 +24,17 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { TaskRepository } from '../repositories/task-repository.js';
 import type { WriteLogRepository } from '../repositories/write-log-repository.js';
+import type {
+  ProductionPilotCommitPayload,
+  ProductionPilotRunManifest,
+  RunManifestRepository,
+} from '../repositories/run-manifest-repository.js';
 import type { IngestionTask } from '../domain/ingestion.js';
-import { BadRequestError, NotFoundError, ConflictError } from '../domain/errors.js';
+import {
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+} from '../domain/errors.js';
 import type { CandidateV1 } from '../../contracts/candidate-v1.js';
 import { createIdempotencyKey } from '../../contracts/candidate-v1.js';
 import type {
@@ -37,16 +46,55 @@ import type {
   SubmitCorrectionsResponse,
   ConfirmWriteRequest,
   ConfirmWriteResponse,
+  CreateProductionPilotPreviewRequest,
+  ProductionPilotPreview,
   EscalateReviewRequest,
   EscalateReviewResponse,
   GetFinalResultResponse,
   ScreenshotStatus,
   WriteResult,
+  WriteResultStatus,
 } from '../../contracts/screenshot-api-v1.js';
 import type { ScreenshotOcrEngine, OcrResult, OcrTextBlock } from './screenshot-ocr-adapter.js';
 import type { ScreenshotGovernanceClient, FullGovernanceResult } from '../governance/screenshot-governance-client.js';
 import type { GuardedWriteBatchInput } from '../business/guarded-batch-writer.js';
+import type { ExistingRecordVerificationInput } from '../business/transactional-batch-writer.js';
+import {
+  computeInternalControlledWritePlan,
+  computeWritePlan,
+  type WriteTable,
+} from '../business/write-plan.js';
+import { InternalWriteQueue, type InternalWriteExecutionContext } from '../business/internal-write-queue.js';
+import type {
+  InternalControlledWriteResult,
+  InternalWriteLog,
+  InternalWritePreview,
+  InternalWriteRepository,
+  InternalWriteResultItem,
+} from '../repositories/internal-write-repository.js';
+import {
+  isInternalControlledWriteAllowed,
+  type FeishuWriteConfig,
+} from '../config/feishu-write-config.js';
 import { createAuditEvent, type AuditLogRepository, type AuditEventType } from '../../audit/audit-log-repository.js';
+import {
+  buildServerProductionPilotPreviewDigest,
+  createServerProductionPilotPreview,
+  digestJson,
+} from '../config/production-pilot.js';
+import {
+  InternalWriteAlreadyInProgressError,
+  InternalWriteDisabledError,
+  InternalWriteGateBlockedError,
+  InternalWriteNeedsReconciliationError,
+  InternalWriteOperatorMismatchError,
+  InternalWritePlanMismatchError,
+  InternalWritePreviewStaleError,
+  InternalWritePreviewExpiredError,
+  InternalWriteRequiresHumanConfirmationError,
+  InternalWriteResultUnknownError,
+  InternalWriteStateTransitionConflictError,
+} from '../domain/errors.js';
 
 // ============================================================================
 // 截图状态存储类型（存储在 IngestionTask.pipeline_evidence 中）
@@ -82,7 +130,19 @@ interface ScreenshotState {
   corrections_applied?: Record<string, unknown>;
   reviewer_id?: string;
   idempotent_replay: boolean;
+  internal_controlled_write?: {
+    preview_id: string;
+    status: InternalWritePreview['status'];
+    result?: InternalControlledWriteResult;
+    transaction_snapshot_id?: string;
+  };
 }
+
+export type InternalWritePreviewRequest = { candidate_v1_id: string };
+export type InternalWriteConfirmationRequest = {
+  nonce: string;
+  candidate_v1_id: string;
+};
 
 // ============================================================================
 // 工具函数
@@ -101,6 +161,7 @@ function mapToIngestionStatus(status: ScreenshotStatus): IngestionTask['status']
   const mapping: Record<ScreenshotStatus, IngestionTask['status']> = {
     received: 'received',
     ocr_processing: 'extracting',
+    ocr_failed: 'extract_failed',
     ocr_completed: 'candidate_received',
     candidate_drafted: 'candidate_received',
     governance_passed: 'approved',
@@ -108,12 +169,41 @@ function mapToIngestionStatus(status: ScreenshotStatus): IngestionTask['status']
     governance_blocked: 'review_rejected',
     write_succeeded: 'completed',
     write_failed: 'commit_failed',
+    write_result_unknown: 'write_result_unknown',
+    write_needs_reconciliation: 'write_needs_reconciliation',
+    write_partial: 'write_partial',
     duplicate_skipped: 'completed',
     review_pending: 'pending_review',
     review_resolved: 'approved',
     expired: 'completed',
   };
   return mapping[status];
+}
+
+function mapScreenshotWriteStatus(status: ScreenshotStatus): WriteResultStatus {
+  if (status === 'write_succeeded') return 'succeeded';
+  if (status === 'write_failed') return 'failed';
+  if (status === 'write_result_unknown') return 'unknown';
+  if (status === 'write_needs_reconciliation') return 'needs_reconciliation';
+  if (status === 'write_partial') return 'partial';
+  return 'not_attempted';
+}
+
+const TRUSTED_REAL_OCR_ENGINES = new Set(['tesseract', 'feishu']);
+
+/**
+ * Internal-controlled real writes must be based on persisted OCR evidence from
+ * an approved engine. Checking only the process-level adapter is insufficient:
+ * an ingestion can survive a restart and carry stale mock/manual evidence.
+ */
+function assertTrustedRealOcrEvidence(state: ScreenshotState, context: string): void {
+  const engine = state.ocr_evidence?.engine?.trim().toLowerCase();
+  if (!engine || !TRUSTED_REAL_OCR_ENGINES.has(engine)) {
+    throw new ConflictError(
+      `${context} requires persisted OCR evidence from tesseract or feishu; got ${engine ?? 'missing'}. ` +
+      'Re-upload the screenshot after starting Collator with a trusted OCR engine.',
+    );
+  }
 }
 
 /** 从 IngestionTask 提取截图状态 */
@@ -161,17 +251,51 @@ function extractCustomerName(textBlocks: OcrTextBlock[]): string | null {
 }
 
 /** 从 OCR 文本块提取日期并标准化为 ISO 格式 */
-function extractShootDate(textBlocks: OcrTextBlock[]): string | null {
+function extractShootDate(textBlocks: OcrTextBlock[], referenceDate: Date = new Date()): string | null {
   const dateBlock = textBlocks.find((b) => b.type === 'date');
   if (!dateBlock) return null;
-  // 尝试解析中文日期格式 "2026年8月15日"
-  const cnMatch = dateBlock.text.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
-  if (cnMatch) {
-    const [, y, m, d] = cnMatch;
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  return normalizeShootDate(dateBlock.text, referenceDate);
+}
+
+/**
+ * 把 OCR 日期文本规范化为 `YYYY-MM-DD`，无法可靠解析时返回 null。
+ *
+ * 为什么不能「解析失败就原样返回」：
+ * 拍摄档期在飞书是 DateTime 列，只接受 epoch 毫秒。原实现把无法识别的文本
+ * （真实聊天截图里最常见的 "8月15日"、"下周六"）原样透传，一路漏到
+ * createRecord，被飞书以 `1254064 DatetimeFieldConvFail` 拒绝，最终表现为
+ * 不可诊断的 FEISHU_COMMIT_FAILED —— 这正是 Project 表写入失败的根因。
+ *
+ * 返回 null 时字段被省略，原始文本仍保留在 OCR evidence 中，操作员可通过
+ * Corrections 补齐。这是「显式缺失」而不是「静默错值」。
+ */
+export function normalizeShootDate(raw: string, referenceDate: Date = new Date()): string | null {
+  const text = (raw ?? '').trim();
+  if (text.length === 0) return null;
+
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const build = (y: number, m: number, d: number): string | null => {
+    if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+    const probe = new Date(Date.UTC(y, m - 1, d));
+    // 拦截 2月30日 之类溢出到下个月的输入。
+    if (probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) return null;
+    return `${y}-${pad(m)}-${pad(d)}`;
+  };
+
+  // 带年份：2026年8月15日 / 2026-8-15 / 2026/08/15 / 2026.8.15
+  const withYear = text.match(/(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?/);
+  if (withYear) {
+    return build(Number(withYear[1]), Number(withYear[2]), Number(withYear[3]));
   }
-  // 已经是 ISO 格式
-  return dateBlock.text;
+
+  // 缺年份的中文写法：8月15日。聊天截图里极常见，按参考年份补全。
+  const monthDay = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日?/);
+  if (monthDay) {
+    return build(referenceDate.getUTCFullYear(), Number(monthDay[1]), Number(monthDay[2]));
+  }
+
+  // 其余（"下周六"、"月底"、残缺日期）不猜测，交给人工 Corrections。
+  return null;
 }
 
 /** 从 OCR 文本块提取预算区间 */
@@ -299,6 +423,8 @@ interface BatchWriterResultView {
   records_created: number;
   records_rolled_back: number;
   error_code?: string;
+  post_write_verified?: boolean;
+  compensation_events_emitted?: boolean;
 }
 
 /**
@@ -313,7 +439,27 @@ interface BatchWriterResultView {
  */
 interface ScreenshotBatchWriter {
   writeBatch(input: GuardedWriteBatchInput): Promise<BatchWriterResultView>;
+  preflight?(input: GuardedWriteBatchInput): Promise<{ allowed: boolean; reason: string }>;
+  findByIngestionId?(
+    entity: WriteTable,
+    ingestionId: string,
+    normalizedFields?: Record<string, unknown>,
+  ): Promise<string[]>;
+  verifyExistingByIngestion?(
+    entity: WriteTable,
+    recordId: string,
+    input: ExistingRecordVerificationInput,
+  ): Promise<void>;
+  recoverPendingCompensations?(hooks?: {
+    onCompensationStarted?: (recordCount: number) => Promise<void>;
+    onCompensationCompleted?: (status: 'completed' | 'failed', recordCount: number) => Promise<void>;
+  }): Promise<Array<{ previewId: string; status: 'compensated' | 'compensation_failed' }>>;
 }
+
+export type ProductionPilotRecoveryOutcome = {
+  previewId: string;
+  status: 'compensated' | 'compensation_failed' | 'committed' | 'commit_recovery_failed';
+};
 
 export interface ScreenshotServiceOptions {
   ocrEngine?: ScreenshotOcrEngine;
@@ -341,9 +487,25 @@ export interface ScreenshotServiceOptions {
    * 守卫跳过，既有测试行为不变。生产模式由 buildApp 注入 FileAuditRepository。
    */
   auditLogRepository?: AuditLogRepository;
+  /** Process-level production-pilot recovery journal; mandatory for pilot writes. */
+  runManifestRepository?: RunManifestRepository;
+  /** Confirmation window for a server-created manifest. */
+  productionPilotManifestTtlMs?: number;
+  /** Server-bound pilot run id; absent means the pilot cannot execute. */
+  productionPilotRunId?: string;
+  /** Durable preview/result journal for the separately named internal lane. */
+  internalWriteRepository?: InternalWriteRepository;
+  /** Single-process internal write serializer. */
+  internalWriteQueue?: InternalWriteQueue;
+  /** Full Feishu config is required for the internal lane. */
+  internalWriteConfig?: FeishuWriteConfig;
+  /** Optional caller-visible timeout; the queue slot remains occupied until settlement. */
+  internalWriteTimeoutMs?: number;
 }
 
 export class ScreenshotService {
+  private readonly internalInFlight = new Set<string>();
+
   constructor(
     private readonly repository: TaskRepository,
     private readonly options: ScreenshotServiceOptions = {}
@@ -458,14 +620,19 @@ export class ScreenshotService {
     // 同步触发 OCR（mock 引擎即时返回）
     try {
       await this.runOcrAndBuildCandidate(ingestionId, imageBuffer, imageHash);
-    } catch {
-      // OCR 失败不阻止创建，状态保持 received，可后续重试
+    } catch (err) {
+      // OCR 失败：标记为 ocr_failed（而非 ocr_processing），使轮询方能立即检测
+      // 终态而非超时。之前错误设为 ocr_processing 导致 poller 永远等不到终态。
       const currentTask = await this.repository.findById(ingestionId);
       if (currentTask) {
         const state = extractScreenshotState(currentTask);
-        state.screenshot_status = 'ocr_processing';
+        state.screenshot_status = 'ocr_failed';
+        state.ocr_evidence = undefined;
         await this.repository.save(withScreenshotState(currentTask, state));
       }
+      await this.auditRecord(ingestionId, 'ocr_failed', 'ocr_failed', {
+        error_message: err instanceof Error ? err.message : String(err),
+      });
     }
 
     const finalTask = await this.repository.findById(ingestionId);
@@ -511,7 +678,10 @@ export class ScreenshotService {
     // Workstream D/E: 审计 — OCR 完成。
     await this.auditRecord(ingestionId, 'ocr_completed', 'ocr_completed', {
       ocr_task_id: state.ocr_task_id,
+      engine: ocrResult.engine,
+      ocr_version: ocrResult.ocr_version,
       confidence: ocrResult.confidence,
+      text_blocks_count: ocrResult.text_blocks.length,
     });
 
     // 构建 Candidate V1
@@ -579,9 +749,10 @@ export class ScreenshotService {
     if (state.write_results) {
       const succeeded = state.write_results.filter((r) => r.status === 'succeeded').length;
       response.write = {
-        status: state.screenshot_status === 'write_succeeded' ? 'succeeded' : 'failed',
+        status: mapScreenshotWriteStatus(state.screenshot_status),
         entity_count: succeeded,
         completed_at: task.updated_at,
+        error_code: state.internal_controlled_write?.result?.error_code,
       };
     }
 
@@ -714,7 +885,567 @@ export class ScreenshotService {
   // 5. POST /v1/screenshots/:id/confirm — 确认写入
   // ==========================================================================
 
-  async confirmWrite(id: string, req: ConfirmWriteRequest): Promise<ConfirmWriteResponse> {
+  /**
+   * Create the server-owned production-pilot preview. Callers cannot supply a
+   * full preview object or any confirmation flag.
+   */
+  async createProductionPilotPreview(
+    id: string,
+    req: CreateProductionPilotPreviewRequest,
+    authenticatedOperator: string,
+  ): Promise<ProductionPilotPreview> {
+    if (!authenticatedOperator?.trim()) {
+      throw new BadRequestError('authenticated operator is required');
+    }
+    const task = await this.getTaskOrThrow(id);
+    const state = extractScreenshotState(task);
+    assertTrustedRealOcrEvidence(state, 'Production pilot preview');
+    const candidate = state.candidate_v1;
+    if (!candidate) throw new ConflictError('Candidate V1 not yet available');
+    if (candidate.candidate_id !== req.candidate_v1_id) {
+      throw new BadRequestError('candidate_v1_id mismatch');
+    }
+    if (!this.options.runManifestRepository) {
+      throw new ConflictError('Production pilot manifest repository is unavailable');
+    }
+    if (!this.options.productionPilotRunId?.trim()) {
+      throw new ConflictError('Production pilot run id is not server-bound');
+    }
+
+    const governance = await this.requireGovernanceClient(
+      'Production pilot preview',
+    ).callPreWriteFull(candidate);
+    state.governance_result_v1 = governance;
+    if (governance.decision !== 'PASS') {
+      state.screenshot_status = governance.decision === 'BLOCKED'
+        ? 'governance_blocked'
+        : 'governance_needs_review';
+      await this.repository.save(withScreenshotState(task, state));
+      await this.auditRecord(
+        task.ingestion_id,
+        governance.decision === 'BLOCKED' ? 'governance_rejected' : 'governance_reviewed',
+        governance.decision,
+        { rule_version: governance.rule_version },
+      );
+      throw new ConflictError(`Production pilot preview requires governance PASS, got ${governance.decision}`);
+    }
+    state.screenshot_status = 'governance_passed';
+    await this.repository.save(withScreenshotState(task, state));
+    await this.auditRecord(task.ingestion_id, 'governance_passed', 'PASS', {
+      rule_version: governance.rule_version,
+    });
+
+    const targetTables = computeWritePlan(candidate, governance);
+    if (targetTables.length === 0) throw new ConflictError('Production pilot target plan is empty');
+    const targetTableIds: Partial<Record<'customer' | 'project' | 'model', string>> = {};
+    for (const table of targetTables) {
+      const tableId = this.tableIdFor(table);
+      if (!tableId) throw new ConflictError('Production pilot target table is not configured');
+      targetTableIds[table] = tableId;
+    }
+    const targetTableDigests: Partial<Record<'customer' | 'project' | 'model', string>> = {};
+    for (const table of targetTables) targetTableDigests[table] = sha256Hex(targetTableIds[table]!);
+    const baseTokenDigest = this.options.feishuWriteContext?.targetBaseToken
+      ? sha256Hex(this.options.feishuWriteContext.targetBaseToken)
+      : undefined;
+    const candidateDigest = digestJson(candidate);
+    const governanceDigest = digestJson(governance);
+    const authoritativePlanDigest = digestJson({ targetTables, targetTableDigests, baseTokenDigest });
+    const createdAt = nowIso();
+    const ttlMs = this.options.productionPilotManifestTtlMs ?? 15 * 60 * 1000;
+    const expiresAt = new Date(Date.parse(createdAt) + ttlMs).toISOString();
+    const previewInput = {
+      ingestionId: task.ingestion_id,
+      targetTables,
+      targetTableDigests,
+      baseTokenDigest,
+      candidateDigest,
+      governanceDigest,
+      authoritativePlanDigest,
+      pilotRunId: this.options.productionPilotRunId,
+      createdAt,
+      expiresAt,
+    };
+    const preview = createServerProductionPilotPreview(previewInput);
+    const manifest = await this.options.runManifestRepository.createGenerated({
+      previewId: preview.preview_id,
+      ingestionId: task.ingestion_id,
+      runId: this.options.productionPilotRunId,
+      previewDigest: buildServerProductionPilotPreviewDigest(previewInput, preview.preview_id),
+      operator: authenticatedOperator,
+      createdAt,
+      expiresAt,
+      candidateDigest,
+      governanceDigest,
+      authoritativePlanDigest,
+      targetTables: [...targetTables],
+      targetTableDigests,
+      baseTokenDigest,
+    });
+    await this.auditRecord(task.ingestion_id, 'pilot_preview_generated', 'previewed', {
+      preview_id_digest: sha256Hex(manifest.previewId),
+      target_aliases: targetTables,
+      table_digests: targetTableDigests,
+      base_digest: baseTokenDigest,
+      planned_record_count: targetTables.length,
+    });
+    return this.toPublicProductionPilotPreview(manifest);
+  }
+
+  async confirmProductionPilotPreview(
+    previewId: string,
+    authenticatedOperator: string,
+    nonce: string,
+  ): Promise<ProductionPilotPreview> {
+    if (!authenticatedOperator?.trim()) throw new BadRequestError('authenticated operator is required');
+    if (!nonce?.trim()) throw new BadRequestError('production pilot nonce is required');
+    if (!this.options.runManifestRepository) {
+      throw new ConflictError('Production pilot manifest repository is unavailable');
+    }
+    const manifest = await this.options.runManifestRepository.confirm(
+      previewId,
+      authenticatedOperator,
+      nowIso(),
+      nonce,
+    );
+    try {
+      await this.auditRecord(manifest.ingestionId, 'pilot_confirmed', 'confirmed', {
+        preview_id_digest: sha256Hex(manifest.previewId),
+        confirmation: 'authenticated_operator',
+      });
+    } catch {
+      // A confirmed preview without a durable confirmation audit is not
+      // executable. Move it out of the one-shot confirmation state so a
+      // failed audit can never be bypassed by calling the execute endpoint.
+      await this.options.runManifestRepository.markCompensationRequired(manifest.previewId).catch(() => undefined);
+      await this.options.runManifestRepository.completeCompensation(manifest.previewId, true).catch(() => undefined);
+      throw new ConflictError('Production pilot confirmation audit could not be persisted');
+    }
+    return this.toPublicProductionPilotPreview(manifest);
+  }
+
+  /**
+   * Generate a server-owned internal-controlled preview.  The request only
+   * identifies the candidate; governance, table aliases, digests, nonce and
+   * expiry are all calculated on the server.
+   */
+  async createInternalWritePreview(
+    id: string,
+    req: InternalWritePreviewRequest,
+    authenticatedOperator: string,
+  ): Promise<InternalWritePreview> {
+    const config = this.requireInternalWriteConfig();
+    const internal = config.internalControlledWrite!;
+    if (!authenticatedOperator?.trim()) throw new BadRequestError('authenticated operator is required');
+    const repository = this.options.internalWriteRepository;
+    if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
+    const task = await this.getTaskOrThrow(id);
+    const state = extractScreenshotState(task);
+    assertTrustedRealOcrEvidence(state, 'Internal controlled preview');
+    const candidate = state.candidate_v1;
+    if (!candidate) throw new ConflictError('Candidate V1 not yet available');
+    if (candidate.candidate_id !== req.candidate_v1_id) throw new BadRequestError('candidate_v1_id mismatch');
+
+    const governance = await this.requireGovernanceClient(
+      'Internal controlled preview',
+    ).callPreWriteFull(candidate);
+    state.governance_result_v1 = governance;
+    if (governance.decision !== 'PASS') {
+      state.screenshot_status = governance.decision === 'BLOCKED'
+        ? 'governance_blocked'
+        : 'governance_needs_review';
+      await this.repository.save(withScreenshotState(task, state));
+      throw new ConflictError(`Internal controlled preview requires governance PASS, got ${governance.decision}`);
+    }
+
+    const targetTables = computeInternalControlledWritePlan(candidate, governance);
+    if (targetTables.length === 0) throw new ConflictError('Internal controlled target plan is empty');
+    const targetTableIds: Partial<Record<WriteTable, string>> = {};
+    const targetTableDigests: Partial<Record<WriteTable, string>> = {};
+    for (const table of targetTables) {
+      const tableId = this.tableIdFor(table);
+      if (!tableId) throw new ConflictError('Internal controlled target table is not configured');
+      targetTableIds[table] = tableId;
+      targetTableDigests[table] = sha256Hex(tableId);
+    }
+    const baseTokenDigest = this.options.feishuWriteContext?.targetBaseToken
+      ? sha256Hex(this.options.feishuWriteContext.targetBaseToken)
+      : undefined;
+    const candidateDigest = digestJson(candidate);
+    const governanceDigest = digestJson(governance);
+    const authoritativePlanDigest = digestJson({ targetTables, targetTableDigests, baseTokenDigest });
+    const createdAt = nowIso();
+    const expiresAt = new Date(Date.parse(createdAt) + internal.previewTtlMs).toISOString();
+    const preview = await repository.createPreview({
+      preview_id: randomUUID(),
+      nonce: randomUUID(),
+      ingestion_id: task.ingestion_id,
+      candidate_id: candidate.candidate_id,
+      candidate_digest: candidateDigest,
+      governance_digest: governanceDigest,
+      authoritative_plan_digest: authoritativePlanDigest,
+      operator: authenticatedOperator,
+      target_tables: [...targetTables],
+      target_table_digests: targetTableDigests,
+      base_token_digest: baseTokenDigest,
+      created_at: createdAt,
+      expires_at: expiresAt,
+    });
+    state.screenshot_status = 'governance_passed';
+    state.internal_controlled_write = {
+      preview_id: preview.preview_id,
+      status: preview.status,
+    };
+    await this.repository.save(withScreenshotState(task, state));
+    await this.auditRecord(task.ingestion_id, 'internal_preview_generated', 'previewed', {
+      preview_id_digest: sha256Hex(preview.preview_id),
+      target_aliases: targetTables,
+      table_digests: targetTableDigests,
+      base_digest: baseTokenDigest,
+      planned_record_count: targetTables.length,
+    });
+    return preview;
+  }
+
+  async confirmInternalWritePreview(
+    previewId: string,
+    req: InternalWriteConfirmationRequest,
+    authenticatedOperator: string,
+  ): Promise<InternalWritePreview> {
+    this.requireInternalWriteConfig();
+    if (!authenticatedOperator?.trim()) throw new BadRequestError('authenticated operator is required');
+    if (!req.nonce?.trim()) throw new BadRequestError('internal controlled write nonce is required');
+    const repository = this.options.internalWriteRepository;
+    if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
+    const existing = await repository.findPreview(previewId);
+    if (!existing) throw new ConflictError('Internal controlled write preview was not found');
+    if (Date.parse(existing.expires_at) <= Date.now()) throw new InternalWritePreviewExpiredError();
+    if (existing.candidate_id !== req.candidate_v1_id) throw new BadRequestError('candidate_v1_id mismatch');
+    if (existing.operator !== authenticatedOperator) throw new InternalWriteOperatorMismatchError();
+    let confirmed: InternalWritePreview;
+    try {
+      confirmed = await repository.confirm(previewId, authenticatedOperator, req.nonce, nowIso());
+    } catch (error) {
+      const code = (error as { message?: unknown }).message;
+      if (code === 'INTERNAL_WRITE_OPERATOR_MISMATCH') throw new InternalWriteOperatorMismatchError();
+      if (code === 'INTERNAL_WRITE_NONCE_MISMATCH') throw new ConflictError('Internal controlled write nonce does not match');
+      throw new ConflictError('Internal controlled write preview is not confirmable');
+    }
+    const task = await this.getTaskOrThrow(confirmed.ingestion_id);
+    const state = extractScreenshotState(task);
+    state.internal_controlled_write = {
+      preview_id: confirmed.preview_id,
+      status: confirmed.status,
+    };
+    await this.repository.save(withScreenshotState(task, state));
+    await this.auditRecord(task.ingestion_id, 'internal_confirmed', 'confirmed', {
+      preview_id_digest: sha256Hex(confirmed.preview_id),
+      confirmation: 'authenticated_operator',
+    });
+    return confirmed;
+  }
+
+  /** Execute only a confirmed server preview.  The returned terminal result is
+   * replayable; a result-unknown preview can be reconciled, never blindly
+   * retried through this method. */
+  async executeInternalControlledWrite(
+    previewId: string,
+    req: InternalWriteConfirmationRequest,
+    authenticatedOperator: string,
+  ): Promise<InternalControlledWriteResult> {
+    const config = this.requireInternalWriteConfig();
+    const internal = config.internalControlledWrite!;
+    if (this.internalInFlight.has(previewId)) throw new InternalWriteAlreadyInProgressError();
+    this.internalInFlight.add(previewId);
+    let underlyingExecutionStarted = false;
+    try {
+      const repository = this.options.internalWriteRepository;
+      if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
+      const preview = await repository.findPreview(previewId);
+      if (!preview) throw new ConflictError('Internal controlled write preview was not found');
+      if (Date.parse(preview.expires_at) <= Date.now()) throw new InternalWritePreviewExpiredError();
+      if (!req.nonce?.trim() || preview.nonce !== req.nonce) {
+        throw new ConflictError('Internal controlled write nonce does not match');
+      }
+      if (preview.candidate_id !== req.candidate_v1_id) throw new BadRequestError('candidate_v1_id mismatch');
+      if (preview.operator !== authenticatedOperator) throw new InternalWriteOperatorMismatchError();
+      if (preview.status === 'preview_generated') throw new InternalWriteRequiresHumanConfirmationError();
+      if (preview.status === 'executing' || preview.status === 'verifying') {
+        throw new InternalWriteAlreadyInProgressError();
+      }
+      if (preview.status === 'result_unknown' || preview.status === 'needs_reconciliation') {
+        throw new InternalWriteNeedsReconciliationError();
+      }
+      if (preview.result && ['succeeded', 'partial', 'failed'].includes(preview.status)) {
+        return preview.result;
+      }
+      if (preview.status !== 'confirmed') throw new ConflictError('Internal controlled write preview is not ready for execution');
+
+      const task = await this.getTaskOrThrow(preview.ingestion_id);
+      const state = extractScreenshotState(task);
+      assertTrustedRealOcrEvidence(state, 'Internal controlled execute');
+      const candidate = state.candidate_v1;
+      if (!candidate || candidate.candidate_id !== req.candidate_v1_id) throw new BadRequestError('candidate_v1_id mismatch');
+      const governance = state.governance_result_v1;
+      if (!governance || governance.decision !== 'PASS') throw new ConflictError('Internal controlled write requires governance PASS');
+      if (!this.options.auditLogRepository || !(await this.options.auditLogRepository.hasEventType(task.ingestion_id, 'internal_confirmed'))) {
+        throw new InternalWriteGateBlockedError();
+      }
+      const targetTables = computeInternalControlledWritePlan(candidate, governance);
+      const targetTableIds = this.targetTableIds(targetTables);
+      const candidateDigest = digestJson(candidate);
+      const governanceDigest = digestJson(governance);
+      const baseTokenDigest = this.options.feishuWriteContext?.targetBaseToken
+        ? sha256Hex(this.options.feishuWriteContext.targetBaseToken)
+        : undefined;
+      const authoritativePlanDigest = digestJson({
+        targetTables,
+        targetTableDigests: Object.fromEntries(
+          targetTables.map((table) => [table, sha256Hex(targetTableIds[table]!)])
+        ),
+        baseTokenDigest,
+      });
+      if (
+        preview.authoritative_plan_digest !== authoritativePlanDigest
+        || JSON.stringify(preview.target_tables) !== JSON.stringify(targetTables)
+      ) {
+        throw new InternalWritePlanMismatchError();
+      }
+      if (preview.candidate_digest !== candidateDigest || preview.governance_digest !== governanceDigest) {
+        throw new InternalWritePreviewStaleError();
+      }
+
+      const gate = isInternalControlledWriteAllowed(config, {
+        ingestionId: task.ingestion_id,
+        governanceDecision: governance,
+        targetBaseToken: this.options.feishuWriteContext?.targetBaseToken,
+        targetTableId: targetTables[0] ? targetTableIds[targetTables[0]] : undefined,
+        targetTables,
+        targetTableIds,
+        candidateId: candidate.candidate_id,
+        requestedCandidateId: req.candidate_v1_id,
+        candidateDigest,
+        governanceDigest,
+        authoritativePlanDigest,
+        operator: authenticatedOperator,
+        humanConfirmed: true,
+        dryRun: false,
+        preview: {
+          status: 'confirmed',
+          candidateDigest: preview.candidate_digest,
+          governanceDigest: preview.governance_digest,
+          authoritativePlanDigest: preview.authoritative_plan_digest,
+          operator: preview.operator,
+        },
+      });
+      if (!gate.allowed) throw new InternalWriteGateBlockedError();
+      if (!this.options.batchWriter) throw new ConflictError('Internal controlled batch writer is unavailable');
+      if (!this.options.batchWriter.preflight) throw new ConflictError('Internal controlled preflight is unavailable');
+
+      const queue = this.options.internalWriteQueue ?? new InternalWriteQueue({ maxConcurrency: 1 });
+      const execution = queue.runWithSettlement(
+        (executionContext) => this.runInternalControlledWrite(
+          preview,
+          task,
+          state,
+          candidate,
+          targetTables,
+          targetTableIds,
+          authenticatedOperator,
+          executionContext,
+        ),
+        this.options.internalWriteTimeoutMs ?? internal.maxExecutionMs,
+      );
+      underlyingExecutionStarted = true;
+      void execution.settlementPromise.then(() => {
+        this.internalInFlight.delete(previewId);
+      });
+      try {
+        return await execution.responsePromise;
+      } catch (error) {
+        if ((error as { message?: unknown }).message === 'INTERNAL_WRITE_TIMEOUT') {
+          const settled = await repository.findPreview(previewId);
+          if (settled?.result) return settled.result;
+          const timeoutTask = await this.getTaskOrThrow(preview.ingestion_id);
+          const timeoutState = extractScreenshotState(timeoutTask);
+          const timeoutResult: InternalControlledWriteResult = {
+            status: 'result_unknown',
+            write_results: this.emptyInternalResults(targetTables).map((item) => ({
+              ...item,
+              status: 'unknown',
+              error_code: 'INTERNAL_WRITE_RESULT_UNKNOWN',
+            })),
+            error_code: 'INTERNAL_WRITE_RESULT_UNKNOWN',
+            additional_create_calls: 0,
+            completed_at: nowIso(),
+          };
+          return this.completeInternalResult(
+            preview,
+            timeoutTask,
+            timeoutState,
+            timeoutResult,
+            await repository.findWriteLogs(preview.preview_id),
+            'internal_write_unknown',
+          );
+        }
+        throw error;
+      }
+    } finally {
+      if (!underlyingExecutionStarted) this.internalInFlight.delete(previewId);
+    }
+  }
+
+  async reconcileInternalControlledWrite(
+    previewId: string,
+    authenticatedOperator: string,
+  ): Promise<InternalControlledWriteResult> {
+    const config = this.requireInternalWriteConfig();
+    const internal = config.internalControlledWrite!;
+    const repository = this.options.internalWriteRepository;
+    if (!repository) throw new ConflictError('Internal controlled write repository is unavailable');
+    const preview = await repository.findPreview(previewId);
+    if (!preview) throw new ConflictError('Internal controlled write preview was not found');
+    if (preview.operator !== authenticatedOperator) throw new InternalWriteOperatorMismatchError();
+    if (this.internalInFlight.has(previewId)) throw new InternalWriteAlreadyInProgressError();
+    if (preview.result && preview.status === 'succeeded') return preview.result;
+    if (!['result_unknown', 'needs_reconciliation'].includes(preview.status)) {
+      throw new ConflictError('Internal controlled write is not awaiting reconciliation');
+    }
+    const reconciliationTask = await this.getTaskOrThrow(preview.ingestion_id);
+    const reconciliationState = extractScreenshotState(reconciliationTask);
+    const normalizedFields = reconciliationState.candidate_v1?.normalized_fields as Record<string, unknown> ?? {};
+    if (!internal.reconciliationEnabled) throw new ConflictError('Internal controlled reconciliation is disabled');
+    const writer = this.options.batchWriter;
+    if (!writer?.findByIngestionId) {
+      return this.completeInternalReconciliation(preview, {
+        status: 'needs_reconciliation',
+        write_results: preview.result?.write_results ?? this.emptyInternalResults(preview.target_tables),
+        error_code: 'INTERNAL_WRITE_RECONCILIATION_UNAVAILABLE',
+        additional_create_calls: 0,
+        reconciliation: 'unavailable',
+      }, 'internal_write_failed');
+    }
+    if (preview.target_tables.some((table) => !internal.markerFields[table])) {
+      return this.completeInternalReconciliation(preview, {
+        status: 'needs_reconciliation',
+        write_results: preview.result?.write_results ?? this.emptyInternalResults(preview.target_tables),
+        error_code: 'INTERNAL_WRITE_RECONCILIATION_MARKER_UNAVAILABLE',
+        additional_create_calls: 0,
+        reconciliation: 'unavailable',
+      }, 'internal_write_failed');
+    }
+
+    const prior = preview.result?.write_results ?? this.emptyInternalResults(preview.target_tables);
+    const results = prior.map((item) => ({ ...item }));
+    const matchedRecordIds = new Map<WriteTable, string>();
+    let uniqueCount = 0;
+    let noneCount = 0;
+    let multipleCount = 0;
+    for (const table of preview.target_tables) {
+      const matches = await writer.findByIngestionId(table, preview.ingestion_id, normalizedFields);
+      const result = results.find((item) => item.entity_type === table)!;
+      if (matches.length === 1) {
+        matchedRecordIds.set(table, matches[0]);
+        result.business_record_id = matches[0];
+        result.created = false;
+        uniqueCount += 1;
+      } else if (matches.length === 0) {
+        result.status = 'unknown';
+        noneCount += 1;
+      } else {
+        result.status = 'unknown';
+        result.error_code = 'DUPLICATE_CANDIDATES_FOUND';
+        multipleCount += 1;
+      }
+    }
+    if (uniqueCount !== preview.target_tables.length) {
+      const errorCode = multipleCount > 0
+        ? 'DUPLICATE_CANDIDATES_FOUND'
+        : noneCount > 0
+          ? 'INTERNAL_WRITE_RECONCILIATION_NOT_FOUND'
+          : 'INTERNAL_WRITE_RECONCILIATION_UNAVAILABLE';
+      return this.completeInternalReconciliation(preview, {
+        status: 'needs_reconciliation',
+        write_results: results,
+        error_code: errorCode,
+        additional_create_calls: 0,
+        reconciliation: multipleCount > 0 ? 'multiple' : 'none',
+      }, 'internal_write_failed');
+    }
+
+    if (!writer.verifyExistingByIngestion) {
+      return this.completeInternalReconciliation(preview, {
+        status: 'needs_reconciliation',
+        write_results: results.map((item) => ({
+          ...item,
+          status: 'unknown',
+          error_code: 'RELATION_VERIFICATION_FAILED',
+        })),
+        error_code: 'RELATION_VERIFICATION_FAILED',
+        additional_create_calls: 0,
+        reconciliation: 'unavailable',
+      }, 'internal_write_failed');
+    }
+
+    const relationContext = {
+      customerRecordId: matchedRecordIds.get('customer'),
+      modelRecordId: matchedRecordIds.get('model'),
+    };
+    try {
+      for (const table of preview.target_tables) {
+        const recordId = matchedRecordIds.get(table)!;
+        await writer.verifyExistingByIngestion(table, recordId, {
+          ingestionId: preview.ingestion_id,
+          normalizedFields,
+          targetTables: [...preview.target_tables],
+          enforceProjectRelationContext: true,
+          relationContext,
+        });
+      }
+    } catch {
+      return this.completeInternalReconciliation(preview, {
+        status: 'needs_reconciliation',
+        write_results: results.map((item) => ({
+          ...item,
+          status: 'unknown',
+          error_code: 'RELATION_VERIFICATION_FAILED',
+        })),
+        error_code: 'RELATION_VERIFICATION_FAILED',
+        additional_create_calls: 0,
+        reconciliation: 'unavailable',
+      }, 'internal_write_failed');
+    }
+
+    for (const table of preview.target_tables) {
+      const result = results.find((item) => item.entity_type === table)!;
+      const recordId = matchedRecordIds.get(table)!;
+      result.business_record_id = recordId;
+      result.created = false;
+      result.status = 'succeeded';
+      result.error_code = undefined;
+      await repository.updateWriteLog(preview.preview_id, table, {
+        business_record_id: recordId,
+        status: 'reconciled',
+        resolved_at: nowIso(),
+      }).catch(() => undefined);
+    }
+    return this.completeInternalReconciliation(preview, {
+      status: 'succeeded',
+      write_results: results,
+      additional_create_calls: 0,
+      reconciliation: 'unique',
+      completed_at: nowIso(),
+    }, 'internal_write_reconciled');
+  }
+
+  async confirmWrite(
+    id: string,
+    req: ConfirmWriteRequest,
+    authenticatedOperator?: string,
+  ): Promise<ConfirmWriteResponse> {
+    if (req.production_pilot_preview_id || req.production_pilot_nonce) {
+      return this.confirmProductionPilotExecution(id, req, authenticatedOperator);
+    }
     const task = await this.getTaskOrThrow(id);
     const state = extractScreenshotState(task);
 
@@ -739,9 +1470,11 @@ export class ScreenshotService {
       };
     }
 
-    // 调用 SOP PRE_WRITE 治理
-    if (this.options.governanceClient) {
-      const governance = await this.options.governanceClient.callPreWriteFull(state.candidate_v1);
+    // 调用 SOP PRE_WRITE 治理。写入路径不得在治理客户端缺失时本地伪造 PASS。
+    {
+      const governance = await this.requireGovernanceClient(
+        'Screenshot write confirmation',
+      ).callPreWriteFull(state.candidate_v1);
       state.governance_result_v1 = governance;
 
       if (governance.decision === 'BLOCKED') {
@@ -783,33 +1516,43 @@ export class ScreenshotService {
       await this.auditRecord(task.ingestion_id, 'governance_passed', 'PASS', {
         rule_version: governance.rule_version,
       });
-    } else {
-      // 无治理客户端（测试模式）→ 直接通过
-      state.screenshot_status = 'governance_passed';
     }
+
+    // RF-01: computeWritePlan 是业务实体范围的唯一权威来源。生产 Pilot
+    // 请求可以携带 target_tables 作为客户端声明，但不能用它覆盖 Candidate +
+    // Governance 推导出的计划；任何不一致都在进入 writer 前 fail-closed。
+    const authoritativeTargetTables = computeWritePlan(
+      state.candidate_v1,
+      state.governance_result_v1
+    );
+
+    // Legacy/test callers may still provide target_tables. Production Pilot
+    // never consumes that client-controlled value; it always uses the
+    // authoritative plan above.
+    const effectiveTargetTables = req.target_tables ?? authoritativeTargetTables;
 
     // AC-A10: 写入失败不会错误报告 SUCCEEDED
     if (this.options.batchWriter) {
       // Workstream D/E: 审计 — 写入开始。
       await this.auditRecord(task.ingestion_id, 'write_started', 'committing', {
-        target_tables: req.target_tables ?? ['customer', 'project', 'model'],
+        target_tables: effectiveTargetTables,
       });
       // Workstream C/E: 透传双层放行门所需上下文（governanceDecision +
       // targetBaseToken + 各表 ID）。GuardedBatchWriter 在 Create Record 前校验
       // 6 条件（Amendment 6）；普通写入器/Fake 忽略额外字段。
       const ctx = this.options.feishuWriteContext;
-      const batchResult = await this.options.batchWriter.writeBatch({
+      const batchInput: GuardedWriteBatchInput = {
         ingestionId: task.ingestion_id,
         normalizedFields: state.candidate_v1.normalized_fields as Record<string, unknown>,
-        targetTables: req.target_tables,
+        targetTables: effectiveTargetTables,
         dryRun: req.dry_run ?? task.dry_run,
         governanceDecision: { decision: state.governance_result_v1?.decision ?? 'PASS' },
         targetBaseToken: ctx?.targetBaseToken,
         customerTableId: ctx?.customerTableId,
         projectTableId: ctx?.projectTableId,
         modelTableId: ctx?.modelTableId,
-      });
-
+      };
+      const batchResult = await this.options.batchWriter.writeBatch(batchInput);
       state.write_results = batchResult.write_results;
       // BatchWriterResultView.status 为 string（GuardedBatchWriter 可能返回 'blocked'）。
       // 下方 status !== 'committed' 检查会将 'blocked' 等非 committed 状态路由到
@@ -848,7 +1591,7 @@ export class ScreenshotService {
       state.screenshot_status = 'write_succeeded';
     } else {
       // 无 batch writer（测试模式）→ 干运行
-      state.write_results = (req.target_tables ?? ['customer', 'project', 'model']).map((table) => ({
+      state.write_results = effectiveTargetTables.map((table) => ({
         entity_type: table,
         target_table_id: table,
         business_record_id: null,
@@ -860,10 +1603,15 @@ export class ScreenshotService {
 
     await this.repository.save(withScreenshotState(task, state));
 
-    // Workstream D/E: 审计 — 写入成功。业务写入已落库，审计失败应 fail-closed。
-    await this.auditRecord(task.ingestion_id, 'write_succeeded', 'succeeded', {
-      transaction_snapshot_id: state.transaction_snapshot?.snapshot_id,
-    });
+    try {
+      // Workstream D/E: 审计 — 写入成功。业务写入已落库，审计失败应 fail-closed。
+      await this.auditRecord(task.ingestion_id, 'write_succeeded', 'succeeded', {
+        transaction_snapshot_id: state.transaction_snapshot?.snapshot_id,
+      });
+
+    } catch {
+      throw new Error('AUDIT_PERSIST_FAILED');
+    }
 
     return {
       screenshot_id: task.ingestion_id,
@@ -937,16 +1685,18 @@ export class ScreenshotService {
     const state = extractScreenshotState(task);
 
     // 获取写入日志
-    let writeLogs: Array<{
-      write_log_id: string;
-      ingestion_id: string;
-      target_table_id: string;
-      business_record_id: string | null;
-      status: 'succeeded' | 'failed' | 'rolled_back' | 'not_attempted';
-      error_code?: string;
-      created_at: string;
-    }> = [];
-    if (this.options.writeLogRepository) {
+    let writeLogs: GetFinalResultResponse['write_logs'] = [];
+    if (state.internal_controlled_write?.result || state.write_results?.some((result) => result.status === 'unknown')) {
+      writeLogs = (state.write_results ?? []).map((r) => ({
+        write_log_id: r.write_log_id ?? `wl_${task.ingestion_id}_${r.entity_type}`,
+        ingestion_id: task.ingestion_id,
+        target_table_id: r.target_table_id,
+        business_record_id: r.business_record_id,
+        status: r.status,
+        error_code: r.error_code ?? state.internal_controlled_write?.result?.error_code,
+        created_at: task.updated_at,
+      }));
+    } else if (this.options.writeLogRepository) {
       const logs = await this.options.writeLogRepository.findByIngestionId(task.ingestion_id);
       writeLogs = logs.map((l) => ({
         write_log_id: l.write_log_id,
@@ -964,18 +1714,31 @@ export class ScreenshotService {
         ingestion_id: task.ingestion_id,
         target_table_id: r.target_table_id,
         business_record_id: r.business_record_id,
-        status: r.status,
+        status: r.status === 'succeeded'
+          ? 'succeeded'
+          : r.status === 'failed'
+            ? 'failed'
+            : r.status === 'rolled_back'
+              ? 'rolled_back'
+              : r.status,
         error_code: r.error_code,
         created_at: task.updated_at,
       }));
     }
 
-    const governance = state.governance_result_v1 ?? this.buildLocalGovernanceResult(task, state, 'PASS');
+    const governance = state.governance_result_v1 ?? this.buildLocalGovernanceResult(
+      task,
+      state,
+      'NEEDS_REVIEW',
+      'GOVERNANCE_RESULT_UNAVAILABLE',
+      'SOP 写前治理尚未执行或结果不可用，不能标记为 PASS。',
+    );
 
     return {
       screenshot_id: task.ingestion_id,
       ingestion_id: task.ingestion_id,
       final_status: state.screenshot_status,
+      error_code: state.internal_controlled_write?.result?.error_code,
       governance_result_v1: {
         schema_version: governance.schema_version,
         candidate_id: governance.candidate_id,
@@ -984,10 +1747,11 @@ export class ScreenshotService {
         rule_version: governance.rule_version,
         violations: governance.violations,
         write: {
-          status: state.screenshot_status === 'write_succeeded' ? 'succeeded' as const : state.screenshot_status === 'write_failed' ? 'failed' as const : 'not_attempted' as const,
+          status: mapScreenshotWriteStatus(state.screenshot_status),
           target_table: governance.write.target_table,
           target_record_id: state.write_results?.find((r) => r.status === 'succeeded')?.business_record_id ?? null,
           attempted_at: governance.write.attempted_at,
+          error_code: state.internal_controlled_write?.result?.error_code,
         },
         review: {
           status: state.review_task?.status ?? governance.review.status,
@@ -1004,13 +1768,741 @@ export class ScreenshotService {
         resolved_at: state.review_task.resolved_at,
       } : null,
       transaction_snapshot: state.transaction_snapshot,
-      completed_at: state.screenshot_status === 'write_succeeded' || state.screenshot_status === 'write_failed' ? task.updated_at : undefined,
+      completed_at: [
+        'write_succeeded',
+        'write_failed',
+        'write_result_unknown',
+        'write_needs_reconciliation',
+        'write_partial',
+      ].includes(state.screenshot_status) ? task.updated_at : undefined,
     };
   }
 
   // ==========================================================================
   // 私有辅助方法
   // ==========================================================================
+
+  /**
+   * Reconciles production-pilot manifests after a process restart. In-flight
+   * execution states are compensated by the batch writer; a COMMITTING
+   * manifest is never compensated because its external records may already be
+   * reflected in the task repository. Its persisted commit payload is replayed
+   * idempotently until both stores converge.
+   */
+  async recoverPendingProductionPilotRuns(): Promise<ProductionPilotRecoveryOutcome[]> {
+    const manifestRepository = this.options.runManifestRepository;
+    const batchWriter = this.options.batchWriter;
+    if (!manifestRepository || !batchWriter?.recoverPendingCompensations) {
+      throw new ConflictError('Production pilot recovery journal is unavailable');
+    }
+
+    const outcomes: ProductionPilotRecoveryOutcome[] = await batchWriter.recoverPendingCompensations();
+    const pendingCommits = await manifestRepository.findPendingCommits();
+    for (const manifest of pendingCommits) {
+      try {
+        await this.reconcilePendingPilotCommit(manifest);
+        outcomes.push({ previewId: manifest.previewId, status: 'committed' });
+      } catch {
+        outcomes.push({ previewId: manifest.previewId, status: 'commit_recovery_failed' });
+      }
+    }
+    return outcomes;
+  }
+
+  private async reconcilePendingPilotCommit(
+    manifest: ProductionPilotRunManifest,
+  ): Promise<void> {
+    const payload = manifest.commitPayload;
+    const auditLogRepository = this.options.auditLogRepository;
+    const manifestRepository = this.options.runManifestRepository;
+    if (!payload || !auditLogRepository || !manifestRepository) {
+      throw new Error('RUN_MANIFEST_COMMIT_PAYLOAD_MISSING');
+    }
+    const task = await this.repository.findById(manifest.ingestionId);
+    if (!task) {
+      throw new Error('RUN_MANIFEST_TASK_NOT_FOUND');
+    }
+
+    for (const event of payload.auditEvents) {
+      await this.auditRecord(
+        manifest.ingestionId,
+        event.eventType,
+        event.resultStatus,
+        event.details,
+      );
+    }
+
+    const state = extractScreenshotState(task);
+    const expectedSnapshot = payload.transactionSnapshot;
+    const sameCommittedState = state.screenshot_status === 'write_succeeded'
+      && JSON.stringify(state.write_results) === JSON.stringify(payload.writeResults)
+      && JSON.stringify(state.transaction_snapshot) === JSON.stringify(expectedSnapshot);
+    if (state.screenshot_status === 'write_succeeded' && !sameCommittedState) {
+      throw new Error('RUN_MANIFEST_TASK_COMMIT_CONFLICT');
+    }
+    if (!sameCommittedState) {
+      state.write_results = payload.writeResults;
+      state.transaction_snapshot = expectedSnapshot;
+      state.screenshot_status = 'write_succeeded';
+      await this.repository.save(withScreenshotState(task, state));
+    }
+    await manifestRepository.completeSuccess(manifest.previewId);
+  }
+
+  private async confirmProductionPilotExecution(
+    id: string,
+    req: ConfirmWriteRequest,
+    authenticatedOperator?: string,
+  ): Promise<ConfirmWriteResponse> {
+    if (!authenticatedOperator?.trim()) {
+      throw new BadRequestError('authenticated operator is required');
+    }
+    if (!req.production_pilot_preview_id || !req.production_pilot_nonce) {
+      throw new BadRequestError('production pilot preview_id and nonce are required');
+    }
+    const task = await this.getTaskOrThrow(id);
+    const state = extractScreenshotState(task);
+    const candidate = state.candidate_v1;
+    if (!candidate) throw new ConflictError('Candidate V1 not yet available');
+    if (candidate.candidate_id !== req.candidate_v1_id) {
+      throw new BadRequestError('candidate_v1_id mismatch');
+    }
+    const manifestRepository = this.options.runManifestRepository;
+    const batchWriter = this.options.batchWriter;
+    if (!manifestRepository || !batchWriter?.preflight || !this.options.auditLogRepository || !this.options.writeLogRepository) {
+      throw new ConflictError('Production pilot recovery boundary is unavailable');
+    }
+    const manifest = await manifestRepository.findByPreviewId(req.production_pilot_preview_id);
+    if (!manifest || manifest.ingestionId !== task.ingestion_id) {
+      throw new ConflictError('Production pilot manifest is not bound to this screenshot');
+    }
+    if (manifest.operator !== authenticatedOperator) {
+      throw new ConflictError('Production pilot operator does not match the server manifest');
+    }
+    if (manifest.nonce !== req.production_pilot_nonce) {
+      throw new ConflictError('Production pilot nonce does not match the server manifest');
+    }
+    if (manifest.status === 'succeeded' && state.screenshot_status === 'write_succeeded' && state.write_results) {
+      return {
+        screenshot_id: task.ingestion_id,
+        ingestion_id: task.ingestion_id,
+        status: 'write_succeeded',
+        write_results: state.write_results,
+        transaction_snapshot_id: state.transaction_snapshot?.snapshot_id,
+        completed_at: task.updated_at,
+      };
+    }
+    if (manifest.candidateDigest !== digestJson(candidate)) {
+      throw new ConflictError('Production pilot candidate binding does not match the server manifest');
+    }
+    const governance = state.governance_result_v1;
+    if (!governance || governance.decision !== 'PASS' || manifest.governanceDigest !== digestJson(governance)) {
+      throw new ConflictError('Production pilot governance binding does not match the server manifest');
+    }
+    const targetTables = computeWritePlan(candidate, governance);
+    const targetTableDigests: Partial<Record<'customer' | 'project' | 'model', string>> = {};
+    for (const table of targetTables) {
+      const tableId = this.tableIdFor(table);
+      if (tableId) targetTableDigests[table] = sha256Hex(tableId);
+    }
+    const baseTokenDigest = this.options.feishuWriteContext?.targetBaseToken
+      ? sha256Hex(this.options.feishuWriteContext.targetBaseToken)
+      : undefined;
+    const authoritativePlanDigest = digestJson({ targetTables, targetTableDigests, baseTokenDigest });
+    if (
+      manifest.authoritativePlanDigest !== authoritativePlanDigest
+      || JSON.stringify(manifest.targetTables) !== JSON.stringify(targetTables)
+    ) {
+      throw new ConflictError('Production pilot authoritative plan does not match the server manifest');
+    }
+    if (req.target_tables && JSON.stringify(req.target_tables) !== JSON.stringify(targetTables)) {
+      return this.persistPilotBlockedResult(
+        task,
+        state,
+        targetTables,
+        'TARGET_PLAN_MISMATCH',
+      );
+    }
+
+    let consumed;
+    try {
+      consumed = await manifestRepository.consume(
+        manifest.previewId,
+        nowIso(),
+        authenticatedOperator,
+        req.production_pilot_nonce,
+      );
+    } catch {
+      throw new ConflictError('Production pilot preview is not confirmed, expired, or already consumed');
+    }
+    const pilotAuditContext: Record<string, unknown> = {
+      preview_id_digest: sha256Hex(consumed.previewId),
+      target_aliases: targetTables,
+      table_digests: targetTableDigests,
+      base_digest: baseTokenDigest,
+      run_id_digest: sha256Hex(consumed.runId),
+    };
+    const ctx = this.options.feishuWriteContext;
+    const batchInput: GuardedWriteBatchInput = {
+      ingestionId: task.ingestion_id,
+      normalizedFields: candidate.normalized_fields as Record<string, unknown>,
+      targetTables,
+      dryRun: req.dry_run ?? task.dry_run,
+      governanceDecision: { decision: 'PASS' },
+      targetBaseToken: ctx?.targetBaseToken,
+      customerTableId: ctx?.customerTableId,
+      projectTableId: ctx?.projectTableId,
+      modelTableId: ctx?.modelTableId,
+      pilotRunId: consumed.runId,
+      operator: authenticatedOperator,
+      candidateDigest: manifest.candidateDigest,
+      governanceDigest: manifest.governanceDigest,
+      authoritativePlanDigest: manifest.authoritativePlanDigest,
+      pilotManifest: consumed,
+      enforceProjectRelationContext: true,
+      pilotPreviewId: consumed.previewId,
+      runManifestRepository: manifestRepository,
+      requireDurableWriteLogs: true,
+      onCompensationStarted: async (recordCount) => {
+        await this.auditRecord(task.ingestion_id, 'pilot_compensation_started', 'started', {
+          ...pilotAuditContext,
+          record_count: recordCount,
+        });
+      },
+      onCompensationCompleted: async (status, recordCount) => {
+        await this.auditRecord(
+          task.ingestion_id,
+          status === 'completed' ? 'pilot_compensation_completed' : 'pilot_compensation_failed',
+          status,
+          { ...pilotAuditContext, record_count: recordCount },
+        );
+      },
+    };
+    const preflight = await batchWriter.preflight(batchInput);
+    if (!preflight.allowed) {
+      await manifestRepository.markCompensationRequired(consumed.previewId);
+      await manifestRepository.completeCompensation(consumed.previewId, true);
+      return this.persistPilotBlockedResult(task, state, targetTables, 'GATE_BLOCKED');
+    }
+    await manifestRepository.markExecuting(consumed.previewId);
+    await this.auditRecord(task.ingestion_id, 'pilot_write_started', 'committing', pilotAuditContext);
+
+    let batchResult: BatchWriterResultView;
+    try {
+      batchResult = await batchWriter.writeBatch(batchInput);
+    } catch {
+      state.screenshot_status = 'write_failed';
+      state.write_results = [];
+      await this.repository.save(withScreenshotState(task, state));
+      await manifestRepository.markCompensationRequired(consumed.previewId).catch(() => undefined);
+      return {
+        screenshot_id: task.ingestion_id,
+        ingestion_id: task.ingestion_id,
+        status: 'write_failed',
+        write_results: [],
+        error_code: 'WRITE_FAILED',
+      };
+    }
+    state.write_results = batchResult.write_results;
+    state.transaction_snapshot = {
+      snapshot_id: batchResult.transaction_snapshot_id,
+      status: batchResult.status as 'committed' | 'rolled_back' | 'partial',
+      records_created: batchResult.records_created,
+      records_rolled_back: batchResult.records_rolled_back,
+    };
+    if (
+      batchResult.status !== 'committed'
+      || batchResult.write_results.some((result) => result.status === 'failed')
+    ) {
+      state.screenshot_status = 'write_failed';
+      await this.repository.save(withScreenshotState(task, state));
+      await this.auditRecord(task.ingestion_id, 'pilot_write_failed', 'failed', {
+        ...pilotAuditContext,
+        error_code: batchResult.error_code ?? 'WRITE_FAILED',
+      });
+      return {
+        screenshot_id: task.ingestion_id,
+        ingestion_id: task.ingestion_id,
+        status: 'write_failed',
+        write_results: batchResult.write_results,
+        transaction_snapshot_id: batchResult.transaction_snapshot_id,
+        error_code: batchResult.error_code ?? 'WRITE_FAILED',
+      };
+    }
+
+    await manifestRepository.markVerifying(consumed.previewId);
+    try {
+      const createdResults = batchResult.write_results.filter(
+        (result) => result.status === 'succeeded' && result.created && result.business_record_id,
+      );
+      const verifiedResults = batchResult.write_results.filter(
+        (result) => result.status === 'succeeded' && result.business_record_id,
+      );
+      const auditEvents: ProductionPilotCommitPayload['auditEvents'] = [];
+      if (createdResults.length > 0) {
+        auditEvents.push({
+          eventType: 'pilot_record_created',
+          resultStatus: 'succeeded',
+          details: {
+            ...pilotAuditContext,
+            record_count: createdResults.length,
+            record_digests: createdResults.map((result) => sha256Hex(result.business_record_id!)),
+          },
+        });
+      }
+      if (batchResult.post_write_verified && verifiedResults.some((result) => result.entity_type === 'project')) {
+        auditEvents.push({
+          eventType: 'pilot_relation_verified',
+          resultStatus: 'verified',
+          details: {
+            ...pilotAuditContext,
+            verified_record_count: verifiedResults.length,
+          },
+        });
+      }
+      auditEvents.push({
+        eventType: 'pilot_write_completed',
+        resultStatus: 'succeeded',
+        details: {
+          ...pilotAuditContext,
+          record_count: verifiedResults.length,
+        },
+      });
+      auditEvents.push({
+        eventType: 'write_succeeded',
+        resultStatus: 'succeeded',
+        details: {
+          transaction_snapshot_id: batchResult.transaction_snapshot_id,
+        },
+      });
+
+      const commitPayload: ProductionPilotCommitPayload = {
+        writeResults: batchResult.write_results,
+        transactionSnapshot: state.transaction_snapshot!,
+        auditEvents,
+      };
+      // COMMITTING is the durable fence between external Feishu success and
+      // task/audit persistence. Recovery of this state completes the commit;
+      // it must never compensate records that may already be task-visible.
+      await manifestRepository.markCommitting(consumed.previewId, commitPayload);
+      for (const event of auditEvents) {
+        await this.auditRecord(task.ingestion_id, event.eventType, event.resultStatus, event.details);
+      }
+      state.screenshot_status = 'write_succeeded';
+      await this.repository.save(withScreenshotState(task, state));
+      await manifestRepository.completeSuccess(consumed.previewId);
+    } catch {
+      return {
+        screenshot_id: task.ingestion_id,
+        ingestion_id: task.ingestion_id,
+        status: 'write_failed',
+        write_results: state.write_results ?? [],
+        transaction_snapshot_id: state.transaction_snapshot?.snapshot_id,
+        error_code: 'PILOT_AUDIT_PERSIST_FAILED',
+      };
+    }
+    return {
+      screenshot_id: task.ingestion_id,
+      ingestion_id: task.ingestion_id,
+      status: 'write_succeeded',
+      write_results: state.write_results ?? [],
+      transaction_snapshot_id: state.transaction_snapshot?.snapshot_id,
+      completed_at: nowIso(),
+    };
+  }
+
+  private async persistPilotBlockedResult(
+    task: IngestionTask,
+    state: ScreenshotState,
+    targetTables: Array<'customer' | 'project' | 'model'>,
+    errorCode: string,
+  ): Promise<ConfirmWriteResponse> {
+    const writeResults: WriteResult[] = targetTables.map((table) => ({
+      entity_type: table,
+      target_table_id: this.tableIdFor(table) ?? table,
+      business_record_id: null,
+      created: false,
+      status: 'not_attempted',
+    }));
+    state.write_results = writeResults;
+    state.screenshot_status = 'write_failed';
+    await this.repository.save(withScreenshotState(task, state));
+    await this.auditRecord(task.ingestion_id, 'pilot_write_blocked', 'blocked', {
+      reason_code: errorCode,
+      target_aliases: targetTables,
+    });
+    return {
+      screenshot_id: task.ingestion_id,
+      ingestion_id: task.ingestion_id,
+      status: 'write_failed',
+      write_results: writeResults,
+      error_code: errorCode,
+    };
+  }
+
+  private getInternalWriteConfig(): FeishuWriteConfig | undefined {
+    const configured = this.options.internalWriteConfig;
+    if (!configured || !('taskRepository' in configured)) return undefined;
+    return configured;
+  }
+
+  private requireInternalWriteConfig(): FeishuWriteConfig {
+    const configured = this.getInternalWriteConfig();
+    if (!configured?.internalControlledWrite?.enabled) {
+      throw new InternalWriteDisabledError();
+    }
+    return configured;
+  }
+
+  private requireGovernanceClient(context: string): ScreenshotGovernanceClient {
+    const client = this.options.governanceClient;
+    if (!client) {
+      throw new ConflictError(
+        `${context} requires a configured SOP governance client; local PASS fallback is disabled.`,
+      );
+    }
+    return client;
+  }
+
+  private targetTableIds(targetTables: readonly WriteTable[]): Partial<Record<WriteTable, string>> {
+    const targetTableIds: Partial<Record<WriteTable, string>> = {};
+    for (const table of targetTables) {
+      const tableId = this.tableIdFor(table);
+      if (!tableId) throw new ConflictError('Internal controlled target table is not configured');
+      targetTableIds[table] = tableId;
+    }
+    return targetTableIds;
+  }
+
+  private emptyInternalResults(targetTables: readonly WriteTable[]): InternalWriteResultItem[] {
+    return targetTables.map((table) => ({
+      entity_type: table,
+      // Internal result payloads expose aliases only. Raw table IDs remain
+      // in the server-side allowlist/digest boundary, never in logs/errors.
+      target_table_id: table,
+      business_record_id: null,
+      created: false,
+      status: 'not_attempted',
+    }));
+  }
+
+  private async runInternalControlledWrite(
+    preview: InternalWritePreview,
+    task: IngestionTask,
+    state: ScreenshotState,
+    candidate: CandidateV1,
+    targetTables: WriteTable[],
+    targetTableIds: Partial<Record<WriteTable, string>>,
+    operator: string,
+    executionContext: InternalWriteExecutionContext,
+  ): Promise<InternalControlledWriteResult> {
+    const repository = this.options.internalWriteRepository!;
+    const writer = this.options.batchWriter!;
+    const startedAt = nowIso();
+    await repository.markExecuting(preview.preview_id, startedAt);
+    state.internal_controlled_write = {
+      preview_id: preview.preview_id,
+      status: 'executing',
+    };
+    await this.repository.save(withScreenshotState(task, state));
+    const logs: InternalWriteLog[] = [];
+    for (const table of targetTables) {
+      logs.push(await repository.appendWriteLog({
+        ingestion_id: task.ingestion_id,
+        preview_id: preview.preview_id,
+        entity_type: table,
+        logical_write_key: sha256Hex(`${preview.preview_id}:${task.ingestion_id}:${table}`),
+        target_table_id_digest: preview.target_table_digests[table] ?? sha256Hex(targetTableIds[table] ?? ''),
+        business_record_id: null,
+        request_started_at: startedAt,
+        operator,
+        status: 'intent',
+      }));
+    }
+    await this.auditRecord(task.ingestion_id, 'internal_write_started', 'committing', {
+      preview_id_digest: sha256Hex(preview.preview_id),
+      target_aliases: targetTables,
+      table_digests: preview.target_table_digests,
+    });
+
+    const ctx = this.options.feishuWriteContext;
+    const input: GuardedWriteBatchInput = {
+      ingestionId: task.ingestion_id,
+      normalizedFields: candidate.normalized_fields as Record<string, unknown>,
+      targetTables: [...targetTables],
+      dryRun: false,
+      governanceDecision: { decision: 'PASS' },
+      candidateId: candidate.candidate_id,
+      requestedCandidateId: candidate.candidate_id,
+      operator,
+      targetBaseToken: ctx?.targetBaseToken,
+      customerTableId: ctx?.customerTableId,
+      projectTableId: ctx?.projectTableId,
+      modelTableId: ctx?.modelTableId,
+      internalControlledWrite: true,
+      internalPreviewId: preview.preview_id,
+      candidateDigest: preview.candidate_digest,
+      governanceDigest: preview.governance_digest,
+      authoritativePlanDigest: preview.authoritative_plan_digest,
+      humanConfirmed: true,
+      internalPreview: preview,
+      compensationPolicy: 'manual',
+      verifyAfterWrite: true,
+      enforceProjectRelationContext: true,
+      requireDurableWriteLogs: true,
+    };
+    const preflight = writer.preflight;
+    if (!preflight) throw new ConflictError('Internal controlled preflight is unavailable');
+    const preflightResult = await preflight.call(writer, input);
+    if (!preflightResult.allowed) {
+      const result: InternalControlledWriteResult = {
+        status: 'failed',
+        write_results: this.emptyInternalResults(targetTables).map((item) => ({
+          ...item,
+          error_code: 'INTERNAL_WRITE_GATE_BLOCKED',
+        })),
+        error_code: 'INTERNAL_WRITE_GATE_BLOCKED',
+        additional_create_calls: 0,
+        completed_at: nowIso(),
+      };
+      return this.completeInternalResult(preview, task, state, result, logs, 'internal_write_failed');
+    }
+
+    let batchResult: BatchWriterResultView;
+    try {
+      batchResult = await writer.writeBatch(input);
+      if (executionContext.isTimedOut()) {
+        const result: InternalControlledWriteResult = {
+          status: 'result_unknown',
+          write_results: batchResult.write_results.map((item) => ({
+            entity_type: item.entity_type,
+            target_table_id: item.entity_type,
+            business_record_id: item.business_record_id,
+            created: item.created,
+            status: 'unknown',
+            error_code: 'INTERNAL_WRITE_RESULT_UNKNOWN',
+            write_log_id: item.write_log_id,
+          })),
+          transaction_snapshot_id: batchResult.transaction_snapshot_id,
+          error_code: 'INTERNAL_WRITE_RESULT_UNKNOWN',
+          additional_create_calls: 0,
+          completed_at: nowIso(),
+        };
+        return this.completeInternalResult(preview, task, state, result, logs, 'internal_write_unknown');
+      }
+    } catch (error) {
+      if (executionContext.isTimedOut() || this.isUnknownInternalError(error)) {
+        const result: InternalControlledWriteResult = {
+          status: 'result_unknown',
+          write_results: this.emptyInternalResults(targetTables).map((item) => ({
+            ...item,
+            status: 'unknown',
+            error_code: 'INTERNAL_WRITE_RESULT_UNKNOWN',
+          })),
+          error_code: 'INTERNAL_WRITE_RESULT_UNKNOWN',
+          additional_create_calls: 0,
+          completed_at: nowIso(),
+        };
+        return this.completeInternalResult(preview, task, state, result, logs, 'internal_write_unknown');
+      }
+      const result: InternalControlledWriteResult = {
+        status: 'failed',
+        write_results: this.emptyInternalResults(targetTables).map((item) => ({
+          ...item,
+          status: 'failed',
+          error_code: 'INTERNAL_WRITE_FAILED',
+        })),
+        error_code: 'INTERNAL_WRITE_FAILED',
+        additional_create_calls: 0,
+        completed_at: nowIso(),
+      };
+      return this.completeInternalResult(preview, task, state, result, logs, 'internal_write_failed');
+    }
+
+    const writeResults: InternalWriteResultItem[] = batchResult.write_results.map((item) => ({
+      entity_type: item.entity_type,
+      target_table_id: item.entity_type,
+      business_record_id: item.business_record_id,
+      created: item.created,
+      status: item.status === 'succeeded' ? 'succeeded' : item.status === 'failed' ? 'failed' : 'not_attempted',
+      error_code: item.error_code,
+      write_log_id: item.write_log_id,
+      // Redacted Feishu diagnostic (code / message / request_id) so a partial
+      // write is triageable after the fact, without a re-run (AC-05 / AC-06).
+      error_detail: item.error_detail,
+    }));
+    const hasFailure = writeResults.some((item) => item.status === 'failed');
+    const isPartial = batchResult.status === 'partial' || hasFailure;
+    const result: InternalControlledWriteResult = {
+      status: isPartial ? 'partial' : batchResult.status === 'committed' ? 'succeeded' : 'failed',
+      write_results: writeResults,
+      transaction_snapshot_id: batchResult.transaction_snapshot_id,
+      error_code: isPartial ? 'INTERNAL_WRITE_PARTIAL' : batchResult.error_code,
+      additional_create_calls: 0,
+      completed_at: nowIso(),
+    };
+    return this.completeInternalResult(
+      preview,
+      task,
+      state,
+      result,
+      logs,
+      result.status === 'succeeded' ? 'internal_write_succeeded' : 'internal_write_partial',
+    );
+  }
+
+  private isUnknownInternalError(error: unknown): boolean {
+    return error instanceof InternalWriteResultUnknownError
+      || (error as { code?: unknown }).code === 'INTERNAL_WRITE_RESULT_UNKNOWN'
+      || (error as { resultUnknown?: unknown }).resultUnknown === true;
+  }
+
+  private async completeInternalResult(
+    preview: InternalWritePreview,
+    task: IngestionTask,
+    state: ScreenshotState,
+    result: InternalControlledWriteResult,
+    logs: InternalWriteLog[],
+    auditType: AuditEventType,
+    source: 'execution' | 'reconciliation' = 'execution',
+  ): Promise<InternalControlledWriteResult> {
+    const repository = this.options.internalWriteRepository!;
+    const completed = source === 'reconciliation'
+      ? await repository.completeReconciliation(
+          preview.preview_id,
+          result,
+          preview.operator,
+          result.completed_at ?? nowIso(),
+        )
+      : await repository.completeExecution(
+          preview.preview_id,
+          result,
+          preview.operator,
+          result.completed_at ?? nowIso(),
+        );
+
+    // A late execution callback is allowed to observe a reconciliation
+    // success, but it is not allowed to mutate logs, task state, or audit.
+    if (!completed.result || completed.status !== completed.result.status) {
+      throw new InternalWriteStateTransitionConflictError();
+    }
+    if (
+      completed.status !== result.status
+      || JSON.stringify(completed.result) !== JSON.stringify(result)
+    ) {
+      // The repository rejected this source/status transition (for example,
+      // a timeout fired while the operation was still queued).  Do not let a
+      // rejected preview transition leak into the task or audit state.
+      return completed.result;
+    }
+
+    for (const item of result.write_results) {
+      const log = logs.find((candidate) => candidate.entity_type === item.entity_type);
+      if (!log) continue;
+      await repository.updateWriteLog(preview.preview_id, item.entity_type, {
+        business_record_id: item.business_record_id,
+        status: result.reconciliation === 'unique' && item.status === 'succeeded'
+          ? 'reconciled'
+          : item.status === 'succeeded'
+            ? 'succeeded'
+          : result.status === 'result_unknown'
+            ? 'unknown'
+            : item.status === 'failed' ? 'failed' : 'not_attempted',
+        error_code: item.error_code ?? result.error_code,
+        resolved_at: result.status === 'succeeded' ? nowIso() : undefined,
+        request_completed_at: result.completed_at ?? nowIso(),
+      }).catch(() => undefined);
+    }
+    state.internal_controlled_write = {
+      preview_id: preview.preview_id,
+      status: result.status,
+      result,
+      transaction_snapshot_id: result.transaction_snapshot_id,
+    };
+    state.write_results = result.write_results.map((item) => ({
+      entity_type: item.entity_type,
+      target_table_id: item.target_table_id,
+      business_record_id: item.business_record_id,
+      created: item.created,
+      status: item.status === 'succeeded'
+        ? 'succeeded'
+        : item.status === 'failed' ? 'failed'
+          : item.status === 'unknown' ? 'unknown' : 'not_attempted',
+      error_code: item.error_code,
+      write_log_id: item.write_log_id,
+    }));
+    if (result.status === 'succeeded') {
+      state.screenshot_status = 'write_succeeded';
+    } else if (result.status === 'result_unknown') {
+      state.screenshot_status = 'write_result_unknown';
+    } else if (result.status === 'needs_reconciliation') {
+      state.screenshot_status = 'write_needs_reconciliation';
+    } else if (result.status === 'partial') {
+      state.screenshot_status = 'write_partial';
+    } else {
+      state.screenshot_status = 'write_failed';
+    }
+    if (result.transaction_snapshot_id) {
+      state.transaction_snapshot = {
+        snapshot_id: result.transaction_snapshot_id,
+        status: result.status === 'succeeded' ? 'committed' : 'partial',
+        records_created: result.write_results.filter((item) => item.created).length,
+        records_rolled_back: 0,
+      };
+    }
+    await this.repository.save(withScreenshotState(task, state));
+    await this.auditRecord(task.ingestion_id, auditType, result.status, {
+      preview_id_digest: sha256Hex(preview.preview_id),
+      error_code: result.error_code,
+      record_count: result.write_results.filter((item) => item.business_record_id).length,
+    });
+    return result;
+  }
+
+  private async completeInternalReconciliation(
+    preview: InternalWritePreview,
+    result: InternalControlledWriteResult,
+    auditType: AuditEventType,
+  ): Promise<InternalControlledWriteResult> {
+    const task = await this.getTaskOrThrow(preview.ingestion_id);
+    const state = extractScreenshotState(task);
+    return this.completeInternalResult(
+      preview,
+      task,
+      state,
+      result,
+      await this.options.internalWriteRepository!.findWriteLogs(preview.preview_id),
+      auditType,
+      'reconciliation',
+    );
+  }
+
+  private tableIdFor(table: 'customer' | 'project' | 'model'): string | undefined {
+    const context = this.options.feishuWriteContext;
+    if (table === 'customer') return context?.customerTableId;
+    if (table === 'project') return context?.projectTableId;
+    return context?.modelTableId;
+  }
+
+  private toPublicProductionPilotPreview(
+    manifest: import('../repositories/run-manifest-repository.js').ProductionPilotRunManifest,
+  ): ProductionPilotPreview {
+    const status = ['generated', 'confirmed', 'consumed', 'succeeded'].includes(manifest.status)
+      ? manifest.status as ProductionPilotPreview['status']
+      : 'generated';
+    return {
+      preview_id: manifest.previewId,
+      nonce: manifest.nonce,
+      generated_at: manifest.createdAt,
+      expires_at: manifest.expiresAt,
+      write_mode: 'production-pilot',
+      status,
+      planned_record_count: manifest.targetTables?.length ?? 0,
+      target_table_aliases: [...(manifest.targetTables ?? [])],
+      target_table_digests: { ...(manifest.targetTableDigests ?? {}) },
+      base_token_digest: manifest.baseTokenDigest,
+    };
+  }
 
   private async getTaskOrThrow(id: string): Promise<IngestionTask> {
     const task = await this.repository.findById(id);

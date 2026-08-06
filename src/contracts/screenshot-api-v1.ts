@@ -31,6 +31,7 @@ export const SCREENSHOT_API_VERSION = 'v1' as const;
 export type ScreenshotStatus =
   | 'received'          // 截图已接收
   | 'ocr_processing'   // OCR 进行中
+  | 'ocr_failed'       // OCR 失败
   | 'ocr_completed'    // OCR 完成
   | 'candidate_drafted' // 候选已生成
   | 'governance_passed' // 治理通过
@@ -38,6 +39,9 @@ export type ScreenshotStatus =
   | 'governance_blocked'     // 治理阻止
   | 'write_succeeded'  // 写入成功
   | 'write_failed'      // 写入失败
+  | 'write_result_unknown' // caller timeout or ambiguous external result
+  | 'write_needs_reconciliation' // manual marker/record reconciliation required
+  | 'write_partial'     // some target writes completed and require manual action
   | 'duplicate_skipped' // 重复跳过
   | 'review_pending'   // 复核待处理
   | 'review_resolved'  // 复核已解决
@@ -53,7 +57,41 @@ export interface ApiErrorResponse {
 }
 
 /** 写入结果状态 */
-export type WriteResultStatus = 'succeeded' | 'failed' | 'rolled_back' | 'not_attempted';
+export type WriteResultStatus =
+  | 'succeeded'
+  | 'failed'
+  | 'rolled_back'
+  | 'not_attempted'
+  | 'unknown'
+  | 'partial'
+  | 'needs_reconciliation';
+
+/**
+ * 写入失败的脱敏诊断详情。
+ *
+ * 只包含错误标识与字段「名称/类型」，绝不包含字段原始值、token 或 secret。
+ * 存在的意义：`error_code` 只能表达「失败」，无法回答「为什么失败」；
+ * 没有 feishu_code / request_id，运维无法向飞书追溯。
+ */
+export interface WriteErrorDetail {
+  internal_error_code: string;
+  target_table: 'customer' | 'project' | 'model';
+  /** 本次尝试写入的字段名列表（仅名称）。 */
+  field_names: string[];
+  ingestion_id?: string;
+  /** 飞书原始错误码，例如 1254064（DatetimeFieldConvFail）。 */
+  feishu_code?: number;
+  /** 飞书原始错误消息（已脱敏）。 */
+  feishu_message?: string;
+  /** 飞书 log_id —— 唯一可向飞书追溯的句柄。 */
+  request_id?: string | null;
+  http_status?: number | null;
+  field_violations?: unknown;
+  /** 写入器在调用飞书之前拒绝时，指出具体字段。 */
+  offending_field?: string;
+  expected_value_shape?: string;
+  received_value_type?: string;
+}
 
 /** 单实体写入结果 */
 export interface WriteResult {
@@ -64,6 +102,8 @@ export interface WriteResult {
   status: WriteResultStatus;
   error_code?: string;
   write_log_id?: string;
+  /** 失败时的脱敏诊断详情（AC-05 / AC-06）。 */
+  error_detail?: WriteErrorDetail;
 }
 
 // ============================================================================
@@ -135,6 +175,7 @@ export interface GetScreenshotStatusResponse {
     status?: WriteResultStatus;
     entity_count?: number;
     completed_at?: string;
+    error_code?: string;
   };
   created_at: string;
   updated_at: string;
@@ -235,6 +276,36 @@ export interface ConfirmWriteRequest {
   dry_run?: boolean;
   /** 目标写入表 */
   target_tables?: Array<'customer' | 'project' | 'model'>;
+  /** Server-created opaque preview identifier. */
+  production_pilot_preview_id?: string;
+  /** Server-created nonce returned with the preview. */
+  production_pilot_nonce?: string;
+}
+
+/**
+ * Public-safe production-pilot preview payload. It contains only stable
+ * digests and logical aliases; raw Base/Table/record identifiers are never
+ * accepted in the preview body.
+ */
+export interface ProductionPilotPreview {
+  preview_id: string;
+  nonce: string;
+  generated_at: string;
+  expires_at: string;
+  write_mode: 'production-pilot';
+  status: 'generated' | 'confirmed' | 'consumed' | 'succeeded';
+  planned_record_count: number;
+  target_table_aliases: Array<'customer' | 'project' | 'model'>;
+  target_table_digests: Partial<Record<'customer' | 'project' | 'model', string>>;
+  base_token_digest?: string;
+}
+
+export interface CreateProductionPilotPreviewRequest {
+  candidate_v1_id: string;
+}
+
+export interface ConfirmProductionPilotPreviewRequest {
+  nonce: string;
 }
 
 export interface ConfirmWriteResponse {
@@ -321,6 +392,7 @@ export interface GetFinalResultResponse {
   screenshot_id: string;
   ingestion_id: string;
   final_status: ScreenshotStatus;
+  error_code?: string;
   governance_result_v1: {
     schema_version: string;
     candidate_id: string;
@@ -341,6 +413,7 @@ export interface GetFinalResultResponse {
       target_table: string;
       target_record_id: string | null;
       attempted_at?: string;
+      error_code?: string;
     };
     review: {
       status: string;
